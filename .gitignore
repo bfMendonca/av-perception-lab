@@ -1,0 +1,26 @@
+# Python / tooling
+__pycache__/
+*.py[cod]
+.venv/
+.pytest_cache/
+.ruff_cache/
+build/
+dist/
+*.egg-info/
+
+# Env
+.env
+.env.*
+!.env.example
+
+# Runtime data: test videos, outputs, logs, downloaded weights (never versioned)
+_testbed/
+weights/
+*.pth
+*.onnx
+*.trt
+
+# Editor
+.vscode/
+.idea/
+*.swp

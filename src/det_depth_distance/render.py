@@ -1,0 +1,291 @@
+"""Annotated-frame rendering: boxes, label pills, HUD and an optional
+side-by-side metric depth panel with a legend in metres.
+
+Ported from rf-detr's infer_video.py Renderer and depth-anything-3's
+run_test.py colorize_metric/metric_legend. Everything is RGB; OpenCV
+colormaps (BGR) are converted on output. The depth panel is resized to the
+exact frame size so the same box coordinates apply to both panels.
+"""
+
+from collections import Counter
+from collections.abc import Sequence
+from dataclasses import dataclass
+from pathlib import Path
+from typing import Literal
+
+import cv2
+import numpy as np
+from PIL import Image, ImageDraw, ImageFont
+
+# One distinct, readable colour per driving class (RGB); other classes fall back to a neutral tone.
+CLASS_COLORS: dict[str, tuple[int, int, int]] = {
+    "person": (255, 99, 132),
+    "bicycle": (255, 159, 64),
+    "car": (54, 162, 235),
+    "motorcycle": (255, 205, 86),
+    "bus": (153, 102, 255),
+    "truck": (75, 192, 192),
+    "traffic light": (46, 204, 113),
+    "stop sign": (231, 76, 60),
+}
+DEFAULT_COLOR: tuple[int, int, int] = (200, 200, 200)
+
+FONT_CANDIDATES: list[str] = [
+    "/usr/share/fonts/truetype/inter/Inter-SemiBold.ttf",
+    "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
+    "/usr/share/fonts/opentype/noto/NotoSansCJK-Bold.ttc",
+    "/usr/share/fonts/truetype/ubuntu/Ubuntu-M.ttf",
+]
+
+
+def load_font(
+    path: Path | None, size: int
+) -> ImageFont.FreeTypeFont | ImageFont.ImageFont:
+    """`path` if given, else the first available system font, else PIL's default."""
+    for candidate in ([path] if path else []) + [Path(p) for p in FONT_CANDIDATES]:
+        if candidate.exists():
+            return ImageFont.truetype(str(candidate), size)
+    return ImageFont.load_default(size)
+
+
+def colorize_metric(depth_m: np.ndarray, max_depth: float, cmap: int) -> np.ndarray:
+    """Linear metres on a fixed 0..max_depth scale (near = warm) -> RGB uint8.
+
+    Beyond max_depth (and NaN) gets the far colour.
+    """
+    norm = 1.0 - np.clip(np.nan_to_num(depth_m, nan=max_depth) / max_depth, 0, 1)
+    bgr = cv2.applyColorMap((norm * 255).astype(np.uint8), cmap)
+    return np.ascontiguousarray(bgr[..., ::-1])
+
+
+def metric_legend(height: int, max_depth: float, cmap: int) -> np.ndarray:
+    """Vertical colour bar (max_depth at the top, 0 m at the bottom) with ticks in metres.
+
+    RGB uint8, even width; sizes scale with `height` (the original assumed 540 px).
+    """
+    scale = height / 540
+    width = max(2, round(110 * scale) // 2 * 2)
+    legend = np.full((height, width, 3), 30, np.uint8)
+    top, bottom = round(50 * scale), height - round(20 * scale)
+    x0, x1 = round(12 * scale), round(40 * scale)
+    ramp = np.linspace(max_depth, 0, bottom - top)[:, None].repeat(x1 - x0, 1)
+    legend[top:bottom, x0:x1] = colorize_metric(ramp, max_depth, cmap)
+    font_scale, thickness = 0.5 * scale, max(1, round(scale))
+    # At most ~8 ticks; beyond the table (max_depth > 800 m) fall back to an even split.
+    step = next(
+        (s for s in (0.5, 1, 2, 2.5, 5, 10, 20, 25, 50, 100) if max_depth / s <= 8),
+        max_depth / 8,
+    )
+    for value in np.arange(0, max_depth + 1e-6, step):
+        y = round(bottom - 1 - value / max_depth * (bottom - top - 1))
+        cv2.line(
+            legend, (x1, y), (x1 + round(6 * scale), y), (255, 255, 255), thickness
+        )
+        text = f"{value:g}" + ("+" if value >= max_depth else "")
+        cv2.putText(
+            legend,
+            text,
+            (x1 + round(10 * scale), y + round(5 * scale)),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            font_scale,
+            (255, 255, 255),
+            thickness,
+            cv2.LINE_AA,
+        )
+    cv2.putText(
+        legend,
+        "metres",
+        (round(8 * scale), round(30 * scale)),
+        cv2.FONT_HERSHEY_SIMPLEX,
+        0.55 * scale,
+        (255, 255, 255),
+        thickness,
+        cv2.LINE_AA,
+    )
+    return legend
+
+
+def format_label(
+    class_name: str, score: float, distance: float | None, spread: float | None = None
+) -> str:
+    """Box label, e.g. "truck 94% · 12.3 m ± 0.4" (spread optional) or "truck 94% · n/a"."""
+    if distance is None:
+        return f"{class_name} {score:.0%} · n/a"
+    text = f"{class_name} {score:.0%} · {distance:.1f} m"
+    return text if spread is None else f"{text} ± {spread:.1f}"
+
+
+@dataclass(frozen=True, slots=True)
+class BoxAnnotation:
+    """What to draw for one box."""
+
+    xyxy: tuple[float, float, float, float]  # frame pixels
+    class_name: str  # colour key and HUD count
+    score: float  # drawing order (strongest on top)
+    label: str
+    # sampled (shrunk) region, frame pixels
+    inner_xyxy: tuple[float, float, float, float] | None = None
+
+
+class Renderer:
+    """Draws boxes, label pills and a translucent HUD with PIL (anti-aliased text,
+    alpha blending), optionally next to a colourised depth panel and legend."""
+
+    def __init__(
+        self,
+        frame_w: int,
+        frame_h: int,
+        *,
+        title: str,
+        layout: Literal["overlay", "side-by-side"] = "overlay",
+        show_hud: bool = True,
+        max_depth: float = 30.0,
+        cmap: str = "turbo",
+        font_path: Path | None = None,
+    ) -> None:
+        if layout not in ("overlay", "side-by-side"):
+            raise ValueError(f"unknown layout {layout!r}")
+        try:
+            self._cmap = getattr(cv2, f"COLORMAP_{cmap.upper()}")
+        except AttributeError:
+            raise ValueError(f"unknown OpenCV colormap {cmap!r}") from None
+        self.frame_w, self.frame_h = frame_w, frame_h
+        self.layout = layout
+        self.max_depth = max_depth
+        self.title = title
+        self.show_hud = show_hud
+        scale = frame_h / 1080
+        self.box_width = max(2, round(3 * scale))
+        self.font = load_font(font_path, max(14, round(22 * scale)))
+        self.hud_title_font = load_font(font_path, max(16, round(26 * scale)))
+        self.pad = max(4, round(7 * scale))
+        self.radius = max(4, round(8 * scale))
+        self._legend = (
+            metric_legend(frame_h, max_depth, self._cmap)
+            if layout == "side-by-side"
+            else None
+        )
+
+    def output_size(self) -> tuple[int, int]:
+        """(width, height) of the rendered frames."""
+        if self._legend is None:
+            return self.frame_w, self.frame_h
+        return 2 * self.frame_w + self._legend.shape[1], self.frame_h
+
+    def render(
+        self,
+        frame_rgb: np.ndarray,
+        boxes: Sequence[BoxAnnotation],
+        hud_lines: Sequence[str],
+        depth_m: np.ndarray | None = None,
+    ) -> np.ndarray:
+        """Annotated frame of size `output_size()`; `depth_m` is required for side-by-side."""
+        left = self._draw(frame_rgb, boxes, hud_lines if self.show_hud else None)
+        if self._legend is None:
+            return left
+        if depth_m is None:
+            raise ValueError("side-by-side layout needs the depth map")
+        panel = cv2.resize(
+            colorize_metric(depth_m, self.max_depth, self._cmap),
+            (self.frame_w, self.frame_h),
+            interpolation=cv2.INTER_LINEAR,
+        )
+        return np.hstack([left, self._draw(panel, boxes, None), self._legend])
+
+    def _draw(
+        self,
+        image_rgb: np.ndarray,
+        boxes: Sequence[BoxAnnotation],
+        hud_lines: Sequence[str] | None,
+    ) -> np.ndarray:
+        base = Image.fromarray(image_rgb).convert("RGBA")
+        overlay = Image.new("RGBA", base.size, (0, 0, 0, 0))
+        d = ImageDraw.Draw(overlay)
+        # low-confidence boxes first so the strongest end up on top
+        for box in sorted(boxes, key=lambda b: b.score):
+            x1, y1, x2, y2 = box.xyxy
+            color = CLASS_COLORS.get(box.class_name, DEFAULT_COLOR)
+            d.rounded_rectangle(
+                [x1, y1, x2, y2],
+                radius=self.radius // 2,
+                outline=color + (255,),
+                width=self.box_width,
+                fill=color + (28,),
+            )
+            if box.inner_xyxy is not None:
+                d.rectangle(list(box.inner_xyxy), outline=(255, 255, 255, 200), width=1)
+            tw, th = d.textbbox((0, 0), box.label, font=self.font)[2:]
+            label_h = th + 2 * self.pad
+            ly = y1 - label_h - 2 if y1 - label_h - 2 > 0 else y1 + 2
+            lx = min(max(0, x1), base.width - tw - 2 * self.pad)
+            d.rounded_rectangle(
+                [lx, ly, lx + tw + 2 * self.pad, ly + label_h],
+                radius=self.radius,
+                fill=color + (225,),
+            )
+            d.text(
+                (lx + self.pad, ly + self.pad - 1),
+                box.label,
+                font=self.font,
+                fill=(15, 15, 20, 255),
+            )
+        if hud_lines is not None:
+            self._hud(d, hud_lines, Counter(b.class_name for b in boxes))
+        return np.asarray(Image.alpha_composite(base, overlay).convert("RGB"))
+
+    def _hud(
+        self, d: ImageDraw.ImageDraw, lines: Sequence[str], counts: Counter
+    ) -> None:
+        m = p = 2 * self.pad
+        title_h = d.textbbox((0, 0), self.title, font=self.hud_title_font)[3]
+        line_h = d.textbbox((0, 0), "Ag", font=self.font)[3] + self.pad
+        count_items = sorted(counts.items(), key=lambda kv: -kv[1])
+        width = (
+            max(
+                [d.textbbox((0, 0), s, font=self.font)[2] for s in lines]
+                + [d.textbbox((0, 0), self.title, font=self.hud_title_font)[2]]
+                + [
+                    d.textbbox((0, 0), f"{n}  {c}", font=self.font)[2] + 3 * self.pad
+                    for n, c in count_items
+                ]
+            )
+            + 2 * p
+        )
+        height = (
+            p
+            + title_h
+            + self.pad * 2
+            + line_h * (len(lines) + len(count_items))
+            + (self.pad if count_items else 0)
+            + p
+        )
+        d.rounded_rectangle(
+            [m, m, m + width, m + height],
+            radius=2 * self.radius,
+            fill=(12, 14, 20, 170),
+        )
+        y = m + p
+        d.text(
+            (m + p, y), self.title, font=self.hud_title_font, fill=(255, 255, 255, 255)
+        )
+        y += title_h + self.pad * 2
+        for s in lines:
+            d.text((m + p, y), s, font=self.font, fill=(210, 215, 225, 255))
+            y += line_h
+        if count_items:
+            y += self.pad
+            dot = line_h // 3
+            for n, c in count_items:
+                color = CLASS_COLORS.get(n, DEFAULT_COLOR)
+                cy = y + line_h // 2 - self.pad // 2
+                d.ellipse(
+                    [m + p, cy - dot // 2, m + p + dot, cy + dot // 2],
+                    fill=color + (255,),
+                )
+                d.text(
+                    (m + p + dot + self.pad * 2, y),
+                    f"{n}  {c}",
+                    font=self.font,
+                    fill=(255, 255, 255, 255),
+                )
+                y += line_h

@@ -1,0 +1,54 @@
+[project]
+name = "det-depth-distance"
+version = "0.1.0"
+description = "Per-object distance from RF-DETR boxes and Depth Anything 3 metric depth, rendered on video"
+readme = "README.md"
+requires-python = ">=3.11,<3.12"
+dependencies = [
+    "numpy<2",  # depth-anything-3 pins numpy<2
+    "opencv-python",
+    "pillow",
+]
+
+[project.optional-dependencies]
+# Heavy GPU stack, installed only on the inference host (gpu-host): uv sync --extra infer
+infer = [
+    "torch==2.8.0",
+    "torchvision==0.23.0",
+    "xformers==0.0.32.post2", # built against torch 2.8.0; used by depth-anything-3
+    "rfdetr",
+    "depth-anything-3",
+    "addict>=2.4.0",
+]
+
+[project.scripts]
+det-depth-distance = "det_depth_distance.cli:main"
+
+[dependency-groups]
+dev = ["pytest>=8", "ruff>=0.6"]
+
+[tool.uv.sources]
+torch = { index = "pytorch-cu128" }
+torchvision = { index = "pytorch-cu128" }
+xformers = { index = "pytorch-cu128" }
+rfdetr = { git = "https://github.com/roboflow/rf-detr", rev = "1f2af2ea2851a7a5a6b28bd055f99522d94f11a4" }
+depth-anything-3 = { git = "https://github.com/ByteDance-Seed/Depth-Anything-3", rev = "3d835ec1a5802d64a8b8b15f817a1ab54809bfe4" }
+
+[[tool.uv.index]]
+name = "pytorch-cu128"
+url = "https://download.pytorch.org/whl/cu128"
+explicit = true
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/det_depth_distance"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+
+[tool.ruff]
+# ruff >= 0.17 also formats Markdown code blocks; the task files hold signature sketches, not code.
+extend-exclude = ["docs"]
