@@ -11,18 +11,26 @@ Frames are inferred one per call: passing several images to an any-view
 model switches it to multi-view mode. torch / depth_anything_3 are imported
 lazily so the pure helpers (geometry, focal, unit conversion) run without
 the GPU stack. DA3_LOG_LEVEL defaults to WARN to silence per-call INFO logs.
+
+The model kind (and so `needs_intrinsics`) is decided at construction from
+the checkpoint's model_name, before loading, so relative models are refused
+and focal estimation is scheduled without loading the main model.
 """
 
 import json
 import os
 from collections.abc import Sequence
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
 from pathlib import Path
-from typing import Literal
+from typing import Any, Literal, get_args
 
 import numpy as np
 
-from det_depth_distance.distance import CameraIntrinsics, MapGeometry
+from det_depth_distance.core.components import DepthEstimator, LoadContext
+from det_depth_distance.core.options import ConfigError
+from det_depth_distance.core.registry import register
+from det_depth_distance.core.types import CameraIntrinsics, DepthResult, MapGeometry
+from det_depth_distance.runtime import package_version
 
 # Read by depth_anything_3's logger at import time, so it must be set before the lazy import.
 os.environ.setdefault("DA3_LOG_LEVEL", "WARN")
@@ -42,12 +50,13 @@ DEPTH_MODELS: dict[str, str] = {
     "da3nested-giant-large": "depth-anything/DA3NESTED-GIANT-LARGE",
     "da3nested-giant-large-1.1": "depth-anything/DA3NESTED-GIANT-LARGE-1.1",
 }
-PROCESS_RES_METHODS = (
+ProcessResMethod = Literal[
     "upper_bound_resize",
     "upper_bound_crop",
     "lower_bound_resize",
     "lower_bound_crop",
-)
+]
+PROCESS_RES_METHODS: tuple[str, ...] = get_args(ProcessResMethod)
 DA3_METRIC_SCALE = 300.0  # apply_metric_scaling(scale_factor=300.0)
 _PATCH = 14  # DA3 InputProcessor.PATCH_SIZE
 
@@ -123,11 +132,8 @@ def intrinsics_from_focal(focal_frame_px: float, geom: MapGeometry) -> CameraInt
 
     The principal point is assumed at the frame centre.
     """
-    return CameraIntrinsics(
-        fx=focal_frame_px * geom.sx,
-        fy=focal_frame_px * geom.sy,
-        cx=geom.frame_w / 2 * geom.sx + geom.ox,
-        cy=geom.frame_h / 2 * geom.sy + geom.oy,
+    return geom.scale_intrinsics(
+        CameraIntrinsics.centered(focal_frame_px, geom.frame_w, geom.frame_h)
     )
 
 
@@ -147,16 +153,6 @@ def to_metres(
         focal = (intrinsics.fx + intrinsics.fy) / 2
         return (raw * (focal / DA3_METRIC_SCALE)).astype(np.float32, copy=False)
     raise ValueError("relative-depth models cannot produce metric distances")
-
-
-@dataclass(frozen=True, slots=True)
-class DepthFrame:
-    """Metric depth of one frame at depth-map resolution."""
-
-    depth_m: np.ndarray  # (map_h, map_w) float32, metres along the optical axis (z)
-    intrinsics: CameraIntrinsics  # at depth-map resolution
-    # bool (map_h, map_w), or None when the model has no sky head
-    sky: np.ndarray | None
 
 
 def _load_da3(repo_id: str, device: str, cache_dir: str | None):
@@ -185,12 +181,12 @@ def estimate_focal_frame_px(
     released (and the CUDA cache emptied) before returning.
 
     Raises:
-        ValueError: no frames were given, or the model has no camera head
+        ConfigError: no frames were given, or the model has no camera head
             (prediction.intrinsics is None).
     """
     if not frames:
-        raise ValueError(
-            "no frames to estimate the focal from (check --start/--duration)"
+        raise ConfigError(
+            "no frames to estimate the focal from (check source.start/duration)"
         )
     import torch
 
@@ -205,69 +201,91 @@ def estimate_focal_frame_px(
         del net
         torch.cuda.empty_cache()
     if pred.intrinsics is None:
-        raise ValueError(
-            f"{model} has no camera head; pick an any-view model for --focal-model"
+        raise ConfigError(
+            f"{model} has no camera head; pick an any-view model for camera.estimate.model"
         )
     k = np.asarray(pred.intrinsics, dtype=np.float64)
     return float(np.median((k[:, 0, 0] / geom.sx + k[:, 1, 1] / geom.sy) / 2))
 
 
-class DepthEstimator:
-    """Single-frame DA3 inference returning `DepthFrame` in metres.
+@register("depth", "da3")
+class DA3Depth(DepthEstimator):
+    """Single-frame DA3 inference returning `DepthResult` in metres.
 
-    Raises at construction if the model is relative, or if a DA3METRIC model
-    is given no focal length. Checks on the first frame that the depth map
-    shape matches `geometry` (guards the InputProcessor replica).
+    Relative models are refused at construction. DA3METRIC needs frame
+    intrinsics in the LoadContext (scaled once to the map); NESTED models
+    predict K per frame and need none.
     """
 
-    def __init__(
-        self,
-        model: str,
-        *,
-        frame_size: tuple[int, int],
-        device: str,
-        process_res: int = 504,
-        process_res_method: str = "upper_bound_resize",
-        focal_frame_px: float | None = None,
-        cache_dir: str | None = None,
-    ) -> None:
-        self.repo_id = resolve_depth_model(model)
-        self.geometry = da3_map_geometry(*frame_size, process_res, process_res_method)
-        self._process_res = process_res
-        self._process_res_method = process_res_method
-        self._net = _load_da3(self.repo_id, device, cache_dir)
-        self.model_name: str = self._net.model_name
-        self.kind = classify_depth_model(self.model_name)
-        if self.kind == "relative":
-            raise ValueError(
-                f"{self.repo_id} ({self.model_name}) predicts relative depth only"
-            )
-        if self.kind == "metric_focal" and not focal_frame_px:
-            raise ValueError(
-                f"{self.model_name} needs a focal length (--focal-px or estimation)"
-            )
-        # Constant map-resolution K from the given focal; None means K is predicted per frame.
-        self.fixed_intrinsics = (
-            intrinsics_from_focal(focal_frame_px, self.geometry)
-            if self.kind == "metric_focal"
-            else None
-        )
-        self._shape_checked = False
+    @dataclass(frozen=True, slots=True)
+    class Options:
+        model: str = "da3metric-large"  # alias (DEPTH_MODELS), HF repo id or local dir
+        process_res: int = 504
+        process_res_method: ProcessResMethod = "upper_bound_resize"
+        hf_cache: Path | None = None  # Hugging Face cache dir (default: HF_HUB_CACHE)
 
-    def __call__(self, rgb: np.ndarray) -> DepthFrame:
+        def __post_init__(self) -> None:
+            if self.process_res < 14:
+                raise ValueError("process_res must be >= 14 (DA3 patch size)")
+
+    def __init__(self, options: Options, *, name: str | None = None) -> None:
+        self.repo_id = resolve_depth_model(options.model)
+        # Kind from the checkpoint's own model_name when it is a local dir (dir
+        # names may say nothing), so it is known without loading the model.
+        self.kind: DepthKind = classify_depth_model(peek_model_name(self.repo_id))
+        if self.kind == "relative":
+            raise ConfigError(
+                f"model: {self.repo_id} predicts relative depth only; use a metric model"
+            )
+        super().__init__(options, name=name)
+        self.model_name: str | None = None  # checkpoint's model_name, after load
+        # Constant map-resolution K from the given focal; None means K is predicted per frame.
+        self.fixed_intrinsics: CameraIntrinsics | None = None
+        self._net = None
+
+    def default_name(self) -> str:
+        return self.repo_id.rstrip("/").split("/")[-1].lower()
+
+    @property
+    def needs_intrinsics(self) -> bool:
+        return self.kind == "metric_focal"
+
+    def _load(self, ctx: LoadContext) -> None:
+        if self.needs_intrinsics and ctx.intrinsics is None:
+            raise ConfigError(
+                f"{self.repo_id} needs a focal length: set camera.focal_px or camera.estimate"
+            )
+        opts = self.options
+        geometry = da3_map_geometry(
+            *ctx.frame_size, opts.process_res, opts.process_res_method
+        )
+        net = _load_da3(
+            self.repo_id, ctx.device, str(opts.hf_cache) if opts.hf_cache else None
+        )
+        kind = classify_depth_model(net.model_name)
+        if kind != self.kind:
+            raise ConfigError(
+                f"model: checkpoint {net.model_name} is {kind}, but {self.repo_id} "
+                f"looked {self.kind} before loading"
+            )
+        self._net, self.model_name, self._geometry = net, net.model_name, geometry
+        if self.needs_intrinsics:
+            self.fixed_intrinsics = geometry.scale_intrinsics(ctx.intrinsics)
+
+    def _close(self) -> None:
+        import torch
+
+        self._net = None
+        self.fixed_intrinsics = None
+        torch.cuda.empty_cache()
+
+    def _predict(self, rgb: np.ndarray) -> DepthResult:
         pred = self._net.inference(
             [rgb],
-            process_res=self._process_res,
-            process_res_method=self._process_res_method,
+            process_res=self.options.process_res,
+            process_res_method=self.options.process_res_method,
         )
         raw = np.asarray(pred.depth[0], dtype=np.float32)
-        if not self._shape_checked:
-            expected = (self.geometry.map_h, self.geometry.map_w)
-            if raw.shape != expected:
-                raise RuntimeError(
-                    f"DA3 depth shape {raw.shape} != replicated geometry {expected}"
-                )
-            self._shape_checked = True
         if self.kind == "metric_focal":
             intrinsics = self.fixed_intrinsics
         else:  # NESTED scales with its own per-frame focal, so report the predicted K
@@ -276,4 +294,20 @@ class DepthEstimator:
                 float(k[0, 0]), float(k[1, 1]), float(k[0, 2]), float(k[1, 2])
             )
         sky = None if pred.sky is None else np.asarray(pred.sky[0], dtype=bool)
-        return DepthFrame(to_metres(raw, self.kind, intrinsics), intrinsics, sky)
+        return DepthResult(
+            to_metres(raw, self.kind, intrinsics), intrinsics, sky, self._geometry
+        )
+
+    def _describe(self) -> dict[str, Any]:
+        return {
+            "repo_id": self.repo_id,
+            "model_name": self.model_name,
+            "kind": self.kind,
+            "process_res": self.options.process_res,
+            "process_res_method": self.options.process_res_method,
+            "geometry": asdict(self._geometry) if self._geometry else None,
+            "fixed_intrinsics": asdict(self.fixed_intrinsics)
+            if self.fixed_intrinsics
+            else None,
+            "version": package_version("depth-anything-3"),
+        }

@@ -7,6 +7,7 @@ colormaps (BGR) are converted on output. The depth panel is resized to the
 exact frame size so the same box coordinates apply to both panels.
 """
 
+import zlib
 from collections import Counter
 from collections.abc import Sequence
 from dataclasses import dataclass
@@ -17,18 +18,45 @@ import cv2
 import numpy as np
 from PIL import Image, ImageDraw, ImageFont
 
-# One distinct, readable colour per driving class (RGB); other classes fall back to a neutral tone.
+# One distinct, readable colour per driving class of the COCO and Objects365
+# presets (RGB); any other key (class or detector name) gets a stable PALETTE colour.
 CLASS_COLORS: dict[str, tuple[int, int, int]] = {
     "person": (255, 99, 132),
     "bicycle": (255, 159, 64),
     "car": (54, 162, 235),
+    "suv": (90, 130, 255),
+    "van": (120, 200, 255),
+    "sports car": (0, 200, 230),
     "motorcycle": (255, 205, 86),
+    "tricycle": (240, 230, 140),
     "bus": (153, 102, 255),
     "truck": (75, 192, 192),
+    "pickup truck": (60, 220, 170),
+    "machinery vehicle": (190, 160, 110),
+    "fire truck": (255, 120, 90),
+    "ambulance": (250, 250, 250),
     "traffic light": (46, 204, 113),
+    "traffic sign": (255, 140, 0),
     "stop sign": (231, 76, 60),
+    "crosswalk sign": (240, 100, 200),
+    "traffic cone": (255, 120, 20),
+    "street lights": (180, 180, 255),
+    "fire hydrant": (220, 60, 110),
 }
-DEFAULT_COLOR: tuple[int, int, int] = (200, 200, 200)
+PALETTE: list[tuple[int, int, int]] = [
+    (230, 25, 75),
+    (60, 180, 75),
+    (255, 225, 25),
+    (0, 130, 200),
+    (245, 130, 48),
+    (145, 30, 180),
+    (70, 240, 240),
+    (240, 50, 230),
+    (210, 245, 60),
+    (250, 190, 212),
+    (0, 128, 128),
+    (220, 190, 255),
+]
 
 FONT_CANDIDATES: list[str] = [
     "/usr/share/fonts/truetype/inter/Inter-SemiBold.ttf",
@@ -36,6 +64,17 @@ FONT_CANDIDATES: list[str] = [
     "/usr/share/fonts/opentype/noto/NotoSansCJK-Bold.ttc",
     "/usr/share/fonts/truetype/ubuntu/Ubuntu-M.ttf",
 ]
+
+
+def color_for(key: str) -> tuple[int, int, int]:
+    """Colour of a class or detector name: CLASS_COLORS, else a stable PALETTE entry.
+
+    crc32 (not hash()) keeps colours identical across processes and runs.
+    """
+    return (
+        CLASS_COLORS.get(key.lower())
+        or PALETTE[zlib.crc32(key.encode()) % len(PALETTE)]
+    )
 
 
 def load_font(
@@ -120,11 +159,17 @@ class BoxAnnotation:
     """What to draw for one box."""
 
     xyxy: tuple[float, float, float, float]  # frame pixels
-    class_name: str  # colour key and HUD count
+    class_name: str
     score: float  # drawing order (strongest on top)
     label: str
     # sampled (shrunk) region, frame pixels
     inner_xyxy: tuple[float, float, float, float] | None = None
+    # colour and HUD-count key (e.g. the detector name); None -> class_name
+    color_key: str | None = None
+
+    @property
+    def key(self) -> str:
+        return self.color_key or self.class_name
 
 
 class Renderer:
@@ -204,7 +249,7 @@ class Renderer:
         # low-confidence boxes first so the strongest end up on top
         for box in sorted(boxes, key=lambda b: b.score):
             x1, y1, x2, y2 = box.xyxy
-            color = CLASS_COLORS.get(box.class_name, DEFAULT_COLOR)
+            color = color_for(box.key)
             d.rounded_rectangle(
                 [x1, y1, x2, y2],
                 radius=self.radius // 2,
@@ -230,7 +275,7 @@ class Renderer:
                 fill=(15, 15, 20, 255),
             )
         if hud_lines is not None:
-            self._hud(d, hud_lines, Counter(b.class_name for b in boxes))
+            self._hud(d, hud_lines, Counter(b.key for b in boxes))
         return np.asarray(Image.alpha_composite(base, overlay).convert("RGB"))
 
     def _hud(
@@ -276,7 +321,7 @@ class Renderer:
             y += self.pad
             dot = line_h // 3
             for n, c in count_items:
-                color = CLASS_COLORS.get(n, DEFAULT_COLOR)
+                color = color_for(n)
                 cy = y + line_h // 2 - self.pad // 2
                 d.ellipse(
                     [m + p, cy - dot // 2, m + p + dot, cy + dot // 2],

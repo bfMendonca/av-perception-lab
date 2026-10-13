@@ -1,9 +1,9 @@
 # AGENTS.md — det-depth-distance
 
 Guia autoritativo para desenvolvedores e agentes de IA que trabalham neste
-repositório. Protótipo de pesquisa em Python que executa a detecção RF-DETR
-e a profundidade métrica Depth Anything 3 sobre os mesmos quadros de um
-vídeo e estima, para cada caixa detectada, a distância do objeto à câmera a
+repositório. Protótipo de pesquisa em Python que executa um ou mais
+detectores (RF-DETR, YOLO26) e a profundidade métrica Depth Anything 3 sobre
+os mesmos quadros de um vídeo e estima, para cada caixa detectada, a distância do objeto à câmera a
 partir de estatísticas robustas dos pixels de profundidade dentro da caixa,
 gerando um vídeo anotado. A inferência roda no servidor GPU `gpu-host`
 (sincronizado por rsync); o desenvolvimento e os testes unitários rodam
@@ -36,12 +36,15 @@ documentação) não exigem atualização.
 # Local: ambiente leve (numpy, OpenCV, Pillow + pytest/ruff)
 uv sync
 
-# Servidor GPU: envia o código e instala a stack de inferência (torch cu128, rfdetr, depth-anything-3)
+# Servidor GPU: envia o código e instala a stack de inferência (torch cu128, rfdetr, depth-anything-3, ultralytics)
 utils/sync_gpu_host.sh push
 ssh gpu-host 'cd ~/dev/det-depth-distance && ~/.local/bin/uv sync --extra infer'
 
 # Executa o pipeline no servidor (`uv sync` sem --extra infer removeria a stack GPU)
-ssh gpu-host 'cd ~/dev/det-depth-distance && ~/.local/bin/uv run --extra infer python -m det_depth_distance _testbed/data/VIDEO.MOV --hf-cache ~/dev/depth-anything-3/_testbed/weights/hf'
+ssh gpu-host 'cd ~/dev/det-depth-distance && ~/.local/bin/uv run --extra infer python -m det_depth_distance --config configs/rfdetr_da3.yaml _testbed/data/VIDEO.MOV'
+# Ajustes rápidos sem editar o YAML; lista de adaptadores e opções
+#   ... --config configs/multi_detector.yaml --set source.max_frames=300 --set render.show_stats=true
+#   ... --list-models
 
 # Traz as saídas de volta para o _testbed/ local
 utils/sync_gpu_host.sh pull [RUN_DIR]
@@ -50,8 +53,17 @@ utils/sync_gpu_host.sh pull [RUN_DIR]
 ## Comandos de Teste
 
 ```bash
-uv run pytest
+uv run pytest                      # local: unitários, sem GPU (pula -m gpu)
+# gpu-host: contratos dos adaptadores + regressão (precisa de --extra infer e pesos)
+ssh gpu-host 'cd ~/dev/det-depth-distance && ~/.local/bin/uv run --extra infer pytest -m gpu -v'
 ```
+
+Marcador `gpu` (`[tool.pytest.ini_options]`: `addopts = "-m 'not gpu'"`):
+todo teste sob `tests/gpu/` é marcado automaticamente pelo
+`tests/gpu/conftest.py`, então o `uv run pytest` local nunca roda testes de
+GPU; `-m gpu` (a última opção `-m` vence) os seleciona no servidor. A
+regressão compara 60 quadros de IMG_4021 com a referência da `task_0001`
+congelada em `_testbed/regression/` (ou `$DDD_REGRESSION_REF`).
 
 ## Lint & Formatação
 
@@ -67,9 +79,10 @@ uv run ruff format .
 - **Formatação**: Ruff com defaults (88 colunas, aspas duplas), sem seção de
   configuração no `pyproject.toml` enquanto os defaults bastarem.
 - **Imports**: 3 grupos PEP 8 (stdlib, terceiros, locais), ordenados.
-  Imports pesados (`torch`, `rfdetr`, `depth_anything_3`) ficam dentro dos
-  módulos que precisam deles, para que os módulos numpy-puros (ex.: cálculo
-  de distância) sejam importáveis e testáveis sem a stack GPU.
+  Imports pesados (`torch`, `rfdetr`, `depth_anything_3`, `ultralytics`)
+  ficam dentro do `_load` dos adaptadores (e de `runtime.DeviceMonitor`),
+  para que `core/`, a configuração e o cálculo de distância sejam
+  importáveis e testáveis sem a stack GPU.
 - **Nomenclatura**:
 
   | Elemento | Padrão | Exemplo |
@@ -79,17 +92,24 @@ uv run ruff format .
   | Constantes | `UPPER_SNAKE` | `DEPTH_MODELS` |
   | Helpers privados | prefixo `_` | `_scale_box()` |
   | Booleanos | `is_*` / `has_*` | `is_metric` |
-  | Argumentos de CLI | `--kebab-case` | `--box-shrink` |
+  | Argumentos de CLI | `--kebab-case` | `--list-models` |
+  | Chaves do YAML | `snake_case` | `box_shrink` |
 
 - **Docstrings/comentários**: em inglês. Todo módulo tem docstring com o
   propósito e o contrato; comentários explicam o "porquê" (ex.: convenções
   de escala do modelo métrico), não o "quê".
-- **Organização**: código em `src/det_depth_distance/`, um módulo por
-  responsabilidade (I/O de vídeo, detector, profundidade, distância,
-  renderização, CLI). Scripts utilitários bash em `utils/`.
+- **Organização**: código em `src/det_depth_distance/`: `core/` (contratos,
+  ABCs, registro, rótulos, agregação, pipeline — sem frameworks),
+  `adapters/` (um módulo por framework, registrado com `@register` e listado
+  em `ADAPTER_MODULES`), `io/` (vídeo, fontes, sinks), e módulos de topo
+  `camera.py`, `config.py`, `distance.py`, `render.py`, `runtime.py`,
+  `cli.py`. Configurações de exemplo em `configs/`. Scripts utilitários
+  bash em `utils/`.
 - **Testes**: pytest em `tests/`, espelhando os módulos
   (`distance.py` → `tests/test_distance.py`). Testes unitários não dependem
-  de GPU nem de pesos de modelos.
+  de GPU nem de pesos de modelos; `Instances` de teste são criadas pela
+  fixture-fábrica `make_instances` (`tests/conftest.py`). Testes que precisam
+  de GPU/pesos ficam em `tests/gpu/` (marcador `gpu`).
 
 ---
 
@@ -251,14 +271,23 @@ Commits seguem **Conventional Commits** com assunto em **pt-BR**, no formato:
 
   | Escopo | Cobre |
   |--------|-------|
-  | `core` | `src/det_depth_distance/` |
-  | `tests` | `tests/` |
+  | `core` | `src/det_depth_distance/core/` (contratos, ABCs, registro, rótulos, agregação, pipeline) |
+  | `adapters` | `src/det_depth_distance/adapters/` (invólucros de framework) |
+  | `io` | `src/det_depth_distance/io/` (vídeo, fontes, sinks) |
+  | `distance` | `src/det_depth_distance/distance.py` (núcleo numpy de distância) |
+  | `camera` | `src/det_depth_distance/camera.py` (intrínsecos) |
+  | `render` | `src/det_depth_distance/render.py` |
+  | `cli` | `src/det_depth_distance/cli.py`, `__main__.py`, `__init__.py`, `config.py`, `runtime.py` (composição, configuração, ambiente) |
+  | `configs` | `configs/` |
+  | `tests` | `tests/` (inclui `tests/gpu/`) |
   | `utils` | `utils/` |
   | `deps` | `pyproject.toml`, `uv.lock` |
   | `docs` | `docs/`, `README.md`, `AGENTS.md`, `CLAUDE.md`, `DESCRIPTION.md`, `CHANGELOG.md` |
 
   Omitir o escopo quando a mudança atravessa muitos componentes; nunca
-  inventar escopo fora desta lista.
+  inventar escopo fora desta lista. A task que cria uma pasta ou módulo de
+  topo novo em `src/det_depth_distance/` atualiza esta tabela na mesma
+  entrega.
 - Assunto no **imperativo** (`adicionar`, `corrigir`, `atualizar`,
   `remover`), primeira letra minúscula, sem ponto final.
 - Ao trabalhar numa task documentada, referenciá-la no assunto ou corpo:

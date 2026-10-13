@@ -1,13 +1,14 @@
 [project]
 name = "det-depth-distance"
 version = "0.1.0"
-description = "Per-object distance from RF-DETR boxes and Depth Anything 3 metric depth, rendered on video"
+description = "Per-object distance to the camera from pluggable detectors and metric depth models, rendered on video"
 readme = "README.md"
 requires-python = ">=3.11,<3.12"
 dependencies = [
     "numpy<2",  # depth-anything-3 pins numpy<2
     "opencv-python",
     "pillow",
+    "pyyaml>=6",
 ]
 
 [project.optional-dependencies]
@@ -19,6 +20,7 @@ infer = [
     "rfdetr",
     "depth-anything-3",
     "addict>=2.4.0",
+    "ultralytics==8.4.175",
 ]
 
 [project.scripts]
@@ -48,6 +50,9 @@ packages = ["src/det_depth_distance"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+# GPU tests (tests/gpu/, marked automatically by its conftest) run only on gpu-host: pytest -m gpu
+markers = ["gpu: needs CUDA, the infer extra and model weights (gpu-host)"]
+addopts = "-m 'not gpu'"
 
 [tool.ruff]
 # ruff >= 0.17 also formats Markdown code blocks; the task files hold signature sketches, not code.

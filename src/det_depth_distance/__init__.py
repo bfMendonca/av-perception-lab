@@ -1,3 +1,3 @@
-"""Per-object distance estimation: RF-DETR detections combined with Depth Anything 3 metric depth."""
+"""Per-object distance to the camera from pluggable detectors and metric depth models, rendered on video."""
 
 __version__ = "0.1.0"

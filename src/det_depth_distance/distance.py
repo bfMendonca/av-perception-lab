@@ -16,6 +16,10 @@ from typing import Literal
 
 import numpy as np
 
+# Contract types live in core.types; imported here (and so still importable from
+# this module) because the distance math is expressed with them.
+from det_depth_distance.core.types import CameraIntrinsics, MapGeometry
+
 OutlierMethod = Literal["none", "iqr", "mad", "sigma"]
 DistanceType = Literal["z", "euclidean"]
 DEFAULT_OUTLIER_K: dict[str, float] = {
@@ -52,55 +56,6 @@ _PERCENTILE_RE = re.compile(r"p(\d+(?:\.\d+)?)")
 _TRIM_FRACTION = 0.1  # per side, for the "trimmed" statistic
 _MODE_BIN_M = 0.25
 _MODE_MIN_PEAK = 0.2  # a histogram peak counts if it holds >= 20 % of the tallest bin
-
-
-@dataclass(frozen=True, slots=True)
-class MapGeometry:
-    """Per-axis affine from frame pixels to depth-map pixels.
-
-    `x_map = x * sx + ox`, `y_map = y * sy + oy`, applied to continuous box
-    edges. sx != sy in general (DA3 rounds each side to a multiple of 14), and
-    ox/oy are negative crop offsets for the *_crop processing methods.
-    """
-
-    frame_w: int
-    frame_h: int
-    map_w: int
-    map_h: int
-    sx: float
-    sy: float
-    ox: float = 0.0
-    oy: float = 0.0
-
-    def frame_to_map(self, xyxy: Sequence[float]) -> tuple[float, float, float, float]:
-        """Map box edges (x0, y0, x1, y1) from frame to depth-map coordinates."""
-        x0, y0, x1, y1 = xyxy
-        return (
-            x0 * self.sx + self.ox,
-            y0 * self.sy + self.oy,
-            x1 * self.sx + self.ox,
-            y1 * self.sy + self.oy,
-        )
-
-    def map_to_frame(self, xyxy: Sequence[float]) -> tuple[float, float, float, float]:
-        """Inverse of `frame_to_map`."""
-        x0, y0, x1, y1 = xyxy
-        return (
-            (x0 - self.ox) / self.sx,
-            (y0 - self.oy) / self.sy,
-            (x1 - self.ox) / self.sx,
-            (y1 - self.oy) / self.sy,
-        )
-
-
-@dataclass(frozen=True, slots=True)
-class CameraIntrinsics:
-    """Pinhole intrinsics in pixels, expressed at the depth-map resolution."""
-
-    fx: float
-    fy: float
-    cx: float
-    cy: float
 
 
 def parse_stat(stat: str) -> str:

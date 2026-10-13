@@ -16,6 +16,8 @@ from typing import Any, Self
 
 import numpy as np
 
+from det_depth_distance.core.types import Frame
+
 
 @dataclass(frozen=True, slots=True)
 class VideoInfo:
@@ -29,15 +31,6 @@ class VideoInfo:
     n_frames: int  # 0 = unknown
     has_audio: bool
     rotation: int  # degrees
-
-
-@dataclass(frozen=True, slots=True)
-class VideoFrame:
-    """One decoded frame."""
-
-    index: int  # index in the source video
-    t: float  # seconds from the start of the source video
-    rgb: np.ndarray  # (H, W, 3) uint8
 
 
 def _parse_probe(path: Path, payload: dict[str, Any]) -> VideoInfo:
@@ -97,7 +90,7 @@ def read_frames(
     duration: float = 0.0,
     max_frames: int = 0,
     stride: int = 1,
-) -> Iterator[VideoFrame]:
+) -> Iterator[Frame]:
     """Decode RGB frames from `start` (s) for `duration` (s, 0 = to the end).
 
     Keeps every `stride`-th frame and stops after `max_frames` kept frames
@@ -138,7 +131,7 @@ def read_frames(
                 rgb = np.frombuffer(bytearray(buf), np.uint8).reshape(
                     info.height, info.width, 3
                 )
-                yield VideoFrame(first + decoded, start + decoded / info.fps, rgb)
+                yield Frame(first + decoded, start + decoded / info.fps, rgb)
                 kept += 1
                 if max_frames and kept >= max_frames:
                     return

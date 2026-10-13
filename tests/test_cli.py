@@ -1,101 +1,84 @@
-import numpy as np
+import subprocess
+import sys
+
 import pytest
+import yaml
 
-from det_depth_distance.cli import (
-    build_parser,
-    latency_stats,
-    main,
-    make_run_dir,
-    process_frame,
-)
-from det_depth_distance.depth import DepthFrame
-from det_depth_distance.detector import Detections
-from det_depth_distance.distance import CameraIntrinsics, DistanceConfig, MapGeometry
+from det_depth_distance import cli
+from det_depth_distance.cli import build_parser, main
 
 
-class FakeDetector:
-    def __call__(self, rgb):
-        return Detections(
-            np.array([[0, 0, 100, 100], [0, 0, 20, 100]], dtype=np.float32),
-            np.array([0.9, 0.6], dtype=np.float32),
-            np.array([3, 1]),
-            ("car", "person"),
-        )
-
-
-class FakeDepth:
-    geometry = MapGeometry(100, 100, 100, 100, 1.0, 1.0)
-
-    def __call__(self, rgb):
-        depth = np.full((100, 100), 40.0, dtype=np.float32)
-        depth[:, 20:80] = 10.0
-        sky = np.zeros((100, 100), dtype=bool)
-        sky[:, :20] = True  # the "person" box is all sky
-        return DepthFrame(depth, CameraIntrinsics(50.0, 50.0, 50.0, 50.0), sky)
-
-
-def test_process_frame_excludes_sky():
-    cfg = DistanceConfig(box_shrink=0.0)
-    frame = np.zeros((100, 100, 3), np.uint8)
-    result = process_frame(frame, FakeDetector(), FakeDepth(), cfg, exclude_sky=True)
-    assert len(result.stats) == 2
-    assert result.stats[0].distance == pytest.approx(10.0)
-    assert result.stats[1].distance is None
-    assert set(result.timings_ms) == {"det", "depth", "dist"}
-
-    result = process_frame(frame, FakeDetector(), FakeDepth(), cfg, exclude_sky=False)
-    assert result.stats[1].distance == pytest.approx(40.0)
-
-
-def test_parser_defaults_and_validation():
-    args = build_parser().parse_args(["clip.mov"])
-    assert (args.det_model, args.depth_model, args.distance_stat) == (
-        "large",
-        "da3metric-large",
-        "median",
-    )
-    assert args.exclude_sky and args.layout == "overlay" and args.max_depth == 30.0
-    assert (
-        build_parser()
-        .parse_args(["clip.mov", "--no-exclude-sky", "--distance-stat", "p30"])
-        .distance_stat
-        == "p30"
-    )
-    with pytest.raises(SystemExit):
-        build_parser().parse_args(["clip.mov", "--distance-stat", "p100"])
-    with pytest.raises(SystemExit):
-        build_parser().parse_args(["clip.mov", "--det-model", "base"])
-
-
-@pytest.mark.parametrize(
-    "bad",
-    [
-        ["--stride", "0"],
-        ["--max-frames", "-1"],
-        ["--start", "-1"],
-        ["--focal-px", "-1400"],
-        ["--focal-frames", "0"],
-        ["--process-res", "10"],
-        ["--max-depth", "0"],
-    ],
-)
-def test_main_rejects_invalid_numbers_before_loading_models(tmp_path, bad):
+@pytest.fixture
+def config(tmp_path):
     video = tmp_path / "clip.mov"
     video.touch()
+    path = tmp_path / "run.yaml"
+    path.write_text(
+        yaml.safe_dump(
+            {
+                "source": {"video": str(video)},
+                "detectors": [{"type": "rfdetr"}],
+                "depth": {"type": "da3"},
+            }
+        )
+    )
+    return path
+
+
+def test_parser():
+    args = build_parser().parse_args(
+        ["clip.mov", "--config", "run.yaml", "--set", "a=1", "--set", "b.c=2"]
+    )
+    assert str(args.video) == "clip.mov" and str(args.config) == "run.yaml"
+    assert args.overrides == ["a=1", "b.c=2"] and not args.list_models
+    assert build_parser().parse_args(["--list-models"]).video is None
+    with pytest.raises(SystemExit):
+        build_parser().parse_args(["--det-model", "large"])  # old flags are gone
+
+
+def test_list_models(capsys):
+    assert main(["--list-models"]) == 0
+    out = capsys.readouterr().out
+    for name in (
+        "rfdetr:",
+        "yolo:",
+        "da3:",
+        "concat:",
+        "weights (required)",
+        "variant='large'",
+    ):
+        assert name in out
+
+
+def test_config_is_required():
     with pytest.raises(SystemExit) as exc:
-        main([str(video), *bad])
+        main([])
     assert exc.value.code == 2
 
 
-def test_latency_stats():
-    assert latency_stats([]) == {}
-    s = latency_stats([1.0, 2.0, 3.0])
-    assert s["mean"] == 2.0 and s["min"] == 1.0 and s["max"] == 3.0
+def test_configuration_errors_exit_with_code_2(tmp_path, config, capsys, monkeypatch):
+    def no_models(*args, **kwargs):
+        raise AssertionError("a model was about to be loaded")
+
+    monkeypatch.setattr(cli.Pipeline, "setup", no_models)
+    monkeypatch.setattr(cli.Pipeline, "load", no_models)
+    assert main(["--config", str(tmp_path / "nope.yaml")]) == 2
+    assert main(["--config", str(config), str(tmp_path / "missing.mov")]) == 2
+    assert "video not found" in capsys.readouterr().err
+    # Ported --process-res 10: validated by DA3Depth.Options, before any load.
+    assert main(["--config", str(config), "--set", "depth.process_res=10"]) == 2
+    assert "depth: process_res must be >= 14" in capsys.readouterr().err
+    assert main(["--config", str(config), "--set", "source.stride=0"]) == 2
 
 
-def test_make_run_dir(tmp_path):
-    run_dir = make_run_dir(
-        tmp_path / "out", ["IMG_4021", "rfdetr-large", "", "da3metric-large"]
+def test_help_without_torch():
+    code = (
+        "import sys; from det_depth_distance.cli import main\n"
+        "try:\n    main(['--help'])\nexcept SystemExit:\n    pass\n"
+        "assert 'torch' not in sys.modules"
     )
-    assert run_dir.is_dir()
-    assert run_dir.name.endswith("_IMG_4021_rfdetr-large_da3metric-large")
+    out = subprocess.run(
+        [sys.executable, "-c", code], check=False, capture_output=True, text=True
+    )
+    assert out.returncode == 0, out.stderr
+    assert "--config" in out.stdout

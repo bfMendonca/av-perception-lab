@@ -3,8 +3,11 @@ import numpy as np
 import pytest
 
 from det_depth_distance.render import (
+    CLASS_COLORS,
+    PALETTE,
     BoxAnnotation,
     Renderer,
+    color_for,
     colorize_metric,
     format_label,
     metric_legend,
@@ -59,3 +62,29 @@ def test_side_by_side_render():
 def test_bad_cmap():
     with pytest.raises(ValueError):
         Renderer(160, 120, title="x", cmap="nope")
+
+
+def test_color_for():
+    assert color_for("car") == CLASS_COLORS["car"] == color_for("Car")
+    assert color_for("pickup truck") == CLASS_COLORS["pickup truck"]
+    # Unknown keys (e.g. detector names) get a stable palette colour.
+    assert color_for("rfdetr-large") in PALETTE
+    assert color_for("rfdetr-large") == color_for("rfdetr-large")
+
+
+def test_color_key_changes_colour_and_hud_count():
+    by_class = BoxAnnotation((10.0, 20.0, 60.0, 70.0), "car", 0.9, "car")
+    by_source = BoxAnnotation(
+        (10.0, 20.0, 60.0, 70.0), "car", 0.9, "car", color_key="yolo26l-objv1-150"
+    )
+    assert by_class.key == "car" and by_source.key == "yolo26l-objv1-150"
+    r = Renderer(160, 120, title="test", show_hud=False)
+    frame = np.zeros((120, 160, 3), np.uint8)
+    assert not np.array_equal(
+        r.render(frame, [by_class], []), r.render(frame, [by_source], [])
+    )
+    r = Renderer(160, 120, title="test")
+    counts = []
+    r._hud = lambda d, lines, c: counts.append(c)
+    r.render(frame, [by_source, by_source], ["line"])
+    assert counts == [{"yolo26l-objv1-150": 2}]
