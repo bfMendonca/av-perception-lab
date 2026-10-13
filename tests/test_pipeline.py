@@ -2,6 +2,7 @@ from dataclasses import dataclass
 
 import numpy as np
 import pytest
+from test_components import FakeRefiner, FakeSemantic
 
 from det_depth_distance.camera import IntrinsicsProvider, IntrinsicsResult
 from det_depth_distance.config import AgreementConfig
@@ -21,7 +22,11 @@ from det_depth_distance.core.types import (
     MapGeometry,
     Provenance,
 )
-from det_depth_distance.distance import DistanceConfig, box_depth_stats
+from det_depth_distance.distance import (
+    DistanceConfig,
+    box_depth_stats,
+    map_eligibility,
+)
 from det_depth_distance.io.source import FrameSource
 
 FRAME = Frame(0, 0.0, np.zeros((100, 100, 3), np.uint8))
@@ -139,6 +144,7 @@ def make_pipeline(
     aggregator=None,
     agreement=None,
     region="mask",
+    **stages,
 ):
     return Pipeline(
         detectors,
@@ -150,6 +156,7 @@ def make_pipeline(
         device="cpu",
         agreement=agreement,
         region=region,
+        **stages,  # refiners, semantic, exclude_semantic (task_0005)
     )
 
 
@@ -261,7 +268,12 @@ def test_single_detector_concat_without_labels_is_unchanged(scene):
         "agreement": None,
         "region": "mask",
         "mask_erode": 1,
+        "exclude_semantic": {},
     }
+    assert (desc["components"]["refiners"], desc["components"]["semantic"]) == ([], [])
+    # task_0005: no refiner nor segmenter -> no mask fields, no semantic map.
+    assert inst.mask_source is None and inst.mask_score is None
+    assert result.semantic == {}
     # task_0004: box-only instances keep the box statistics under the default policy.
     assert all(not s.used_mask for s in result.stats) and result.box_stats is None
 
@@ -274,13 +286,20 @@ def test_describe_separates_components_and_policy(scene):
     pipeline.setup(Source())
     desc = pipeline.describe()
     assert set(desc) == {"components", "pipeline"}
-    assert set(desc["components"]) == {"detectors", "depth", "aggregator"}
+    assert set(desc["components"]) == {
+        "detectors",
+        "depth",
+        "aggregator",
+        "refiners",
+        "semantic",
+    }
     assert desc["components"]["detectors"][0]["name"] == "det"
     assert desc["pipeline"] == {
         "exclude_sky": False,
         "agreement": None,
         "region": "mask",
         "mask_erode": 1,
+        "exclude_semantic": {},
     }
 
 
@@ -497,3 +516,283 @@ def test_region_policy_is_validated_and_described(scene):
     desc = make_pipeline([det], FakeDepth(log), region="both").describe()
     assert (desc["pipeline"]["region"], desc["pipeline"]["mask_erode"]) == ("both", 1)
     assert "region" not in desc["components"]
+
+
+# task_0005: mask refiners and semantic segmenters.
+# Semantic doubles on the 100x100 FRAME: "scene" (road | building) with road on
+# columns 20..70, the left part of FakeDepth's 10 m object; "lanes" (background |
+# lane) with lane on the top third. Id 1 means building in one and lane in the other.
+SCENE = ("road", "building")
+LANES = ("background", "lane")
+
+
+def _scene_labels() -> np.ndarray:
+    labels = np.ones((100, 100), np.int32)
+    labels[:, 20:70] = 0
+    return labels
+
+
+def _lane_labels() -> np.ndarray:
+    labels = np.zeros((100, 100), np.int32)
+    labels[:33] = 1
+    return labels
+
+
+def _segmenters(log=None):
+    return [
+        FakeSemantic(_scene_labels(), SCENE, name="scene", log=log),
+        FakeSemantic(_lane_labels(), LANES, name="lanes", log=log),
+    ]
+
+
+class LoggingDepth(FakeDepth):
+    def _predict(self, rgb):
+        self.log.append("depth")
+        return super()._predict(rgb)
+
+
+class LoggingConcat(SpyConcat):
+    def __init__(self, log):
+        super().__init__()
+        self.log = log
+
+    def __call__(self, parts):
+        self.log.append("aggregate")
+        return super().__call__(parts)
+
+
+class LoggingRefiner(FakeRefiner):
+    def __init__(self, log, **kwargs):
+        super().__init__(**kwargs)
+        self.log = log
+
+    def _refine(self, rgb, instances):
+        self.log.append(f"refine {self.name}")
+        return super()._refine(rgb, instances)
+
+    def _close(self):
+        self.log.append(f"close {self.name}")
+
+
+def test_stage_order_timings_and_close(scene):
+    log, det = scene
+    pipeline = make_pipeline(
+        [det],
+        LoggingDepth(log, needs_intrinsics=False),
+        aggregator=LoggingConcat(log),
+        refiners=[LoggingRefiner(log)],
+        semantic=_segmenters(log),
+    )
+    pipeline.setup(Source())
+    log.clear()
+    result = pipeline.process(FRAME)
+    assert log == [
+        "aggregate",
+        "refine sam",
+        "depth",
+        "semantic scene",
+        "semantic lanes",
+    ]
+    assert list(result.semantic) == ["scene", "lanes"]
+    t = result.timings_ms
+    assert list(t) == [
+        "det",
+        "det.det",
+        "aggregate",
+        "refine",
+        "refine.sam",
+        "depth",
+        "semantic",
+        "semantic.scene",
+        "semantic.lanes",
+        "dist",
+    ]
+    assert t["semantic"] == pytest.approx(t["semantic.scene"] + t["semantic.lanes"])
+    assert t["refine"] == pytest.approx(t["refine.sam"])
+    pipeline.close()
+    assert log[-5:] == [
+        "close det",
+        "close depth",
+        "close sam",
+        "close scene",
+        "close lanes",
+    ]
+
+
+def test_box_only_detector_with_a_refiner_uses_masks(scene):
+    log, det = scene
+    pipeline = make_pipeline(
+        [det], FakeDepth(log, needs_intrinsics=False), refiners=[FakeRefiner()]
+    )
+    pipeline.setup(Source())
+    result = pipeline.process(FRAME)
+    assert all(s.used_mask for s in result.stats)
+    assert result.instances.mask_sources() == ("sam", "sam")
+
+
+def _expected_stats(result, pipeline, mask):
+    depth = result.depth
+    return tuple(
+        box_depth_stats(
+            depth.depth_m,
+            box,
+            depth.geometry,
+            pipeline.distance,
+            intrinsics=depth.intrinsics,
+            mask=mask,
+        )
+        for box in result.instances.xyxy
+    )
+
+
+def test_semantic_exclusion_changes_the_distance(scene):
+    log, det = scene
+    plain = make_pipeline([det], FakeDepth(log, needs_intrinsics=False))
+    plain.setup(Source())
+    before = plain.process(FRAME).stats[0]
+    pipeline = make_pipeline(
+        [det],
+        FakeDepth(log, needs_intrinsics=False),
+        semantic=_segmenters()[:1],
+        exclude_semantic=("scene.road",),
+    )
+    pipeline.setup(Source())
+    after = pipeline.process(FRAME).stats[0]
+    # The car's eligible pixels lose columns 20..70 (road): 10 m object -> 40 m.
+    assert after.n_valid < before.n_valid
+    assert before.distance == pytest.approx(10.0)
+    assert after.distance == pytest.approx(40.0)
+
+
+def test_two_segmenters_exclude_the_union(scene):
+    log, det = scene
+    pipeline = make_pipeline(
+        [det],
+        FakeDepth(log, needs_intrinsics=False),
+        semantic=_segmenters(),
+        exclude_semantic="scene.road, lanes.lane",
+    )
+    pipeline.setup(Source())
+    result = pipeline.process(FRAME)
+    sky = result.depth.sky
+    union = map_eligibility(
+        GEOMETRY,
+        sky=sky,
+        exclusions=[(_scene_labels(), [0]), (_lane_labels(), [1])],
+    )
+    assert result.stats == _expected_stats(result, pipeline, union)
+    road_only = map_eligibility(GEOMETRY, sky=sky, exclusions=[(_scene_labels(), [0])])
+    assert union.sum() < road_only.sum()
+    # scene.road alone does not exclude id 1 of the lanes map.
+    only_road = make_pipeline(
+        [det],
+        FakeDepth(log, needs_intrinsics=False),
+        semantic=_segmenters(),
+        exclude_semantic=["scene.road"],
+    )
+    only_road.setup(Source())
+    out = only_road.process(FRAME)
+    assert out.stats == _expected_stats(out, only_road, road_only)
+    assert {n: list(m.class_names) for n, m in out.semantic.items()} == {
+        "scene": list(SCENE),
+        "lanes": list(LANES),
+    }
+    desc = pipeline.describe()
+    assert desc["pipeline"]["exclude_semantic"] == {
+        "scene": ["road"],
+        "lanes": ["lane"],
+    }
+    assert [s["name"] for s in desc["components"]["semantic"]] == ["scene", "lanes"]
+    assert only_road.describe()["pipeline"]["exclude_semantic"] == {"scene": ["road"]}
+
+
+@pytest.mark.parametrize("semantic", [None, ()])
+def test_without_refiners_and_segmenters_nothing_changes(scene, semantic):
+    # Regression invariant: no refiner and no segmenter (absent or explicitly
+    # empty) gives the task_0004 result field by field.
+    log, det = scene
+    stages = {} if semantic is None else {"semantic": semantic, "refiners": ()}
+    pipeline = make_pipeline([det], FakeDepth(log, needs_intrinsics=False), **stages)
+    pipeline.setup(Source())
+    result = pipeline.process(FRAME)
+    assert result.semantic == {}
+    assert not any(k.startswith(("semantic", "refine")) for k in result.timings_ms)
+    assert result.stats == _expected_stats(result, pipeline, ~result.depth.sky)
+    assert result.instances.mask_source is None
+
+
+def test_unknown_semantic_class_fails_at_load(scene):
+    log, det = scene
+    pipeline = make_pipeline(
+        [det],
+        FakeDepth(log, needs_intrinsics=False),
+        semantic=_segmenters(),
+        exclude_semantic=["scene.roda"],
+    )
+    with pytest.raises(
+        ConfigError,
+        match=r"^distance\.exclude_semantic: scene\.roda: unknown class; "
+        r"scene classes: road, building",
+    ):
+        pipeline.setup(Source())
+
+
+@pytest.mark.parametrize(
+    ("semantic", "exclude", "match"),
+    [
+        ((), ["scene.road"], r"^distance\.exclude_semantic: .*no semantic segmenter"),
+        (True, ["sky.sky"], r"^distance\.exclude_semantic: .*unknown segmenter 'sky'"),
+        (True, ["road"], r"^distance\.exclude_semantic: .*'<segmenter>\.<class>'"),
+    ],
+)
+def test_exclude_semantic_namespace_fails_at_init(scene, semantic, exclude, match):
+    log, det = scene
+    segmenters = _segmenters() if semantic is True else semantic
+    with pytest.raises(ConfigError, match=match):
+        make_pipeline(
+            [det], FakeDepth(log), semantic=segmenters, exclude_semantic=exclude
+        )
+
+
+def test_component_names_unique_and_semantic_names_valid(scene):
+    log, det = scene
+    twice = [FakeSemantic(_scene_labels(), SCENE, name="scene")] * 2
+    with pytest.raises(ConfigError, match=r"^semantic: duplicate name 'scene'"):
+        make_pipeline([det], FakeDepth(log), semantic=twice)
+    with pytest.raises(ConfigError, match=r"^refiners: duplicate name 'det'"):
+        make_pipeline([det], FakeDepth(log), refiners=[FakeRefiner(name="det")])
+    bad = [FakeSemantic(_scene_labels(), SCENE, name="Scene.1")]
+    with pytest.raises(ConfigError, match=r"^semantic: name 'Scene\.1' must match"):
+        make_pipeline([det], FakeDepth(log), semantic=bad)
+
+
+def test_refiners_are_described(scene):
+    log, det = scene
+    pipeline = make_pipeline(
+        [det], FakeDepth(log, needs_intrinsics=False), refiners=[FakeRefiner()]
+    )
+    (refiner,) = pipeline.describe()["components"]["refiners"]
+    assert (refiner["name"], refiner["options"]) == ("sam", {"targets": "missing"})
+
+
+def test_fused_mask_source_end_to_end(make_instances):
+    # F2: a box-only detector wins the NMS cluster, the mask comes from `seg`.
+    log = []
+    box = FakeDetector(
+        make_instances([[0, 0, 100, 100]], source="box", score=[0.9]), log, name="box"
+    )
+    masks = np.zeros((1, 100, 100), bool)
+    masks[0, :, 85:] = True
+    seg = FakeDetector(
+        make_instances([[2, 0, 100, 100]], source="seg", score=[0.6], masks=masks),
+        log,
+        name="seg",
+    )
+    pipeline = make_pipeline(
+        [box, seg],
+        FakeDepth(log, needs_intrinsics=False),
+        aggregator=Nms(Nms.Options()),
+    )
+    pipeline.setup(Source())
+    inst = pipeline.process(FRAME).instances
+    assert inst.source == ("box",) and inst.mask_sources() == ("seg",)

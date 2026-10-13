@@ -1,5 +1,6 @@
 """Common contract of every adapter on a real frame (marked gpu by conftest)."""
 
+import dataclasses
 import json
 import math
 import subprocess
@@ -9,8 +10,16 @@ import numpy as np
 import pytest
 
 from det_depth_distance.core import registry
+from det_depth_distance.core.aggregate import Concat
 from det_depth_distance.core.labels import VOCABULARIES
+from det_depth_distance.core.pipeline import Pipeline, SetupInfo
 from det_depth_distance.core.types import DepthResult, Instances
+from det_depth_distance.distance import (
+    DistanceConfig,
+    box_depth_stats,
+    map_eligibility,
+    resample_mask,
+)
 
 
 def test_detector_contract(detector_case, frame0, load_ctx, segmenter_names):
@@ -58,6 +67,10 @@ for kind, spec in specs:
     component(frame)
     component.close()
 assert "ultralytics" not in sys.modules
+# task_0005: the refiner/segmenter adapters import nothing at module import
+# (transformers itself is imported by rfdetr's DINOv2 backbone, so it is not
+# checked here; the light-env test_registry covers our modules).
+assert not {{"model", "timm"}} & set(sys.modules), sorted(sys.modules)
 """
     out = subprocess.run(
         [sys.executable, "-c", code], check=False, capture_output=True, text=True
@@ -231,3 +244,258 @@ def test_yolo_seg_masks_match_ultralytics(frame0, load_ctx, yolo_weights):
     rescaled = (rescaled > 0.5).cpu().numpy()
     ious = [_mask_iou(a, b) for a, b in zip(out.masks, rescaled, strict=True)]
     assert np.median(ious) >= 0.9
+
+
+# task_0005: one contract test for every mask refiner (LSP), then the semantic
+# segmenters alone and combined in one pipeline.
+
+
+def _with_options(component, **changes):
+    """Swap a loaded component's (frozen) options for one call path, without
+    loading the model again; restored by the caller."""
+    previous = component.options
+    component.options = dataclasses.replace(previous, **changes)
+    return previous
+
+
+def test_refiner_contract(refiner, rfdetr_boxes, frame0, frame_ctx, yolo_weights):
+    inst = rfdetr_boxes
+    assert len(inst) > 0 and inst.masks is None  # RF-DETR detection: boxes only
+    out = refiner(frame0, inst)
+    n, h, w = len(inst), frame0.height, frame0.width
+    assert out.masks.shape == (n, h, w) and out.masks.dtype == bool
+    has = out.has_mask()
+    assert has.mean() >= 0.9
+    used = out.masks.any(axis=(1, 2))
+    inside = []
+    for box, mask in zip(out.xyxy[used], out.masks[used], strict=True):
+        c0, r0, c1, r1 = _frame_window(box)
+        inside.append(mask[r0:r1, c0:c1].sum() / mask.sum())
+    assert np.median(inside) >= 0.95
+    ious = [
+        _bbox_iou(b, m) for b, m in zip(out.xyxy[used], out.masks[used], strict=True)
+    ]
+    assert np.median(ious) >= 0.7  # same thresholds as the native masks (task_0004)
+    refined = np.array([s == refiner.name for s in out.mask_source])
+    assert refined.any() and np.isfinite(out.mask_score[refined]).all()
+    if refiner.has_object_score:  # SAM 2 convention: sigmoid IoU head
+        assert ((out.mask_score[refined] >= 0) & (out.mask_score[refined] <= 1)).all()
+    # Deterministic, and batching does not change the masks.
+    again = refiner(frame0, inst)
+    np.testing.assert_array_equal(again.masks, out.masks)
+    previous = _with_options(refiner, max_boxes=1)
+    try:
+        one_by_one = refiner(frame0, inst)
+    finally:
+        refiner.options = previous
+    exact = np.array_equal(one_by_one.masks, out.masks)
+    print(f"{refiner.name}: max_boxes 1 vs 32 identical: {exact}")
+    if not exact:  # GPU kernels may vary with the batch size: near-identical
+        assert (
+            min(_mask_iou(a, b) for a, b in zip(one_by_one.masks, out.masks)) >= 0.999
+        )
+    if refiner.has_object_score:
+        previous = _with_options(refiner, score="object", min_object_score=0.5)
+        try:
+            filtered = refiner(frame0, inst)
+        finally:
+            refiner.options = previous
+        kept = np.array([s == refiner.name for s in filtered.mask_source])
+        assert (filtered.mask_score[kept] >= 0.5).all()
+    json.dumps(refiner.describe())
+    # Against YOLO26-seg native masks, refining every instance (targets: all).
+    weights = yolo_weights / "yolo26n-seg.pt"
+    if weights.is_file():
+        spec = {"type": "yolo", "weights": str(weights), "threshold": 0.25}
+        seg = registry.build("detector", spec, path="detector")
+        seg.load(frame_ctx)
+        try:
+            native = seg(frame0)
+        finally:
+            seg.close()
+        previous = _with_options(refiner, targets="all")
+        try:
+            versus = refiner(frame0, native)
+        finally:
+            refiner.options = previous
+        pairs = [
+            _mask_iou(a, b)
+            for a, b, keep in zip(
+                native.masks, versus.masks, native.has_mask(), strict=True
+            )
+            if keep
+        ]
+        print(f"{refiner.name}: median IoU vs yolo26n-seg {np.median(pairs):.3f}")
+        assert np.median(pairs) >= 0.7
+    # close() and reload give the same masks.
+    refiner.close()
+    assert not refiner.is_loaded
+    refiner.load(frame_ctx)
+    np.testing.assert_array_equal(refiner(frame0, inst).masks, out.masks)
+
+
+def test_sam2_keeps_the_planned_defaults(refiner):
+    if refiner.type_name != "sam2":
+        pytest.skip("sam2 only")
+    assert refiner.options.model == "facebook/sam2.1-hiera-large"
+    assert refiner.name == "sam2.1-hiera-large"
+    assert refiner.describe()["model_class"] == "Sam2Model"
+
+
+CITYSCAPES = (
+    "road",
+    "sidewalk",
+    "building",
+    "wall",
+    "fence",
+    "pole",
+    "traffic light",
+    "traffic sign",
+    "vegetation",
+    "terrain",
+    "sky",
+    "person",
+    "rider",
+    "car",
+    "truck",
+    "bus",
+    "train",
+    "motorcycle",
+    "bicycle",
+)
+
+
+def test_segformer_contract(segformer, da3_metric, frame0, load_ctx):
+    segformer.load(load_ctx)
+    try:
+        out = segformer(frame0)
+        json.dumps(segformer.describe())
+    finally:
+        segformer.close()
+    assert out.labels.shape == (1080, 1920) and out.labels.dtype == np.int32
+    assert out.class_names == CITYSCAPES
+    road, sky = CITYSCAPES.index("road"), CITYSCAPES.index("sky")
+    assert (out.labels[720:, 640:1280] == road).any()  # lower third, centre
+    assert (out.labels[:360] == sky).any()  # upper third
+    da3_metric.load(load_ctx)
+    try:
+        depth = da3_metric(frame0)
+    finally:
+        da3_metric.close()
+    if depth.sky is None:
+        pytest.skip("depth model has no sky head")
+    g = depth.geometry
+    sky_map = resample_mask(out.labels == sky, g, (0, 0, g.map_w, g.map_h))
+    iou = _mask_iou(sky_map, depth.sky)
+    print(f"SegFormer sky vs DA3 sky IoU {iou:.3f}")
+    assert iou >= 0.5  # heuristic cross-model coherence
+
+
+def _twinlitenet_reference(frame_rgb, repo, net, device):
+    """The repo's demo path: letterbox_for_img on BGR, BGR->RGB, /255, padding crop,
+    interpolate(scale_factor=int(1/ratio)), max over channels."""
+    import torch
+
+    sys.path.insert(0, str(repo))
+    try:
+        from demoDataset import letterbox_for_img
+    finally:
+        sys.path.remove(str(repo))
+    bgr = np.ascontiguousarray(frame_rgb[..., ::-1])
+    img, ratio, (pad_w, pad_h) = letterbox_for_img(bgr, new_shape=640, auto=True)
+    img = np.ascontiguousarray(img[:, :, ::-1].transpose(2, 0, 1))
+    x = torch.from_numpy(img)[None].to(device).float() / 255.0
+    _, _, height, width = x.shape
+    pad_w, pad_h = int(pad_w), int(pad_h)
+    heads = []
+    with torch.inference_mode():
+        for out in net(x):
+            crop = out[:, :, pad_h : height - pad_h, pad_w : width - pad_w]
+            up = torch.nn.functional.interpolate(
+                crop, scale_factor=int(1 / ratio[0]), mode="bilinear"
+            )
+            heads.append(torch.max(up, 1)[1][0].cpu().numpy())
+    return heads
+
+
+def test_twinlitenet_matches_the_reference(twinlitenet, frame0, load_ctx):
+    from det_depth_distance.adapters.semantic.twinlitenet import _merge_heads
+
+    twinlitenet.load(load_ctx)
+    try:
+        out = twinlitenet(frame0)
+        reference = _twinlitenet_reference(
+            frame0.rgb,
+            twinlitenet.options.repo.expanduser(),
+            twinlitenet._net,
+            load_ctx.device,
+        )
+        json.dumps(twinlitenet.describe())
+    finally:
+        twinlitenet.close()
+    assert out.labels.shape == (1080, 1920)
+    np.testing.assert_array_equal(out.labels, _merge_heads(*reference))
+    fractions = out.fractions()
+    print(f"TwinLiteNet+ frame 0: {fractions}")
+
+
+def test_two_segmenters_in_one_pipeline(
+    twinlitenet, segformer, da3_metric, source, frame0, load_ctx
+):
+    alone = {}
+    for segmenter in (twinlitenet, segformer):
+        segmenter.load(load_ctx)
+        try:
+            alone[segmenter.name] = segmenter(frame0)
+        finally:
+            segmenter.close()
+    detector = registry.build(
+        "detector", {"type": "rfdetr", "variant": "nano"}, path="d"
+    )
+
+    def run(exclude):
+        pipeline = Pipeline(
+            [detector],
+            da3_metric,
+            Concat(Concat.Options()),
+            DistanceConfig(),
+            device=load_ctx.device,
+            semantic=[twinlitenet, segformer],
+            exclude_semantic=exclude,
+        )
+        with pipeline:
+            pipeline.load(source, SetupInfo(load_ctx.intrinsics, 1390.0, "test"))
+            return pipeline.process(frame0)
+
+    both = run(("scene.sky", "lanes.lane"))
+    assert list(both.semantic) == ["lanes", "scene"]
+    for name, m in both.semantic.items():
+        np.testing.assert_array_equal(m.labels, alone[name].labels)
+    assert {"semantic.lanes", "semantic.scene", "semantic"} <= set(both.timings_ms)
+    sky_only, lane_only = run(("scene.sky",)), run(("lanes.lane",))
+    for i, stats in enumerate(both.stats):
+        assert stats.n_valid <= min(
+            sky_only.stats[i].n_valid, lane_only.stats[i].n_valid
+        )
+    scene, lanes = both.semantic["scene"], both.semantic["lanes"]
+    expected = map_eligibility(
+        both.depth.geometry,
+        sky=both.depth.sky,
+        exclusions=[
+            (lanes.labels, [lanes.class_names.index("lane")]),
+            (scene.labels, [scene.class_names.index("sky")]),
+        ],
+    )
+    depth = both.depth
+    union = tuple(
+        box_depth_stats(
+            depth.depth_m,
+            box,
+            depth.geometry,
+            DistanceConfig(),
+            intrinsics=depth.intrinsics,
+            mask=expected,
+        )
+        for box in both.instances.xyxy
+    )
+    assert both.stats == union  # eligibility = ~sky & ~(lane | scene sky)

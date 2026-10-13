@@ -16,6 +16,7 @@ from det_depth_distance.distance import (
     erode_mask,
     inlier_mask,
     instance_depth_stats,
+    map_eligibility,
     mask_depth_stats,
     parse_stat,
     ray_factors,
@@ -485,3 +486,78 @@ class TestRegionPolicy:
             instance_mask=masks[0],
         )
         assert not primary.used_mask and alt is None
+
+
+def _left_half_road() -> np.ndarray:
+    """1920x1080 labels: 0 (road) on the left half, 1 elsewhere."""
+    labels = np.ones((1080, 1920), np.int32)
+    labels[:, :960] = 0
+    return labels
+
+
+def _sky_top_rows(n: int = 20) -> np.ndarray:
+    sky = np.zeros((280, 504), dtype=bool)
+    sky[:n] = True
+    return sky
+
+
+def test_map_eligibility_without_semantic_is_the_sky_rule():
+    sky = _sky_top_rows()
+    out = map_eligibility(RESIZE, sky=sky)
+    assert out.dtype == bool and np.array_equal(out, ~sky)
+    assert map_eligibility(RESIZE) is None
+    # Layers that exclude nothing are ignored entirely.
+    empty = [(_left_half_road(), ()), (_left_half_road(), np.array([], np.int32))]
+    assert np.array_equal(map_eligibility(RESIZE, sky=sky, exclusions=empty), ~sky)
+    assert map_eligibility(RESIZE, exclusions=empty) is None
+
+
+def test_map_eligibility_excludes_classes_on_the_map_grid():
+    labels = _left_half_road()
+    out = map_eligibility(RESIZE, exclusions=[(labels, [0])])
+    # Map column c samples frame x = (c + 0.5) * 1920 / 504: c < 252 is the left half.
+    assert not out[:, :252].any() and out[:, 252:].all()
+    # Rows: the crop offset shifts the sampling; same rule as resample_mask.
+    top = np.zeros((1080, 1920), np.int32)
+    top[:300] = 3
+    crop = map_eligibility(CROP, exclusions=[(top, [3])])
+    window = (0, 0, CROP.map_w, CROP.map_h)
+    assert np.array_equal(crop, ~resample_mask(top == 3, CROP, window))
+    resize = map_eligibility(RESIZE, exclusions=[(top, [3])])
+    assert (~crop).sum(axis=0)[0] < (~resize).sum(axis=0)[0]  # -2 rows offset
+    # With the sky mask: AND of both criteria.
+    sky = _sky_top_rows()
+    both = map_eligibility(RESIZE, sky=sky, exclusions=[(labels, [0])])
+    assert np.array_equal(both, out & ~sky)
+
+
+def test_map_eligibility_union_of_layers():
+    left = _left_half_road()  # road id 0 on the left half
+    lanes = np.zeros((1080, 1920), np.int32)
+    lanes[:360] = 1  # "lane" id 1 on the top third (id 1 means "other" in `left`)
+    a = map_eligibility(RESIZE, exclusions=[(left, [0])])
+    b = map_eligibility(RESIZE, exclusions=[(lanes, [1])])
+    union = map_eligibility(RESIZE, exclusions=[(left, [0]), (lanes, [1])])
+    assert np.array_equal(union, a & b)  # overlapping pixels counted once
+    swapped = map_eligibility(RESIZE, exclusions=[(lanes, [1]), (left, [0])])
+    assert np.array_equal(union, swapped)
+    # Ids belong to their own layer: excluding id 1 of `lanes` keeps id 1 of `left`.
+    assert np.array_equal(
+        map_eligibility(RESIZE, exclusions=[(left, []), (lanes, [1])]), b
+    )
+
+
+def test_map_eligibility_commutes_with_resampling():
+    rng = np.random.default_rng(0)
+    labels = rng.integers(0, 5, size=(1080, 1920)).astype(np.int32)
+    window = (0, 0, CROP.map_w, CROP.map_h)
+    after = map_eligibility(CROP, exclusions=[(labels, [1, 3])])
+    before = ~resample_mask(np.isin(labels, [1, 3]), CROP, window)
+    assert np.array_equal(after, before)
+
+
+def test_map_eligibility_checks_shapes():
+    with pytest.raises(ValueError, match="labels shape"):
+        map_eligibility(RESIZE, exclusions=[(np.zeros((10, 10), np.int32), [0])])
+    with pytest.raises(ValueError, match="sky shape"):
+        map_eligibility(RESIZE, sky=np.zeros((10, 10), bool))

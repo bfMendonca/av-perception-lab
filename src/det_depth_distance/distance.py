@@ -6,7 +6,9 @@ Anything 3 resizes anisotropically and may centre-crop) and shrunk; a mask
 (frame resolution) is resampled by nearest neighbour inside the unshrunk box
 window and eroded in depth-map pixels, because depth edges mix object and
 background. Both then drop invalid / ineligible pixels, reject outliers and
-reduce the remaining depths with the same robust statistic. No torch, OpenCV
+reduce the remaining depths with the same robust statistic. Eligible pixels
+(not sky, not an excluded semantic class) are computed once per frame on the
+depth map by `map_eligibility`. No torch, OpenCV
 or PIL imports: this module must stay importable and unit-testable on a
 machine without the GPU stack.
 """
@@ -14,7 +16,7 @@ machine without the GPU stack.
 import dataclasses
 import math
 import re
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Collection, Sequence
 from dataclasses import dataclass
 from typing import Literal
 
@@ -310,6 +312,54 @@ def resample_mask(
     xs = np.floor((np.arange(c0, c1) + 0.5 - geom.ox) / geom.sx).astype(np.intp)
     ys = np.floor((np.arange(r0, r1) + 0.5 - geom.oy) / geom.sy).astype(np.intp)
     return frame_mask[np.ix_(np.clip(ys, 0, h - 1), np.clip(xs, 0, w - 1))]
+
+
+def map_eligibility(
+    geom: MapGeometry,
+    *,
+    sky: np.ndarray | None = None,
+    exclusions: Sequence[tuple[np.ndarray, Collection[int]]] = (),
+) -> np.ndarray | None:
+    """Depth-map pixels eligible for distance: not sky and not an excluded class.
+
+    Semantic labels (frame resolution) are sampled at the depth-map pixel
+    centres with `resample_mask` before testing membership in the excluded ids
+    (nearest-neighbour sampling commutes with the per-pixel test, and the map
+    has ~15x fewer pixels).
+
+    Each exclusion layer pairs one segmenter's labels with ids from that
+    segmenter's own class list; a pixel is excluded if any layer excludes it
+    (union), so overlapping maps (e.g. road and lane) are not double-counted.
+
+    Args:
+        geom: frame -> depth-map mapping.
+        sky: (map_h, map_w) bool sky mask, or None for no sky exclusion.
+        exclusions: (labels (frame_h, frame_w), excluded ids) per segmenter.
+
+    Returns:
+        (map_h, map_w) bool, or None when nothing is excluded. Without layers
+        (or with only empty id sets) the result is exactly `~sky` (or None),
+        the pre-semantic behaviour.
+
+    Raises:
+        ValueError: sky not map-sized, or labels not frame-sized.
+    """
+    if sky is not None and sky.shape != (geom.map_h, geom.map_w):
+        raise ValueError(f"sky shape {sky.shape} != map {(geom.map_h, geom.map_w)}")
+    window = (0, 0, geom.map_w, geom.map_h)
+    excluded = None
+    for labels, ids in exclusions:
+        if labels.shape != (geom.frame_h, geom.frame_w):
+            raise ValueError(
+                f"labels shape {labels.shape} != frame {(geom.frame_h, geom.frame_w)}"
+            )
+        if len(ids) == 0:  # this map excludes nothing
+            continue
+        layer = np.isin(resample_mask(labels, geom, window), tuple(ids))
+        excluded = layer if excluded is None else excluded | layer
+    if excluded is None:
+        return None if sky is None else ~sky
+    return ~excluded if sky is None else ~excluded & ~sky
 
 
 def erode_mask(mask: np.ndarray, iterations: int) -> np.ndarray:

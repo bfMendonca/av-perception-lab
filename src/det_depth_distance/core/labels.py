@@ -120,6 +120,49 @@ def resolve_classes(
     return frozenset(wanted)
 
 
+# Name of a semantic segmenter (re.fullmatch): the namespace of its excluded
+# classes ("<name>.<class>"), so no "." (namespace separator), no "," (list
+# separator of the string form) and no spaces.
+SEMANTIC_NAME_PATTERN: str = r"[a-z0-9][a-z0-9_-]*"
+
+
+def group_semantic_labels(
+    labels: str | Sequence[str], names: Sequence[str]
+) -> dict[str, tuple[str, ...]]:
+    """Group namespaced semantic labels ("<segmenter>.<class>") by segmenter.
+
+    The segmenter name is the text before the first dot (names never contain
+    dots); the class may contain spaces or dots ("scene.traffic light"). Only
+    the namespace is checked here: class names are validated per segmenter
+    with resolve_classes once its class_names is known (after load). `labels`
+    is a sequence or a comma-separated string, as for `classes`.
+
+    Returns:
+        {name: classes} for every name in `names`, in that order (empty tuple
+        when nothing is excluded from that map); classes keep their given order,
+        without duplicates or surrounding spaces.
+
+    Raises:
+        ConfigError: a label without "<segmenter>.<class>" form, or an unknown
+            segmenter name (the message lists the configured names).
+    """
+    items = labels.split(",") if isinstance(labels, str) else labels
+    groups: dict[str, list[str]] = {name: [] for name in names}
+    for item in (label.strip() for label in items):
+        if isinstance(labels, str) and not item:
+            continue  # "a.b, c.d," or an empty string
+        name, sep, cls = item.partition(".")
+        cls = cls.strip()
+        if not sep or not name or not cls:
+            raise ConfigError(f"{item!r}: expected '<segmenter>.<class>'")
+        if name not in groups:
+            known = ", ".join(names) or "no semantic segmenter configured"
+            raise ConfigError(f"{item!r}: unknown segmenter {name!r} ({known})")
+        if cls not in groups[name]:
+            groups[name].append(cls)
+    return {name: tuple(classes) for name, classes in groups.items()}
+
+
 UnmappedPolicy = Literal["keep", "drop"]
 
 

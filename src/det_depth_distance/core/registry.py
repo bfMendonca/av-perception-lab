@@ -24,6 +24,10 @@ ADAPTER_MODULES: tuple[str, ...] = (
     "det_depth_distance.adapters.detectors.rfdetr",
     "det_depth_distance.adapters.detectors.ultralytics_yolo",
     "det_depth_distance.adapters.depth.da3",
+    "det_depth_distance.adapters.refiners.hf_sam",
+    "det_depth_distance.adapters.refiners.ultralytics_sam",
+    "det_depth_distance.adapters.semantic.segformer",
+    "det_depth_distance.adapters.semantic.twinlitenet",
 )
 
 _REGISTRY: dict[str, dict[str, type]] = {}

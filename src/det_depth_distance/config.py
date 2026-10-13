@@ -2,13 +2,16 @@
 
 Sections are dataclasses built with `from_mapping` (unknown keys are errors,
 reported with their dotted path); domain rules live in each dataclass's
-__post_init__. Component specs (detectors, depth, aggregation) are validated
-by their adapter's Options when built through the registry. Pipeline-policy
-keys written in the `distance` section (PIPELINE_DISTANCE_KEYS: exclude_sky,
-region) are split off into RunConfig fields before DistanceConfig is
-built.
+__post_init__. Component specs (detectors, depth, aggregation, refiners,
+semantic) are validated by their adapter's Options when built through the
+registry; RunConfig only checks what crosses sections (semantic segmenter
+names, the namespaces of excluded semantic labels, the drawn maps).
+Pipeline-policy keys written in the `distance` section
+(PIPELINE_DISTANCE_KEYS: exclude_sky, region, exclude_semantic) are split
+off into RunConfig fields before DistanceConfig is built.
 """
 
+import re
 from collections.abc import Mapping, Sequence
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
@@ -18,6 +21,7 @@ import cv2
 import yaml
 
 from det_depth_distance.adapters.depth.da3 import ProcessResMethod
+from det_depth_distance.core.labels import SEMANTIC_NAME_PATTERN, group_semantic_labels
 from det_depth_distance.core.options import ConfigError, from_mapping
 from det_depth_distance.distance import DistanceConfig, RegionPolicy
 
@@ -83,12 +87,21 @@ class RenderConfig:
     hud: bool = True
     font: Path | None = None
     mask_alpha: float = 0.35  # instance-mask tint opacity, [0, 1]; 0 = no masks
+    # semantic layer tint opacity, [0, 1]; 0 = no semantic layer drawn
+    semantic_alpha: float = 0.4
+    # Names of the semantic maps drawn in the video (None = all), in the order
+    # of `semantic`; checked against the segmenter names by RunConfig.
+    semantic_overlay: tuple[str, ...] | None = None
 
     def __post_init__(self) -> None:
         if self.max_depth <= 0:
             raise ValueError("max_depth must be > 0")
         if not 0.0 <= self.mask_alpha <= 1.0:
             raise ValueError(f"mask_alpha must be in [0, 1], got {self.mask_alpha}")
+        if not 0.0 <= self.semantic_alpha <= 1.0:
+            raise ValueError(
+                f"semantic_alpha must be in [0, 1], got {self.semantic_alpha}"
+            )
         if not hasattr(cv2, f"COLORMAP_{self.cmap.upper()}"):
             raise ValueError(f"unknown OpenCV colormap {self.cmap!r}")
 
@@ -119,7 +132,7 @@ class OutputConfig:
 # Pipeline-policy keys written in the YAML `distance` section that are not
 # DistanceConfig fields; load_config moves them to the RunConfig field of the
 # same name.
-PIPELINE_DISTANCE_KEYS: tuple[str, ...] = ("exclude_sky", "region")
+PIPELINE_DISTANCE_KEYS: tuple[str, ...] = ("exclude_sky", "region", "exclude_semantic")
 
 
 @dataclass(frozen=True, slots=True)
@@ -132,10 +145,18 @@ class RunConfig:
     camera: CameraConfig = field(default_factory=CameraConfig)
     # Flat spec {type, **options}, validated by registry.build("aggregator", ...).
     aggregation: Mapping[str, Any] = field(default_factory=lambda: {"type": "concat"})
+    # Mask refiner specs {type, name?, **options}, applied in order.
+    refiners: tuple[Mapping[str, Any], ...] = ()
+    # semantic: list of segmenter specs ({name, type, **options}); every map is
+    # kept separately in FrameResult.semantic under its required, unique name.
+    semantic: tuple[Mapping[str, Any], ...] = ()
     agreement: AgreementConfig = field(default_factory=AgreementConfig)
     distance: DistanceConfig = field(default_factory=DistanceConfig)
     exclude_sky: bool = True  # from distance.exclude_sky (PIPELINE_DISTANCE_KEYS)
     region: RegionPolicy = "mask"  # from distance.region (PIPELINE_DISTANCE_KEYS)
+    # From distance.exclude_semantic: "<segmenter>.<class>" labels, a YAML list
+    # or a comma-separated string; normalised to a tuple by __post_init__.
+    exclude_semantic: str | tuple[str, ...] = ()
     render: RenderConfig = field(default_factory=RenderConfig)
     output: OutputConfig = field(default_factory=OutputConfig)
     device: str = "cuda:0"
@@ -143,6 +164,34 @@ class RunConfig:
     def __post_init__(self) -> None:
         if not self.detectors:
             raise ValueError("detectors: at least one detector is required")
+        names: list[str] = []
+        for i, spec in enumerate(self.semantic):
+            name = spec.get("name")
+            if name is None:
+                raise ValueError(f"semantic[{i}].name is required")
+            if not isinstance(name, str) or not re.fullmatch(
+                SEMANTIC_NAME_PATTERN, name
+            ):
+                raise ValueError(
+                    f"semantic[{i}].name: {name!r} must match {SEMANTIC_NAME_PATTERN}"
+                )
+            if name in names:
+                raise ValueError(f"semantic[{i}].name: duplicate name {name!r}")
+            names.append(name)
+        try:
+            groups = group_semantic_labels(self.exclude_semantic, names)
+        except ConfigError as exc:
+            raise ValueError(f"distance.exclude_semantic: {exc}") from None
+        # Canonical form (frozen dataclass), whatever the YAML form was.
+        canonical = tuple(f"{n}.{c}" for n, classes in groups.items() for c in classes)
+        object.__setattr__(self, "exclude_semantic", canonical)
+        overlay = self.render.semantic_overlay or ()
+        unknown = [n for n in overlay if n not in names]
+        if unknown:
+            raise ValueError(
+                f"render.semantic_overlay: unknown semantic map {unknown[0]!r}; "
+                f"configured: {', '.join(names) or 'none'}"
+            )
 
     def to_dict(self) -> dict[str, Any]:
         """Resolved configuration in YAML layout (for metrics.json["config"])."""

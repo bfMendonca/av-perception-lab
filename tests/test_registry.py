@@ -6,6 +6,10 @@ import pytest
 from det_depth_distance.adapters.depth.da3 import DA3Depth
 from det_depth_distance.adapters.detectors.rfdetr import RFDETRDetector
 from det_depth_distance.adapters.detectors.ultralytics_yolo import YoloDetector
+from det_depth_distance.adapters.refiners.box_prompt import BoxPromptRefiner
+from det_depth_distance.adapters.refiners.hf_sam import HFSamRefiner
+from det_depth_distance.adapters.semantic.segformer import SegformerSegmenter
+from det_depth_distance.adapters.semantic.twinlitenet import TwinLiteNetSegmenter
 from det_depth_distance.core import registry
 from det_depth_distance.core.aggregate import Concat, Nms, Wbf
 from det_depth_distance.core.options import ConfigError
@@ -80,9 +84,29 @@ def test_load_adapters_imports_no_framework():
     code = (
         "import sys; from det_depth_distance.core import registry; "
         "registry.load_adapters(); "
-        "print(sorted({'torch', 'ultralytics', 'rfdetr', 'depth_anything_3'} & set(sys.modules)))"
+        "print(sorted({'torch', 'ultralytics', 'rfdetr', 'depth_anything_3', "
+        "'transformers', 'timm', 'model'} & set(sys.modules)))"
     )
     out = subprocess.run(
         [sys.executable, "-c", code], check=False, capture_output=True, text=True
     )
     assert out.stdout.strip() == "[]", out.stderr
+
+
+def test_refiners_and_segmenters_are_registered():
+    refiners = registry.available("refiner")["refiner"]
+    assert set(refiners) == {
+        "sam",
+        "sam_hq",
+        "sam2",
+        "edgetam",
+        "sam3_tracker",
+        "ultralytics_sam",
+    }
+    # The abstract bases of the hierarchy are not registered.
+    assert not {BoxPromptRefiner, HFSamRefiner} & set(refiners.values())
+    assert all(issubclass(c, BoxPromptRefiner) for c in refiners.values())
+    assert registry.available("semantic")["semantic"] == {
+        "segformer": SegformerSegmenter,
+        "twinlitenet": TwinLiteNetSegmenter,
+    }

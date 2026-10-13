@@ -4,6 +4,111 @@ Todas as mudancas relevantes do det-depth-distance serao documentadas neste arqu
 
 ---
 
+## [2026-10-13] Refinadores de mascara (familia SAM) e segmentacao semantica
+
+Detectores so de caixas (RF-DETR, YOLO26 Objects365) nao tinham como medir
+a distancia pela mascara do objeto, e pixels de fundo como estrada, ceu,
+vegetacao e faixas pintadas entravam no calculo. A task_0005 adiciona
+refinadores de mascara, que transformam a caixa de qualquer detector numa
+mascara de instancia (familia SAM), e segmentadores semanticos, que marcam
+classes de fundo por pixel para retira-las da distancia. Sem refinador e
+sem segmentador, os resultados sao exatamente os de antes.
+
+### Novo: Refinadores de mascara (`refiners`)
+
+- **Familia SAM via `transformers`:** `sam2` (SAM 2.1, padrao dos
+  exemplos), `edgetam` (EdgeTAM, leve), `sam_hq` (SAM-HQ), `sam` (SAM 1) e
+  `sam3_tracker` (rastreador do SAM 3; peso com acesso restrito).
+- **`ultralytics_sam`:** segundo backend, para MobileSAM e pesos `.pt` de
+  SAM/SAM 2 do Ultralytics.
+- **Politica de alvos:** `targets: missing` (padrao) refina so instancias
+  sem mascara, preservando as mascaras nativas de detectores de
+  segmentacao; `targets: all` refina todas para comparar. Uma mascara
+  refinada vazia nunca substitui a existente.
+- **Opcoes comuns:** `max_boxes`, `multimask`, `mask_threshold`, `score`
+  (`iou` ou `object`) e `min_object_score` (so nas familias com score de
+  objeto).
+
+### Novo: Segmentacao semantica (`semantic`)
+
+- **Varios segmentadores por execucao**, cada um com `name` obrigatorio:
+  `segformer` (Cityscapes, 19 classes: estrada, calcada, vegetacao, terreno,
+  ceu...) e `twinlitenet` (TwinLiteNet+: area trafegavel e faixas, clone
+  externo).
+- **Exclusao por namespace:** `distance.exclude_semantic: [scene.road,
+  lanes.lane]`; os mapas nao sao fundidos e a exclusao e a uniao. Prefixo
+  desconhecido e erro ao ler a configuracao; classe desconhecida, na
+  carga do modelo.
+- **Video:** uma camada translucida por mapa (`render.semantic_alpha`,
+  `render.semantic_overlay`), por baixo das mascaras e caixas.
+
+### Novo: Saidas
+
+- `detections.csv` ganha no fim `mask_source` (quem produziu a mascara) e
+  `mask_score` (qualidade prevista pelo refinador). Nenhuma coluna
+  semantica.
+- `metrics.json` ganha `mask_sources`, `refined`, `semantic` (fracoes por
+  classe e fracao excluida, por mapa e da uniao), os tempos
+  `refine.<nome>`/`semantic.<nome>` e as versoes de `transformers` e
+  `timm`.
+- `depth.npz` (com `save_depth`) ganha `semantic_labels_<nome>` e
+  `semantic_classes_<nome>`, na grade do mapa de profundidade.
+
+### Novo: Exemplos de configuracao
+
+- `configs/rfdetr_sam2_da3.yaml`, `configs/yolo_o365_sam2_da3.yaml`,
+  `configs/rfdetr_semantic_da3.yaml` e `configs/rfdetr_lanes_scene_da3.yaml`
+  (TwinLiteNet+ e SegFormer juntos).
+
+### Atualizacao: Dependencias
+
+- `transformers>=5.1,<6` passa de dependencia transitiva a declarada no
+  extra `infer` (versao travada inalterada, 5.19.0).
+- `timm>=1.0.17` entra no extra `infer` (trava 1.0.30), so para o EdgeTAM.
+  Nenhuma outra versao do lock muda.
+
+### Como usar
+
+1. Baixar os pesos no servidor (comando no README, secao "Pesos dos
+   refinadores e do SegFormer"); a execucao nunca baixa nada.
+2. `uv run --extra infer python -m det_depth_distance --config configs/rfdetr_sam2_da3.yaml`.
+3. Trocar o refinador: `--set 'refiners=[{type: edgetam, hf_cache: weights/hf}]'`.
+4. Semantica: `--config configs/rfdetr_lanes_scene_da3.yaml`; desligar a
+   exclusao com `--set 'distance.exclude_semantic=[]'`.
+
+### Detalhes tecnicos
+
+- Hierarquia de refinadores: `MaskRefiner` (contrato do pipeline) ->
+  `BoxPromptRefiner` (numpy puro: um embedding por quadro, caixas em lote,
+  mascara de maior IoU previsto) -> `HFSamRefiner` (API SAM do
+  `transformers`) -> familias finas. Acrescentar um modelo e uma subclasse
+  e um registro.
+- Ordem dos estagios: deteccao -> concordancia -> agregacao -> refinadores
+  -> profundidade -> semantica -> elegibilidade -> distancia.
+- Os rotulos semanticos sao reamostrados na grade do mapa de profundidade
+  antes do teste de exclusao.
+- A fusao (NMS/WBF) passa a registrar em `mask_source` o detector dono da
+  mascara da instancia fundida.
+
+### Observacoes importantes
+
+- A validacao no servidor GPU (testes `-m gpu`, download dos pesos e
+  execucoes de comparacao entre refinadores e de exclusao semantica) ficou
+  pendente: o servidor estava fora do ar durante a implementacao.
+- SegFormer e TwinLiteNet+ foram treinados em cenas de rua; em cenas
+  agricolas, revisar a lista de exclusao (vegetacao e terreno cobrem a
+  cultura).
+- Licencas: SAM 3 tem licenca propria e acesso restrito; os pesos SegFormer
+  da NVIDIA tem termos proprios; o Ultralytics e AGPL-3.0.
+
+### O que nao muda
+
+- Sem `refiners` e sem `semantic`, deteccoes, distancias e video sao os
+  mesmos; o CSV so ganha as duas colunas no fim, vazias.
+- Mascaras de instancia continuam sem ser gravadas em disco.
+
+---
+
 ## [2026-10-13] Segmentacao de instancias e distancia pela mascara
 
 Objetos finos ou inclinados (pessoas, bicicletas, postes, implementos)

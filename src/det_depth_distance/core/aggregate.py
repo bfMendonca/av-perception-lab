@@ -144,13 +144,18 @@ class FusionAggregator(Aggregator):
     ) -> Instances:
         """One instance per cluster: per-instance fields of its representative
         (first member), the fused box and score, the mask of the first member
-        that has one (else the representative's) and every member in `sources`."""
+        that has one (else the representative's) and every member in `sources`.
+        With masks, `mask_source` names that mask's member ("" when no member has
+        one) and `mask_score` is NaN (a detector mask), so `mask_sources()` does
+        not credit a box-only representative with another detector's mask."""
         out = inst.select(np.array([c[0] for c in clusters], dtype=np.intp))
-        masks = out.masks
+        masks, mask_source, mask_score = out.masks, None, None
         if inst.masks is not None:
             has = inst.has_mask()
             owner = [next((k for k in c if has[k]), c[0]) for c in clusters]
             masks = inst.masks[np.array(owner, dtype=np.intp)]
+            mask_source = tuple(inst.source[k] if has[k] else "" for k in owner)
+            mask_score = np.full(len(clusters), np.nan, dtype=np.float32)
         sources = tuple(
             tuple(
                 Provenance(inst.source[k], inst.raw_label[k], float(inst.score[k]))
@@ -164,6 +169,8 @@ class FusionAggregator(Aggregator):
             score=np.asarray(score, dtype=np.float32),
             masks=masks,
             sources=sources,
+            mask_source=mask_source,
+            mask_score=mask_score,
         )
 
     def describe(self) -> dict[str, Any]:

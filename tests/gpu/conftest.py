@@ -7,6 +7,12 @@ import: a module-level skip would prevent the hook from registering. Weights
 and caches come from environment variables, with gpu-host's paths as defaults;
 missing assets skip the test that needs them (nothing is downloaded; RF-DETR
 Seg weights are looked up in rfdetr's own cache, RF_HOME or ~/.roboflow/models).
+
+Mask refiners and semantic segmenters (task_0005) read the project's HF cache
+($DDD_WEIGHTS_HF, default weights/hf); presence is checked with
+huggingface_hub.try_to_load_from_cache, so a missing checkpoint skips with the
+download command. REFINER_CASES lists every registered refiner type: a new
+box-prompted model adds its case here to run the shared contract test.
 """
 
 import os
@@ -29,6 +35,14 @@ YOLO_WEIGHTS = Path(
 HF_CACHE = Path(
     os.environ.get("DDD_HF_CACHE", "~/dev/depth-anything-3/_testbed/weights/hf")
 ).expanduser()
+WEIGHTS_HF = Path(
+    os.environ.get("DDD_WEIGHTS_HF", str(REPO / "weights" / "hf"))
+).expanduser()
+ULTRALYTICS_SAM = YOLO_WEIGHTS / "mobile_sam.pt"
+TWINLITENET_REPO = Path(
+    os.environ.get("DDD_TWINLITENET_REPO", "~/dev/TwinLiteNetPlus")
+).expanduser()
+SEGFORMER_REPO = "nvidia/segformer-b5-finetuned-cityscapes-1024-1024"
 DEVICE = "cuda:0"
 
 
@@ -160,3 +174,112 @@ def da3_metric(hf_cache):
     """DA3METRIC-LARGE from the local HF cache (not loaded)."""
     spec = {"type": "da3", "model": "da3metric-large", "hf_cache": str(hf_cache)}
     return registry.build("depth", spec, path="depth")
+
+
+# Registry type -> candidate specs, the first one on disk is used (sam/sam_hq:
+# huge if downloaded, else base). Every refiner type must have a case.
+REFINER_CASES: dict[str, list[dict]] = {
+    "sam2": [{"type": "sam2", "model": "facebook/sam2.1-hiera-large"}],
+    "edgetam": [{"type": "edgetam", "model": "yonigozlan/EdgeTAM-hf"}],
+    "sam_hq": [
+        {"type": "sam_hq", "model": "syscv-community/sam-hq-vit-huge"},
+        {"type": "sam_hq", "model": "syscv-community/sam-hq-vit-base"},
+    ],
+    "sam": [
+        {"type": "sam", "model": "facebook/sam-vit-huge"},
+        {"type": "sam", "model": "facebook/sam-vit-base"},
+    ],
+    "sam3_tracker": [{"type": "sam3_tracker", "model": "facebook/sam3"}],
+    "ultralytics_sam": [{"type": "ultralytics_sam", "weights": str(ULTRALYTICS_SAM)}],
+}
+
+
+def _hf_cached(repo: str, filename: str) -> bool:
+    from huggingface_hub import try_to_load_from_cache
+
+    path = try_to_load_from_cache(repo, filename, cache_dir=str(WEIGHTS_HF))
+    return isinstance(path, str)
+
+
+def _available_spec(type_name: str) -> dict:
+    """The first candidate of REFINER_CASES[type_name] on disk, else skip."""
+    from det_depth_distance.adapters._hf_hub import download_command
+
+    hints = []
+    for spec in REFINER_CASES[type_name]:
+        if "weights" in spec:
+            if Path(spec["weights"]).is_file():
+                return spec
+            hints.append(f"missing {spec['weights']}")
+        elif _hf_cached(spec["model"], "model.safetensors"):
+            return {**spec, "hf_cache": str(WEIGHTS_HF)}
+        else:
+            hints.append(download_command(spec["model"], WEIGHTS_HF))
+    pytest.skip("no weights for " + type_name + ": " + " | ".join(hints))
+
+
+@pytest.fixture(scope="session")
+def frame_ctx(source):
+    """Session-wide LoadContext (module-scoped fixtures cannot use load_ctx)."""
+    w, h = source.frame_size
+    return LoadContext(DEVICE, (w, h), CameraIntrinsics.centered(1390.0, w, h))
+
+
+@pytest.fixture(scope="module")
+def rfdetr_boxes(frame0, frame_ctx):
+    """RF-DETR nano instances (boxes only) of frame 0."""
+    detector = registry.build(
+        "detector", {"type": "rfdetr", "variant": "nano"}, path="d"
+    )
+    detector.load(frame_ctx)
+    try:
+        return detector(frame0)
+    finally:
+        detector.close()
+
+
+@pytest.fixture(scope="module", params=list(REFINER_CASES))
+def refiner(request, frame_ctx):
+    """Every refiner type in turn, loaded once per module (one model on the GPU
+    at a time), built through the registry like the CLI does."""
+    spec = _available_spec(request.param)
+    component = registry.build("refiner", spec, path="refiners[0]")
+    component.load(frame_ctx)
+    yield component
+    component.close()
+
+
+@pytest.fixture(scope="session")
+def weights_hf():
+    """Project HF cache of the refiners and SegFormer ($DDD_WEIGHTS_HF)."""
+    return WEIGHTS_HF
+
+
+@pytest.fixture
+def segformer():
+    """SegFormer b5 Cityscapes (not loaded)."""
+    if not _hf_cached(SEGFORMER_REPO, "pytorch_model.bin"):
+        from det_depth_distance.adapters._hf_hub import download_command
+
+        pytest.skip(download_command(SEGFORMER_REPO, WEIGHTS_HF, "pytorch_model.bin"))
+    spec = {
+        "type": "segformer",
+        "name": "scene",
+        "model": SEGFORMER_REPO,
+        "hf_cache": str(WEIGHTS_HF),
+    }
+    return registry.build("semantic", spec, path="semantic[0]")
+
+
+@pytest.fixture
+def twinlitenet():
+    """TwinLiteNet+ large from the local clone ($DDD_TWINLITENET_REPO; not loaded)."""
+    if not (TWINLITENET_REPO / "pretrained" / "large.pth").is_file():
+        pytest.skip(f"missing TwinLiteNetPlus clone/weights in {TWINLITENET_REPO}")
+    spec = {
+        "type": "twinlitenet",
+        "name": "lanes",
+        "repo": str(TWINLITENET_REPO),
+        "variant": "large",
+    }
+    return registry.build("semantic", spec, path="semantic[0]")

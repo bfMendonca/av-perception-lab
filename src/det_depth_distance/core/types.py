@@ -230,6 +230,11 @@ class Instances:
     and without masks be concatenated (missing masks are filled with False).
     `sources`, set by fusion aggregators, lists the detections merged into
     each instance; `provenance()` reads it for fused and plain instances alike.
+    `mask_source` / `mask_score` are set by mask refiners: the component that
+    produced each mask ("" = no mask) and the refiner's quality score (NaN for
+    detector masks). Fusion aggregators also set them, naming the member whose
+    mask a fused instance kept (it may not be the representative).
+    `mask_sources()` derives the sources when neither ran.
     """
 
     # Open for extension: select/concat/validate iterate the fields carrying
@@ -250,6 +255,15 @@ class Instances:
     # concatenated again, hence no concat_fill.
     sources: tuple[tuple[Provenance, ...], ...] | None = field(
         default=None, metadata=per_instance(_check_sources)
+    )
+    # Producer of each mask ("" = no mask): a detector or refiner name. Set by
+    # refiners and fusion aggregators, both downstream of every concat.
+    mask_source: tuple[str, ...] | None = field(
+        default=None, metadata=per_instance(check_str_tuple())
+    )
+    # (N,) float32 refiner quality score of each mask; NaN for detector masks.
+    mask_score: np.ndarray | None = field(
+        default=None, metadata=per_instance(check_array(np.float32))
     )
 
     def __len__(self) -> int:
@@ -293,6 +307,16 @@ class Instances:
             for source, raw_label, score in zip(
                 self.source, self.raw_label, self.score, strict=True
             )
+        )
+
+    def mask_sources(self) -> tuple[str, ...]:
+        """Producer of every instance's mask ("" = none): `mask_source` when a
+        refiner or fusion set it, else the instance's `source` where `has_mask()`."""
+        if self.mask_source is not None:
+            return self.mask_source
+        return tuple(
+            source if has else ""
+            for source, has in zip(self.source, self.has_mask(), strict=True)
         )
 
     def with_labels(self, labels: Sequence[str]) -> "Instances":
@@ -370,6 +394,50 @@ class Instances:
 
 
 @dataclass(frozen=True, slots=True)
+class RefinedMasks:
+    """Output of `MaskRefiner._refine` for its K target instances, in order."""
+
+    masks: np.ndarray  # (K, H, W) bool at frame resolution; all-False = no mask
+    score: np.ndarray  # (K,) float32 quality predicted by the refiner
+
+    def validate(self, k: int, frame_w: int, frame_h: int) -> None:
+        """Raises ContractError unless masks is (k, frame_h, frame_w) bool and
+        score is (k,) float32."""
+        check_array(np.bool_, ("h", "w"))("masks", self.masks, k, frame_w, frame_h)
+        check_array(np.float32)("score", self.score, k, frame_w, frame_h)
+
+
+@dataclass(frozen=True, slots=True)
+class SemanticMap:
+    """Class label per frame pixel: `labels` (H, W) int32 indexes `class_names`."""
+
+    labels: np.ndarray
+    class_names: tuple[str, ...]
+
+    def validate(self, frame_w: int, frame_h: int) -> None:
+        """Raises ContractError unless labels is (frame_h, frame_w) int32 with every
+        value a valid index of `class_names`."""
+        labels = self.labels
+        if not isinstance(labels, np.ndarray) or labels.dtype != np.int32:
+            got = getattr(labels, "dtype", type(labels).__name__)
+            raise ContractError(f"labels: expected int32 array, got {got}")
+        if labels.shape != (frame_h, frame_w):
+            raise ContractError(f"labels: shape {labels.shape} != {(frame_h, frame_w)}")
+        if labels.size and (labels.min() < 0 or labels.max() >= len(self.class_names)):
+            raise ContractError(
+                f"labels: values outside [0, {len(self.class_names)}) (class_names)"
+            )
+
+    def fractions(self) -> dict[str, float]:
+        """Fraction of the frame's pixels per class name (sums to 1)."""
+        counts = np.bincount(self.labels.ravel(), minlength=len(self.class_names))
+        return {
+            name: float(c) / self.labels.size
+            for name, c in zip(self.class_names, counts, strict=True)
+        }
+
+
+@dataclass(frozen=True, slots=True)
 class DepthResult:
     """Metric depth of one frame at depth-map resolution."""
 
@@ -409,9 +477,14 @@ class FrameResult:
     instances: Instances
     stats: "tuple[BoxDepthStats, ...]"  # aligned with instances
     depth: DepthResult
-    # "det", "det.<name>", "agree" (when computed), "aggregate", "depth", "dist"
+    # "det", "det.<name>", "agree" (when computed), "aggregate", "refine" and
+    # "refine.<name>" (with refiners), "depth", "semantic" and "semantic.<name>"
+    # (with semantic segmenters), "dist"
     timings_ms: dict[str, float]
     agreement: FrameAgreement | None = None  # None with one detector or disabled
     # Box statistics aligned with instances, only with region "both": set where
     # `stats` came from the instance mask, None elsewhere.
     box_stats: "tuple[BoxDepthStats | None, ...] | None" = None
+    # Segmenter name -> its map, in configuration (= drawing) order; {} without
+    # semantic segmenters. Maps are never merged: each keeps its own classes.
+    semantic: Mapping[str, SemanticMap] = field(default_factory=dict)

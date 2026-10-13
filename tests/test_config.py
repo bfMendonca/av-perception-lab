@@ -11,6 +11,7 @@ from det_depth_distance.config import (
 )
 from det_depth_distance.core import registry
 from det_depth_distance.core.options import ConfigError
+from det_depth_distance.core.pipeline import Pipeline
 from det_depth_distance.distance import DistanceConfig
 
 REPO = Path(__file__).parents[1]
@@ -47,6 +48,10 @@ def test_example_configs_build_without_frameworks(path, monkeypatch):
         assert not registry.build("detector", spec, path=f"detectors[{i}]").is_loaded
     registry.build("depth", cfg.depth, path="depth")
     registry.build("aggregator", cfg.aggregation, path="aggregation")
+    for i, spec in enumerate(cfg.refiners):
+        assert not registry.build("refiner", spec, path=f"refiners[{i}]").is_loaded
+    for i, spec in enumerate(cfg.semantic):
+        assert not registry.build("semantic", spec, path=f"semantic[{i}]").is_loaded
     assert cfg.source.video == Path("_testbed/data/IMG_4021.MOV")
 
 
@@ -60,6 +65,10 @@ def test_example_configs_cover_the_planned_runs():
         "rfdetr_seg_da3.yaml",
         "yolo_seg_da3.yaml",
         "yolo_o365_seg_da3.yaml",
+        "rfdetr_sam2_da3.yaml",
+        "yolo_o365_sam2_da3.yaml",
+        "rfdetr_semantic_da3.yaml",
+        "rfdetr_lanes_scene_da3.yaml",
     }
     multi = load_config(CONFIGS[0].with_name("multi_detector.yaml"))
     assert [d["type"] for d in multi.detectors] == ["rfdetr", "yolo"]
@@ -137,7 +146,7 @@ def test_positional_video_overrides_source(tmp_path):
 
 
 def test_pipeline_distance_keys_go_to_run_config(tmp_path):
-    assert PIPELINE_DISTANCE_KEYS == ("exclude_sky", "region")
+    assert PIPELINE_DISTANCE_KEYS == ("exclude_sky", "region", "exclude_semantic")
     cfg = load_config(write(tmp_path, MINIMAL), ["distance.exclude_sky=false"])
     assert cfg.exclude_sky is False and not hasattr(cfg.distance, "exclude_sky")
     with pytest.raises(ConfigError, match="under the distance section"):
@@ -247,3 +256,205 @@ def test_seg_configs_compare_mask_and_box(name, monkeypatch):
     cfg = load_config(REPO / "configs" / name)
     assert cfg.region == "both" and cfg.distance.mask_erode == 1
     assert cfg.render.layout == "side-by-side"
+
+
+# task_0005: refiners, semantic segmenters and namespaced exclusions.
+SEMANTIC = REPO / "configs" / "rfdetr_semantic_da3.yaml"
+LANES_SCENE = REPO / "configs" / "rfdetr_lanes_scene_da3.yaml"
+TWO_MAPS = {
+    **MINIMAL,
+    "semantic": [
+        {"name": "scene", "type": "segformer"},
+        {"name": "lanes", "type": "twinlitenet"},
+    ],
+}
+
+
+def test_semantic_defaults(tmp_path):
+    cfg = load_config(write(tmp_path, MINIMAL))
+    assert (cfg.refiners, cfg.semantic, cfg.exclude_semantic) == ((), (), ())
+    assert cfg.render.semantic_overlay is None and cfg.render.semantic_alpha == 0.4
+    explicit = load_config(write(tmp_path, {**MINIMAL, "semantic": [], "refiners": []}))
+    assert explicit == cfg
+    assert cfg.to_dict()["distance"]["exclude_semantic"] == []
+
+
+@pytest.mark.parametrize(
+    "value",
+    [
+        "[scene.road,scene.sky]",
+        "scene.road, scene.sky",
+        "[ scene.road, scene.sky, scene.road]",
+    ],
+)
+def test_exclude_semantic_list_or_string(tmp_path, value):
+    cfg = load_config(write(tmp_path, TWO_MAPS), [f"distance.exclude_semantic={value}"])
+    assert cfg.exclude_semantic == ("scene.road", "scene.sky")
+    data = {**TWO_MAPS, "distance": {"exclude_semantic": "scene.road,scene.sky"}}
+    assert load_config(write(tmp_path, data)).exclude_semantic == cfg.exclude_semantic
+    assert load_config(write(tmp_path, cfg.to_dict())) == cfg  # round trip
+
+
+def test_exclude_semantic_canonical_order(tmp_path):
+    cfg = load_config(
+        write(tmp_path, TWO_MAPS), ["distance.exclude_semantic=[lanes.lane, scene.sky]"]
+    )
+    assert cfg.exclude_semantic == ("scene.sky", "lanes.lane")  # order of `semantic`
+
+
+def test_semantic_list_overrides(monkeypatch):
+    monkeypatch.chdir(REPO)
+    cfg = load_config(
+        SEMANTIC,
+        ["semantic=[{name: lanes, type: twinlitenet}]", "distance.exclude_semantic=[]"],
+    )
+    assert [s["name"] for s in cfg.semantic] == ["lanes"]
+    single = load_config(SEMANTIC, ["semantic.0.size=[1024,1792]"])
+    assert single.semantic[0]["size"] == [1024, 1792]
+    built = registry.build("semantic", single.semantic[0], path="semantic[0]")
+    assert built.options.size == (1024, 1792)
+    combined = load_config(LANES_SCENE, ["semantic.1.size=[1024,1792]"])
+    lanes, scene = combined.semantic
+    assert scene["size"] == [1024, 1792] and "size" not in lanes
+    assert load_config(LANES_SCENE).semantic[0] == lanes  # TwinLiteNet+ untouched
+    assert combined.exclude_semantic == ("lanes.lane", "scene.sky", "scene.vegetation")
+    assert combined.render.semantic_overlay == ("lanes", "scene")
+    with pytest.raises(ConfigError, match="--set semantic.2.size"):
+        load_config(LANES_SCENE, ["semantic.2.size=[1,1]"])
+    off = load_config(
+        LANES_SCENE,
+        ["semantic=[]", "distance.exclude_semantic=[]", "render.semantic_overlay=null"],
+    )
+    assert off.semantic == () and off.exclude_semantic == ()
+
+
+@pytest.mark.parametrize(
+    ("data", "overrides", "match"),
+    [
+        (
+            {**MINIMAL, "semantic": [{"type": "segformer"}]},
+            [],
+            r"^semantic\[0\]\.name is required",
+        ),
+        (
+            TWO_MAPS,
+            ["semantic.1.name=scene"],
+            r"^semantic\[1\]\.name: duplicate name 'scene'",
+        ),
+        (
+            TWO_MAPS,
+            ["semantic.0.name=scene.x"],
+            r"^semantic\[0\]\.name: 'scene\.x' must match",
+        ),
+        (
+            TWO_MAPS,
+            ["semantic.0.name=Scene"],
+            r"^semantic\[0\]\.name: 'Scene' must match",
+        ),
+        (
+            TWO_MAPS,
+            ["semantic.0.name='a,b'"],
+            r"^semantic\[0\]\.name: 'a,b' must match",
+        ),
+        (
+            TWO_MAPS,
+            ["distance.exclude_semantic=[road]"],
+            r"^distance\.exclude_semantic: 'road'",
+        ),
+        (
+            TWO_MAPS,
+            ["distance.exclude_semantic=[sky.sky]"],
+            r"^distance\.exclude_semantic: .*unknown segmenter 'sky'",
+        ),
+        (
+            MINIMAL,
+            ["distance.exclude_semantic=[scene.road]"],
+            r"no semantic segmenter configured",
+        ),
+        (
+            TWO_MAPS,
+            ["render.semantic_overlay=[x]"],
+            r"^render\.semantic_overlay: unknown semantic map 'x'",
+        ),
+        (
+            MINIMAL,
+            ["render.semantic_alpha=1.5"],
+            r"^render: semantic_alpha must be in \[0, 1\]",
+        ),
+    ],
+)
+def test_semantic_config_errors(tmp_path, data, overrides, match):
+    with pytest.raises(ConfigError, match=match):
+        load_config(write(tmp_path, data), overrides)
+
+
+@pytest.mark.parametrize(
+    ("kind", "spec", "match"),
+    [
+        (
+            "refiner",
+            {"type": "sam2", "treshold": 1},
+            r"^refiners\[0\]\.treshold: unknown option",
+        ),
+        (
+            "semantic",
+            {"type": "segformer", "colour": 1},
+            r"^semantic\[1\]\.colour: unknown option",
+        ),
+        (
+            "refiner",
+            {"type": "sam_hq", "score": "object"},
+            r"^refiners\[0\]\.score: sam_hq has no object score",
+        ),
+        (
+            "refiner",
+            {
+                "type": "ultralytics_sam",
+                "weights": "x/mobile_sam.pt",
+                "min_object_score": 0.5,
+            },
+            r"^refiners\[0\]\.min_object_score: ultralytics_sam has no object score",
+        ),
+        (
+            "refiner",
+            {"type": "sam", "hq_token_only": True},
+            r"^refiners\[0\]\.hq_token_only: unknown option",
+        ),
+    ],
+)
+def test_refiner_and_semantic_specs_are_validated(tmp_path, kind, spec, match):
+    family = "refiners" if kind == "refiner" else "semantic"
+    data = {
+        **MINIMAL,
+        family: [spec]
+        if kind == "refiner"
+        else [{"name": "a", "type": "segformer"}, {**spec, "name": "b"}],
+    }
+    cfg = load_config(write(tmp_path, data))
+    specs = cfg.refiners if kind == "refiner" else cfg.semantic
+    with pytest.raises(ConfigError, match=match):
+        for i, s in enumerate(specs):
+            registry.build(kind, s, path=f"{family}[{i}]")
+
+
+def test_object_score_options_need_the_signal():
+    edgetam = registry.build(
+        "refiner",
+        {"type": "edgetam", "min_object_score": 0.5, "score": "object"},
+        path="refiners[0]",
+    )
+    assert edgetam.options.min_object_score == 0.5 and edgetam.name == "edgetam-hf"
+
+
+def test_two_unnamed_refiners_of_one_checkpoint_clash():
+    specs = [{"type": "sam2"}, {"type": "sam2"}]
+    refiners = [
+        registry.build("refiner", s, path=f"refiners[{i}]") for i, s in enumerate(specs)
+    ]
+    detector = registry.build("detector", {"type": "rfdetr"}, path="detectors[0]")
+    depth = registry.build("depth", {"type": "da3"}, path="depth")
+    aggregator = registry.build("aggregator", {"type": "concat"}, path="aggregation")
+    with pytest.raises(
+        ConfigError, match=r"^refiners: duplicate name 'sam2\.1-hiera-large'"
+    ):
+        Pipeline([detector], depth, aggregator, DistanceConfig(), refiners=refiners)

@@ -181,3 +181,26 @@ def test_fusion_options_from_yaml():
     assert (
         registry.build("aggregator", {"type": "nms"}, path="x").options.iou_thr == 0.5
     )
+
+
+@pytest.mark.parametrize("agg", [_nms, _wbf], ids=["nms", "wbf"])
+def test_fused_mask_names_its_member(make_instances, agg):
+    # Box-only `a` wins the cluster, the mask comes from `b`: mask_sources() must
+    # name `b`, not the representative.
+    a = make_instances([CAR], source="a", score=[0.9])
+    b = make_instances([CAR_SHIFTED], source="b", score=[0.7], masks=_mask(True))
+    fusion = agg()
+    fusion.bind_sources(["a", "b"])
+    out = fusion([a, b])
+    out.validate(100, 100)
+    assert len(out) == 1 and out.source == ("a",) and out.masks[0].any()
+    assert out.mask_source == ("b",) and out.mask_sources() == ("b",)
+    assert out.mask_score.dtype == np.float32 and np.isnan(out.mask_score).all()
+    # No member with a mask in the cluster: "" (and the masks stay all-False).
+    none = make_instances([CAR_SHIFTED], source="b", masks=_mask())
+    out = fusion([a, none])
+    assert out.mask_source == ("",) and not out.masks.any()
+    # No masks at all: the fields stay unset.
+    out = fusion([a, make_instances([CAR_SHIFTED], source="b")])
+    assert out.masks is None and out.mask_source is None and out.mask_score is None
+    assert out.mask_sources() == ("",)

@@ -11,10 +11,9 @@ resolution with the letterbox removed (without it, masks stay at the
 letterboxed input size). Ultralytics crops masks to their boxes and drops
 predictions with an empty mask.
 
-YOLO_OFFLINE, YOLO_AUTOINSTALL and YOLO_CONFIG_DIR are set (setdefault)
-before the lazy import because ultralytics reads them at import time:
-otherwise it may pip-install missing packages, send usage events, and
-write settings.json to the user's config dir.
+YOLO_OFFLINE, YOLO_AUTOINSTALL and YOLO_CONFIG_DIR are set (setdefault, see
+adapters._ultralytics_env) when this module is imported, before the lazy
+import, because ultralytics reads them at import time.
 """
 
 import os
@@ -24,16 +23,14 @@ from typing import Any
 
 import numpy as np
 
+from det_depth_distance.adapters._ultralytics_env import apply_ultralytics_env
 from det_depth_distance.core.components import Detector, DetectorOptions, LoadContext
 from det_depth_distance.core.options import ConfigError
 from det_depth_distance.core.registry import register
 from det_depth_distance.core.types import Instances
-from det_depth_distance.runtime import REPO, package_version
+from det_depth_distance.runtime import package_version
 
-# No DNS probe, usage events or version check.
-os.environ.setdefault("YOLO_OFFLINE", "1")
-os.environ.setdefault("YOLO_AUTOINSTALL", "False")  # never pip-install at run time
-os.environ.setdefault("YOLO_CONFIG_DIR", str(REPO / "_testbed" / "config"))
+apply_ultralytics_env()
 
 _STRIDE = 32  # max stride of the YOLO26 detection heads
 

@@ -19,11 +19,13 @@ from det_depth_distance.core.types import (
     MapGeometry,
     PairAgreement,
     Provenance,
+    SemanticMap,
 )
 from det_depth_distance.distance import (
     DistanceConfig,
     box_depth_stats,
     instance_depth_stats,
+    resample_mask,
 )
 from det_depth_distance.io.sinks import (
     CSV_FIELDS,
@@ -40,6 +42,7 @@ from det_depth_distance.io.source import VideoSource
 from det_depth_distance.io.video import VideoWriter, probe
 
 GEOMETRY = MapGeometry(100, 100, 50, 50, 0.5, 0.5)
+MASK_COLUMNS = ("used_mask", "mask_px", "mask_erode", "box_distance_m")  # task_0004
 K = CameraIntrinsics(25.0, 25.0, 25.0, 25.0)
 
 
@@ -84,6 +87,8 @@ def test_csv_fields_order():
         "mask_px",
         "mask_erode",
         "box_distance_m",
+        "mask_source",
+        "mask_score",
     )
 
 
@@ -136,12 +141,15 @@ def ctx(tmp_path):
                 "fixed_intrinsics": {"fx": 1.0, "fy": 1.0, "cx": 0.0, "cy": 0.0},
             },
             "aggregator": {"type": "concat", "options": {}},
+            "refiners": [],
+            "semantic": [],
         },
         "pipeline": {
             "exclude_sky": True,
             "agreement": None,
             "region": "mask",
             "mask_erode": 1,
+            "exclude_semantic": {},
         },
     }
     source = SimpleNamespace(describe=lambda: {"path": "clip.mov", "width": 100})
@@ -173,9 +181,10 @@ def test_csv_sink(ctx, result):
         assert row["source_scores"] == row["confidence"]
     assert float(rows[0]["distance_m"]) == pytest.approx(12.0)
     assert rows[1]["distance_m"] == ""  # 25 px < min_valid_px
-    # Box rows: the task_0004 columns are empty, used_mask is 0.
+    # Box rows: the task_0004 columns are empty, used_mask is 0; no mask, no score.
     for row in rows:
-        assert [row[k] for k in CSV_FIELDS[-4:]] == ["0", "", "", ""]
+        assert [row[k] for k in MASK_COLUMNS] == ["0", "", "", ""]
+        assert (row["mask_source"], row["mask_score"]) == ("", "")
 
 
 @pytest.fixture
@@ -272,6 +281,11 @@ def test_metrics_sink(ctx, result):
     assert "region_comparison" not in metrics  # region "mask"
     assert metrics["distance"]["k"] == 1.5
     assert "ultralytics" in metrics["versions"] and metrics["versions"]["gpu"] == "fake"
+    assert {"transformers", "timm"} <= set(metrics["versions"])  # None without infer
+    # No refiner and no semantic segmenter: the box rows have no mask producer.
+    assert (metrics["mask_sources"], metrics["refined"]) == ({}, {})
+    assert "semantic" not in metrics
+    assert metrics["distance"]["exclude_semantic"] == []
     assert math.isfinite(metrics["wall_time_s"])
 
 
@@ -321,12 +335,13 @@ def test_video_sink_single_detector_concat_is_unchanged(ctx, result, tmp_path):
     sink = VideoSink(RenderConfig(), DistanceConfig())
     sink.open(ctx)
     drawn = []
-    sink._renderer.render = lambda rgb, boxes, hud, depth: (
-        drawn.append((boxes, hud)) or rgb
+    sink._renderer.render = lambda rgb, boxes, hud, depth, **kw: (
+        drawn.append((boxes, hud, kw)) or rgb
     )
     sink.write(result)
     sink.close()
-    (boxes, hud) = drawn[0]
+    (boxes, hud, kw) = drawn[0]
+    assert kw == {"semantic": []}  # no semantic segmenter: no layer
     assert [b.color_key for b in boxes] == [None, None]  # colour by label
     assert [b.label for b in boxes] == ["car 91% · 12.0 m", "suv 50% · n/a"]
     assert len(hud) == 4  # no fusion or agreement line
@@ -383,7 +398,7 @@ def test_video_sink_fused_labels_colours_and_hud(ctx, fused_result, tmp_path):
     sink = VideoSink(RenderConfig(), DistanceConfig())
     sink.open(ctx)
     drawn = []
-    sink._renderer.render = lambda rgb, boxes, hud, depth: (
+    sink._renderer.render = lambda rgb, boxes, hud, depth, **kw: (
         drawn.append((boxes, hud)) or rgb
     )
     sink.write(fused_result)
@@ -439,7 +454,10 @@ def test_csv_sink_both_row(ctx, both_result):
     # 3 map columns: one erosion would leave 18 px < min_valid_px, so none is applied.
     assert first["mask_px"] == str(stats.mask_px) == "60" and first["mask_erode"] == "0"
     assert float(first["box_distance_m"]) == pytest.approx(12.0)
-    assert [second[k] for k in CSV_FIELDS[-4:]] == ["0", "", "", ""]
+    assert [second[k] for k in MASK_COLUMNS] == ["0", "", "", ""]
+    # Detector mask (no refiner): its producer is the instance's source, no score.
+    assert (first["mask_source"], first["mask_score"]) == ("yolo", "")
+    assert (second["mask_source"], second["mask_score"]) == ("", "")
 
 
 def test_region_comparison_by_hand():
@@ -498,7 +516,7 @@ def test_video_sink_masks_and_region_hud(ctx, both_result, tmp_path, mask_alpha)
     sink = VideoSink(RenderConfig(mask_alpha=mask_alpha), DistanceConfig())
     sink.open(ctx)
     drawn = []
-    sink._renderer.render = lambda rgb, boxes, hud, depth: (
+    sink._renderer.render = lambda rgb, boxes, hud, depth, **kw: (
         drawn.append((boxes, hud)) or rgb
     )
     sink.write(both_result)
@@ -512,3 +530,199 @@ def test_video_sink_masks_and_region_hud(ctx, both_result, tmp_path, mask_alpha)
     # One instance used its mask: the distance line names the policy.
     assert hud[2] == "median · iqr · shrink 0.1 · z · region mask · erode 1"
     assert len(hud) == 4
+
+
+# task_0005: refiner and semantic outputs. The refiner name contains a dot, as
+# default names derived from checkpoints do.
+SAM = "sam2.1-hiera-large"
+SCENE = ("road", "sky")
+LANES = ("background", "lane")
+
+
+def _maps() -> dict[str, SemanticMap]:
+    scene = np.ones((100, 100), np.int32)
+    scene[:, :50] = 0  # road: left half
+    lanes = np.zeros((100, 100), np.int32)
+    lanes[:30] = 1  # lane: top 30 rows (overlaps the road on the top-left)
+    return {"scene": SemanticMap(scene, SCENE), "lanes": SemanticMap(lanes, LANES)}
+
+
+@pytest.fixture
+def refined_result(result):
+    """`result` after a SAM refiner: a mask on the first instance (score 0.87654),
+    an empty refined mask on the second; with two semantic maps."""
+    masks = np.zeros((2, 100, 100), dtype=bool)
+    masks[0, 5:30, 5:30] = True
+    instances = replace(
+        result.instances,
+        masks=masks,
+        mask_source=(SAM, ""),
+        mask_score=np.array([0.87654, np.nan], np.float32),
+    )
+    return replace(result, instances=instances, semantic=_maps())
+
+
+@pytest.fixture
+def semantic_ctx(ctx):
+    components = {
+        **ctx.pipeline["components"],
+        "refiners": [{"type": "sam2", "name": SAM, "options": {"targets": "missing"}}],
+        "semantic": [
+            {"type": "segformer", "name": "scene", "options": {}},
+            {"type": "twinlitenet", "name": "lanes", "options": {}},
+        ],
+    }
+    policy = {
+        **ctx.pipeline["pipeline"],
+        "exclude_semantic": {"scene": ["road"], "lanes": ["lane"]},
+    }
+    return replace(ctx, pipeline={"components": components, "pipeline": policy})
+
+
+def test_csv_sink_refined_rows(semantic_ctx, refined_result):
+    sink = CsvSink()
+    sink.open(semantic_ctx)
+    sink.write(refined_result)
+    sink.close()
+    with open(semantic_ctx.run_dir / "detections.csv", newline="") as fh:
+        rows = list(csv.DictReader(fh))
+    assert tuple(rows[0]) == CSV_FIELDS  # no semantic column, even with segmenters
+    assert (rows[0]["mask_source"], rows[0]["mask_score"]) == (SAM, "0.8765")
+    assert (rows[1]["mask_source"], rows[1]["mask_score"]) == ("", "")
+
+
+@pytest.mark.skipif(shutil.which("ffmpeg") is None, reason="needs ffmpeg/ffprobe")
+@pytest.mark.parametrize(
+    ("overlay", "drawn"), [(None, ["scene", "lanes"]), (("lanes",), ["lanes"])]
+)
+def test_video_sink_semantic_layers_and_hud(
+    semantic_ctx, refined_result, tmp_path, overlay, drawn
+):
+    clip = tmp_path / "clip.mp4"
+    with VideoWriter(clip, 100, 100, "10/1") as writer:
+        writer.write(np.zeros((100, 100, 3), np.uint8))
+    ctx = replace(semantic_ctx, source=VideoSource(SourceConfig(video=clip)))
+    sink = VideoSink(RenderConfig(semantic_overlay=overlay), DistanceConfig())
+    sink.open(ctx)
+    calls = []
+    sink._renderer.render = lambda rgb, boxes, hud, depth, **kw: (
+        calls.append((hud, kw)) or rgb
+    )
+    sink.write(refined_result)
+    sink.close()
+    hud, kw = calls[0]
+    maps = refined_result.semantic
+    assert [names for _, names in kw["semantic"]] == [
+        maps[n].class_names for n in drawn
+    ]
+    assert hud[-3:] == [
+        f"refine {SAM} · 1/2",
+        "semantic scene · excl road",
+        "semantic lanes · excl lane",
+    ]
+    off = VideoSink(RenderConfig(semantic_alpha=0.0), DistanceConfig())
+    off.open(ctx)
+    off._renderer.render = lambda rgb, boxes, hud, depth, **kw: (
+        calls.append((hud, kw)) or rgb
+    )
+    off.write(refined_result)
+    off.close()
+    assert calls[-1][1] == {"semantic": []}
+
+
+def test_npz_sink_semantic_labels(ctx, result, refined_result):
+    sink = NpzSink()
+    sink.open(ctx)
+    sink.write(refined_result)
+    sink.write(refined_result)
+    sink.close()
+    data = np.load(ctx.run_dir / "depth.npz")
+    assert set(data) == {
+        "depth",
+        "frame_index",
+        "intrinsics",
+        "geometry",
+        "geometry_fields",
+        "semantic_labels_scene",
+        "semantic_classes_scene",
+        "semantic_labels_lanes",
+        "semantic_classes_lanes",
+    }
+    labels = data["semantic_labels_scene"]
+    assert labels.shape == (2, 50, 50) and labels.dtype == np.uint8
+    expected = resample_mask(
+        refined_result.semantic["scene"].labels, GEOMETRY, (0, 0, 50, 50)
+    )
+    np.testing.assert_array_equal(labels[1], expected)
+    assert data["semantic_classes_lanes"].tolist() == list(LANES)
+
+
+def _metrics(ctx, *results):
+    monitor = SimpleNamespace(
+        summary=lambda: dict.fromkeys(
+            [
+                "peak_vram_torch_allocated_gb",
+                "device_mem_used_delta_gb_approx",
+                "torch",
+                "cuda",
+                "gpu",
+            ]
+        )
+    )
+    sink = MetricsSink(monitor, dict)
+    sink.open(ctx)
+    for r in results:
+        sink.write(r)
+    sink.close()
+    return json.loads((ctx.run_dir / "metrics.json").read_text())
+
+
+def test_metrics_sink_refined_and_semantic(semantic_ctx, refined_result):
+    cfg = replace(
+        semantic_ctx.config,
+        semantic=(
+            {"name": "scene", "type": "segformer"},
+            {"name": "lanes", "type": "twinlitenet"},
+        ),
+        exclude_semantic=("scene.road", "lanes.lane"),
+    )
+    metrics = _metrics(
+        replace(semantic_ctx, config=cfg), refined_result, refined_result
+    )
+    assert metrics["mask_sources"] == {SAM: 2}
+    assert metrics["refined"] == {SAM: {"targets": 4, "filled": 2}}
+    assert metrics["pipeline"]["exclude_semantic"] == {
+        "scene": ["road"],
+        "lanes": ["lane"],
+    }
+    assert metrics["distance"]["exclude_semantic"] == ["scene.road", "lanes.lane"]
+    semantic = metrics["semantic"]
+    scene, lanes = semantic["maps"]["scene"], semantic["maps"]["lanes"]
+    assert scene["exclude"] == ["road"] and scene["class_frac_mean"] == {
+        "road": 0.5,
+        "sky": 0.5,
+    }
+    assert scene["excluded_frac_mean"] == pytest.approx(0.5)
+    assert lanes["excluded_frac_mean"] == pytest.approx(0.3)
+    # Union of the exclusions: the overlap (top-left) is counted once.
+    assert semantic["excluded_frac_mean"] == pytest.approx(0.65)
+    assert (
+        semantic["excluded_frac_mean"]
+        < scene["excluded_frac_mean"] + lanes["excluded_frac_mean"]
+    )
+    assert {"transformers", "timm"} <= set(metrics["versions"])
+
+
+def test_refined_targets_follow_the_policy(semantic_ctx, refined_result):
+    components = semantic_ctx.pipeline["components"]
+    refiners = [{**components["refiners"][0], "options": {"targets": "all"}}]
+    ctx = replace(
+        semantic_ctx,
+        pipeline={
+            **semantic_ctx.pipeline,
+            "components": {**components, "refiners": refiners},
+        },
+    )
+    assert _metrics(ctx, refined_result)["refined"] == {
+        SAM: {"targets": 2, "filled": 1}
+    }

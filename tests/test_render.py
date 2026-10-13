@@ -134,3 +134,74 @@ def test_mask_also_tints_the_depth_panel():
 def test_mask_alpha_range():
     with pytest.raises(ValueError, match="mask_alpha"):
         Renderer(160, 120, title="x", mask_alpha=1.5)
+
+
+# task_0005: semantic layers (labels, class_names) under masks and boxes.
+SCENE = ("background", "road", "car")  # "car" shares the box colour
+LANES = ("background", "lane", "road")
+
+
+def _layers():
+    scene = np.zeros((120, 160), np.int32)
+    scene[:, :80] = 1  # road on the left half
+    lanes = np.zeros((120, 160), np.int32)
+    lanes[:40] = 1  # lane on the top third
+    lanes[100:, 100:] = 2  # road in the lanes map too
+    return (scene, SCENE), (lanes, LANES)
+
+
+def _plain_renderer(**kwargs):
+    return Renderer(160, 120, title="t", show_hud=False, **kwargs)
+
+
+FRAME = np.full((120, 160, 3), 100, np.uint8)
+
+
+def test_semantic_layer_tints_only_non_background():
+    r = _plain_renderer()
+    scene, _ = _layers()
+    out = r.render(FRAME, [], [], semantic=[scene])
+    changed = (out != FRAME).any(axis=2)
+    assert np.array_equal(changed, scene[0] != 0)
+    assert np.array_equal(
+        out[0, 0], np.rint(0.6 * 100 + 0.4 * np.array(color_for("road")))
+    )
+    assert np.array_equal(FRAME, np.full((120, 160, 3), 100, np.uint8))  # not in place
+
+
+def test_semantic_off_or_empty_is_the_plain_render():
+    plain = _plain_renderer().render(FRAME, [BOX], [])
+    assert np.array_equal(
+        _plain_renderer().render(FRAME, [BOX], [], semantic=()), plain
+    )
+    off = _plain_renderer(semantic_alpha=0.0)
+    assert np.array_equal(off.render(FRAME, [BOX], [], semantic=list(_layers())), plain)
+    with pytest.raises(ValueError, match="semantic_alpha"):
+        _plain_renderer(semantic_alpha=1.5)
+
+
+def test_semantic_layers_compose_in_order():
+    r = _plain_renderer()
+    scene, lanes = _layers()
+    both = r.render(FRAME, [], [], semantic=[scene, lanes])
+    swapped = r.render(FRAME, [], [], semantic=[lanes, scene])
+    overlap = (scene[0] != 0) & (lanes[0] != 0)
+    differs = (both != swapped).any(axis=2)
+    assert differs.any() and not (differs & ~overlap).any()  # only overlaps differ
+    only_scene = (scene[0] != 0) & ~overlap
+    alone = r.render(FRAME, [], [], semantic=[scene])
+    assert np.array_equal(both[only_scene], alone[only_scene])
+    # The same class keeps one colour in both maps ("road" left and bottom right).
+    road_only = r.render(FRAME, [], [], semantic=[lanes])
+    assert np.array_equal(road_only[110, 150], alone[0, 0])
+
+
+def test_semantic_layer_is_under_the_boxes_and_not_on_the_depth_panel():
+    r = _plain_renderer(layout="side-by-side")
+    depth = np.full((28, 42), 5.0, np.float32)
+    scene, _ = _layers()
+    with_layer = r.render(FRAME, [BOX], [], depth, semantic=[scene])
+    without = r.render(FRAME, [BOX], [], depth)
+    assert np.array_equal(with_layer[:, 160:], without[:, 160:])
+    # Box outline pixels are drawn over the layer: identical where the box edge is.
+    assert np.array_equal(with_layer[21, 15:55], without[21, 15:55])

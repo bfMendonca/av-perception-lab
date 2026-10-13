@@ -46,6 +46,11 @@ ssh gpu-host 'cd ~/dev/det-depth-distance && ~/.local/bin/uv run --extra infer p
 #   ... --config configs/multi_detector.yaml --set source.max_frames=300 --set render.show_stats=true
 #   ... --list-models
 
+# Pesos dos refinadores SAM e do SegFormer: só com confirmação do usuário (~3,9 GB); vão para o
+# cache HF weights/hf (ignorado pelo git e pelo push); a execução nunca baixa nada.
+# No gpu-host, dentro do repo (lista completa e opcionais no README, "Pesos dos refinadores e do SegFormer"):
+#   ~/.local/bin/uv run --extra infer python -c "from huggingface_hub import snapshot_download as d; d('facebook/sam2.1-hiera-large', cache_dir='weights/hf', allow_patterns=['*.json', 'model.safetensors'])"
+
 # Traz as saídas de volta para o _testbed/ local
 utils/sync_gpu_host.sh pull [RUN_DIR]
 ```
@@ -79,8 +84,10 @@ uv run ruff format .
 - **Formatação**: Ruff com defaults (88 colunas, aspas duplas), sem seção de
   configuração no `pyproject.toml` enquanto os defaults bastarem.
 - **Imports**: 3 grupos PEP 8 (stdlib, terceiros, locais), ordenados.
-  Imports pesados (`torch`, `rfdetr`, `depth_anything_3`, `ultralytics`)
-  ficam dentro do `_load` dos adaptadores (e de `runtime.DeviceMonitor`),
+  Imports pesados (`torch`, `rfdetr`, `depth_anything_3`, `ultralytics`,
+  `transformers`, `timm`, o `model` do clone TwinLiteNet+)
+  ficam dentro do `_load` dos adaptadores e dos métodos chamados depois
+  dele (e de `runtime.DeviceMonitor`),
   para que `core/`, a configuração e o cálculo de distância sejam
   importáveis e testáveis sem a stack GPU.
 - **Nomenclatura**:

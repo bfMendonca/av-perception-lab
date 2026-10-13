@@ -21,6 +21,8 @@ infer = [
     "depth-anything-3",
     "addict>=2.4.0",
     "ultralytics==8.4.175",
+    "transformers>=5.1,<6", # SAM-family refiners and SegFormer
+    "timm>=1.0.17", # EdgeTAM backbone (transformers TimmWrapper)
 ]
 
 [project.scripts]

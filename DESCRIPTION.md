@@ -25,8 +25,14 @@ added per-detector label maps (raw -> canonical labels), cross-detector
 fusion (NMS, WBF) that keeps every merged detection, and cross-detector
 agreement metrics. task_0004 added instance segmentation (RF-DETR Seg,
 YOLO26-seg) and mask-based distance with a `region` policy (mask, box or
-both for comparison). The CLI writes an annotated video, a per-box CSV and a
-metrics JSON.
+both for comparison). task_0005 added mask refiners that turn any
+detector's boxes into instance masks (SAM family: SAM 2.1, EdgeTAM, SAM-HQ,
+SAM, SAM 3 tracker via `transformers`, plus MobileSAM/SAM via Ultralytics),
+and several named semantic segmenters per run (SegFormer Cityscapes,
+TwinLiteNet+ drivable area/lanes) whose excluded classes make pixels
+ineligible for distance. The CLI writes an annotated video, a per-box CSV and a
+metrics JSON. task_0005's GPU validation (contract tests, weights, runs) is
+still pending on the inference host.
 
 ## 2. Technology Stack
 
@@ -35,7 +41,9 @@ metrics JSON.
 | Language | Python 3.11 (`requires-python >=3.11,<3.12`) |
 | Env / deps | Astral uv, `pyproject.toml` + versioned `uv.lock` |
 | Base deps | numpy<2 (required by depth-anything-3), opencv-python, pillow, pyyaml>=6 (run configuration, read in the light env) |
-| `infer` extra (GPU host only) | torch 2.8.0 + torchvision 0.23.0 + xformers 0.0.32.post2 from the PyTorch cu128 index; `rfdetr` @ git 1f2af2ea; `depth-anything-3` @ git 3d835ec; `addict` (imported by depth-anything-3 but not declared by it); `ultralytics==8.4.175` (YOLO26; **AGPL-3.0** — acceptable for this internal research prototype, optional extra) |
+| `infer` extra (GPU host only) | torch 2.8.0 + torchvision 0.23.0 + xformers 0.0.32.post2 from the PyTorch cu128 index; `rfdetr` @ git 1f2af2ea; `depth-anything-3` @ git 3d835ec; `addict` (imported by depth-anything-3 but not declared by it); `ultralytics==8.4.175` (YOLO26 and the optional `ultralytics_sam` refiner; **AGPL-3.0** — acceptable for this internal research prototype, optional extra); `transformers>=5.1,<6` (locked 5.19.0; previously only transitive via rfdetr; SAM-family refiners and SegFormer); `timm>=1.0.17` (locked 1.0.30; only for EdgeTAM's TimmWrapper backbone) |
+| External code (GPU host) | TwinLiteNet+ clone `~/dev/TwinLiteNetPlus` @ 90f1b86 (MIT; not a package, imported with a temporary `sys.path` entry; weights in its `pretrained/`) |
+| Model licences (task_0005) | Apache-2.0: SAM, SAM 2.1, SAM-HQ, EdgeTAM, MobileSAM, `timm`; "SAM License", gated: SAM 3 (`sam3_tracker`, optional, never a default); `other` (NVIDIA terms, read before non-academic use): SegFormer checkpoints; MIT: TwinLiteNet+; AGPL-3.0: ultralytics |
 | Dev group | pytest, ruff |
 | Video I/O | system ffmpeg/ffprobe |
 | Inference host | `gpu-host`: NVIDIA RTX PRO 6000 Blackwell 96 GB (sm_120), no sudo |
@@ -47,21 +55,25 @@ metrics JSON.
 det-depth-distance/
 ├── pyproject.toml           # uv manifest; "infer" extra holds the GPU stack; pytest "gpu" marker
 ├── uv.lock
-├── configs/                 # example run YAMLs: rfdetr_da3, yolo_o365_da3, multi_detector, multi_detector_fused
+├── configs/                 # example run YAMLs: rfdetr_da3, yolo_o365_da3, multi_detector(_fused), *_seg_da3, rfdetr_sam2_da3, yolo_o365_sam2_da3, rfdetr_semantic_da3, rfdetr_lanes_scene_da3
 │   └── labels/              # versioned label maps: coco_driving, objects365_driving
 ├── src/det_depth_distance/
 │   ├── core/                # contracts + orchestration, no ML framework imports
-│   │   ├── types.py         # Frame, Instances, DepthResult, FrameResult, MapGeometry, CameraIntrinsics, ContractError
+│   │   ├── types.py         # Frame, Instances, DepthResult, FrameResult, RefinedMasks, SemanticMap, MapGeometry, CameraIntrinsics, ContractError
 │   │   ├── options.py       # ConfigError, from_mapping (typed YAML -> dataclass, dotted error paths)
-│   │   ├── components.py    # LoadContext, Component, DetectorOptions, Detector, DepthEstimator (ABCs)
+│   │   ├── components.py    # LoadContext, Component, DetectorOptions, Detector, DepthEstimator, RefinerOptions, MaskRefiner, SemanticSegmenter (ABCs)
 │   │   ├── registry.py      # @register, build, available, load_adapters (ADAPTER_MODULES)
-│   │   ├── labels.py        # Vocabulary, COCO / OBJECTS365 presets, identify_vocabulary, resolve_classes, LabelMap
+│   │   ├── labels.py        # Vocabulary, COCO / OBJECTS365 presets, identify_vocabulary, resolve_classes, LabelMap, SEMANTIC_NAME_PATTERN, group_semantic_labels
 │   │   ├── boxes.py         # numpy box geometry: iou_matrix, label_groups, greedy_match, nms_clusters, wbf_clusters
 │   │   ├── aggregate.py     # Aggregator (bind_sources hook), Concat, FusionOptions, FusionAggregator, Nms, Wbf
 │   │   ├── agreement.py     # frame_agreement, AgreementStats (cross-detector agreement)
-│   │   └── pipeline.py      # Pipeline: detectors -> agreement -> aggregation -> depth -> distance, timings
+│   │   └── pipeline.py      # Pipeline: detectors -> agreement -> aggregation -> refiners -> depth -> semantic -> eligibility -> distance, timings
 │   ├── adapters/detectors/  # rfdetr.py (RFDETRDetector), ultralytics_yolo.py (YoloDetector)
 │   ├── adapters/depth/      # da3.py (DA3Depth + geometry/focal/unit helpers)
+│   ├── adapters/refiners/   # box_prompt.py (BoxPromptRefiner, numpy), hf_sam.py (HFSamRefiner + sam2/edgetam/sam_hq/sam/sam3_tracker), ultralytics_sam.py
+│   ├── adapters/semantic/   # segformer.py (SegformerSegmenter), twinlitenet.py (TwinLiteNetSegmenter)
+│   ├── adapters/_hf_hub.py  # offline from_pretrained + exact download command
+│   ├── adapters/_ultralytics_env.py  # YOLO_OFFLINE / YOLO_AUTOINSTALL / YOLO_CONFIG_DIR policy (YOLO and SAM)
 │   ├── io/                  # video.py (ffmpeg pipes), source.py (VideoSource), sinks.py (CSV/video/npz/metrics)
 │   ├── camera.py            # IntrinsicsProvider: FixedIntrinsics, EstimatedIntrinsics
 │   ├── config.py            # RunConfig + sections, load_config, apply_overrides (--set)
@@ -82,15 +94,17 @@ No database. Everything crossing a component boundary is a frozen numpy
 dataclass (`core/types.py`), never a framework object:
 
 - `Frame`: index, t, rgb (H, W, 3) uint8 upright RGB.
-- `Instances`: xyxy (N,4) float32 frame pixels (continuous edges), score, class_id, `label` (canonical), `raw_label` (model vocabulary), `source` (component name), optional `masks` (N,H,W) bool, optional `sources` (per instance, a tuple of `Provenance(source, raw_label, score)` members; set only by fusion aggregators, `provenance()` synthesises one member per unfused instance). Each per-instance field declares its validator and concat fill in its metadata (`per_instance`), so `select`/`concat`/`validate` handle future fields unchanged; an all-False mask means "no mask".
+- `Instances`: xyxy (N,4) float32 frame pixels (continuous edges), score, class_id, `label` (canonical), `raw_label` (model vocabulary), `source` (component name), optional `masks` (N,H,W) bool, optional `sources` (per instance, a tuple of `Provenance(source, raw_label, score)` members; set only by fusion aggregators, `provenance()` synthesises one member per unfused instance), optional `mask_source` (producer of each mask: detector, refiner, or the fusion member that owns it; "" = none) and `mask_score` (float32 refiner quality, NaN for detector masks); `mask_sources()` synthesises the producer when unset. Each per-instance field declares its validator and concat fill in its metadata (`per_instance`), so `select`/`concat`/`validate` handle future fields unchanged; an all-False mask means "no mask".
 - `DepthResult`: depth_m (map_h, map_w) float32 metres, `CameraIntrinsics` at map resolution, optional sky mask, and the frame -> map `MapGeometry`.
 - `CameraIntrinsics` uses continuous pixel coordinates (principal point of a centred camera at (W/2, H/2)); `MapGeometry.scale_intrinsics` maps frame K to map K.
-- `FrameResult`: frame, instances, per-instance `BoxDepthStats`, depth, timings, optional `box_stats` (only with region "both": box statistics where `stats` came from the mask, None elsewhere), optional `FrameAgreement` (per detector `instances`/`duplicates` after in-detector NMS, and one `PairAgreement(a, b, matched, only_a, only_b, iou_sum)` per detector pair).
+- `RefinedMasks`: masks (K,H,W) bool + score (K,) float32, the output of `MaskRefiner._refine` for its K targets.
+- `SemanticMap`: labels (H,W) int32 indexing `class_names`; `fractions()` per class.
+- `FrameResult`: frame, instances, per-instance `BoxDepthStats`, depth, timings, `semantic` (segmenter name -> `SemanticMap`, config order; `{}` without segmenters; maps are never merged), optional `box_stats` (only with region "both": box statistics where `stats` came from the mask, None elsewhere), optional `FrameAgreement` (per detector `instances`/`duplicates` after in-detector NMS, and one `PairAgreement(a, b, matched, only_a, only_b, iou_sum)` per detector pair).
 - `LabelMap` (core/labels.py): name, raw -> canonical `mapping`, `unmapped` policy (`keep`/`drop`), optional declared `vocabulary`; loaded from `configs/labels/*.yaml`, checked against the model's class names and identified vocabulary at load.
 - `DistanceConfig` / `BoxDepthStats` (distance.py): parameters (incl. `mask_erode`, depth-map pixels) and per-region statistics; `mask_px` / `mask_erode` are set (and `used_mask` true) when the region was the instance mask. `Instances.masks` are filled by the Seg adapters: RF-DETR Seg (`rfdetr` `variant: seg-*`, COCO) and YOLO26-seg (`*-seg.pt`, COCO; `*-objv1-seg.pt`, expected Objects365 — not yet verified on the GPU host).
-- `RunConfig` (config.py): the YAML run (source, detectors, depth, camera, aggregation, agreement, distance, render, output, device).
+- `RunConfig` (config.py): the YAML run (source, detectors, depth, camera, aggregation, refiners, semantic, agreement, distance incl. `exclude_semantic` "<segmenter>.<class>" labels, render incl. `semantic_alpha`/`semantic_overlay`, output, device).
 
-Per run: `video.mp4`, `detections.csv` (one row per box; task_0001 columns then `source`, `raw_label`, `n_sources`, `sources`, `source_scores`, `raw_labels` — the last three `|`-joined, best member per detector — then `used_mask`, `mask_px`, `mask_erode`, `box_distance_m`), `metrics.json` (`components`, `pipeline` incl. `agreement`, `region` and `mask_erode` policy, focal, timings incl. `det.<name>`, `agree` and `aggregate`, `detections_by_source`, `detections_by_n_sources`, `distance_regions`, `region_comparison` (mask minus box, with region "both"), `agreement` summary with >= 2 detectors, resolved `config`), optional `depth.npz`.
+Per run: `video.mp4`, `detections.csv` (one row per box; task_0001 columns then `source`, `raw_label`, `n_sources`, `sources`, `source_scores`, `raw_labels` — the last three `|`-joined, best member per detector — then `used_mask`, `mask_px`, `mask_erode`, `box_distance_m`, then `mask_source`, `mask_score`; no semantic column), `metrics.json` (`components` incl. `refiners`/`semantic`, `pipeline` incl. `agreement`, `region`, `mask_erode` and `exclude_semantic` policy, focal, timings incl. `det.<name>`, `agree`, `aggregate`, `refine(.<name>)`, `semantic(.<name>)`, `detections_by_source`, `detections_by_n_sources`, `distance_regions`, `mask_sources`, `refined` (targets/filled per refiner), `semantic` (with segmenters: per-map class fractions and excluded fraction, plus the excluded fraction of the union), `region_comparison` (mask minus box, with region "both"), `agreement` summary with >= 2 detectors, versions incl. `transformers`/`timm`, resolved `config`), optional `depth.npz` (plus `semantic_labels_<name>` on the depth-map grid and `semantic_classes_<name>` per segmenter).
 
 ## 5. Architecture Patterns
 
@@ -119,6 +133,28 @@ Per run: `video.mp4`, `detections.csv` (one row per box; task_0001 columns then 
   window (pixels outside the box ignored), eroded in map pixels with a
   back-off for thin objects, then the box statistics core (`_region_stats`)
   runs on it; box-only detectors keep the task_0002 result bit for bit.
+  Stage order (task_0005): detectors -> agreement -> aggregation -> mask
+  refiners (in order) -> depth -> semantic segmenters (in order) -> pixel
+  eligibility (`distance.map_eligibility`: not sky and not in the union of
+  the excluded classes, labels sampled on the depth-map grid) -> distance.
+  Without refiners and segmenters the outputs are those of task_0004.
+- Mask refiners (D9 hierarchy): `MaskRefiner` (core, the only contract the
+  pipeline knows: target selection `missing`/`all`, merge where an empty
+  refined mask never replaces one, `mask_source`/`mask_score`) ->
+  `BoxPromptRefiner` (adapters/refiners/box_prompt.py, numpy only: one frame
+  preparation, boxes in batches of `max_boxes`, highest-predicted-IoU mask,
+  optional object score) -> `HFSamRefiner` (transformers SAM API; family
+  differences as class attributes and two hooks) -> thin registered
+  families `sam2`, `edgetam`, `sam_hq`, `sam`, `sam3_tracker`; plus
+  `UltralyticsSamRefiner` (`ultralytics_sam`, predictor API, BGR) as a second
+  backend. Options are layered `RefinerOptions` -> `BoxPromptOptions` ->
+  `HFSamOptions` -> family `Options`. Weights are read with
+  `local_files_only=True` from `hf_cache` (example configs: `weights/hf`);
+  nothing is downloaded at run time.
+- Semantic segmenters: `SemanticSegmenter` (template `__call__` validating
+  `SemanticMap` against the frame and `class_names`); `name` is required in
+  the YAML and namespaces excluded labels (`scene.road`); a prefix is checked
+  at config load, the class after the segmenter loads.
 - Label harmonisation: `Detector._map_labels` applies the detector's
   `LabelMap` after the class filter (by raw label) and before validation.
 - Fusion: `FusionAggregator` is a template method (concat -> per-detector
@@ -141,7 +177,8 @@ Per run: `video.mp4`, `detections.csv` (one row per box; task_0001 columns then 
   flips RGB); class names come from the checkpoint (the Objects365 YOLO26
   names differ from ultralytics' `Objects365.yaml`); `YOLO_OFFLINE=1`,
   `YOLO_AUTOINSTALL=False` and `YOLO_CONFIG_DIR=<repo>/_testbed/config` are
-  set before the lazy import (no telemetry, no pip installs, no writes to
+  set by `adapters._ultralytics_env.apply_ultralytics_env()` when the YOLO
+  or SAM adapter module is imported, before the lazy import (no telemetry, no pip installs, no writes to
   `~/.config`); `half` is passed as `quantize=16` (8.4 deprecates `half`).
 - `distance.py` is pure numpy; outlier filters and statistics are registries
   (`_OUTLIER_FILTERS`, `_STATS`).
@@ -157,7 +194,7 @@ None. Local CLI tool; no users, sessions or network services.
 No network API. The interface is the CLI `det-depth-distance` /
 `python -m det_depth_distance --config run.yaml [VIDEO] [--set key=value]...`
 and `--list-models`. The YAML schema (sections source, detectors, depth,
-camera, aggregation, agreement, distance, render, output, device) is documented in the
+camera, aggregation, refiners, semantic, agreement, distance, render, output, device) is documented in the
 README; the task_0001 flags were replaced without aliases.
 
 ## 8. Key Business Concepts
@@ -178,16 +215,26 @@ README; the task_0001 flags were replaced without aliases.
   different models can be compared and fused.
 - **Agreement**: per detector pair, how many deduplicated instances match
   one-to-one by IoU (and how many only one detector sees).
+- **Mask refiner**: a box-prompted segmentation model (SAM family) that
+  fills instance masks from detector boxes; `targets: missing` keeps native
+  masks of segmentation detectors.
+- **Semantic exclusion**: per-pixel class maps from one or more named
+  segmenters; pixels of excluded `<segmenter>.<class>` labels (e.g. road,
+  lane lines, vegetation) are not used for distance. Cityscapes/BDD100K are
+  street domains: in agricultural scenes vegetation/terrain cover the crop.
 
 ## 9. Security Model
 
 No secrets are read by the code. Hugging Face model downloads use the
-user's existing token cache on the GPU host, outside this repository.
+user's existing token cache on the GPU host, outside this repository; the
+gated `facebook/sam3` checkpoint additionally needs approved access and
+`HF_TOKEN` there. Adapters never download at run time.
 
 ## 10. Development & Deployment
 
 - Local: `uv sync`, `uv run pytest` (GPU tests deselected), `uv run ruff check . && uv run ruff format --check .`
 - GPU tests (adapter contracts + 60-frame regression against task_0001): `uv run --extra infer pytest -m gpu -v` on `gpu-host`.
+- Refiner and SegFormer weights: Hugging Face cache `weights/hf` in the repo (git-ignored and excluded from the rsync push), downloaded explicitly with `snapshot_download(..., allow_patterns=['*.json', 'model.safetensors'])` (SegFormer: `pytorch_model.bin`) — command in the README; MobileSAM `mobile_sam.pt` beside the YOLO weights; TwinLiteNet+ weights in its clone.
 - Weights live outside the repo on the GPU host: RF-DETR (incl. Seg, ~135–155 MB each, downloaded and MD5-checked by `rfdetr` on first construction) in `~/.roboflow/models`; YOLO26 (`yolo26*.pt`, `*-objv1-150.pt`, `*-seg.pt`, `*-objv1-seg.pt`, from the `ultralytics/assets` v8.4.0 release, fetched manually — the adapter never downloads) in `~/dev/ultralytics/_testbed/weights`. GPU tests skip when a weight is missing.
 - GPU host: `utils/sync_gpu_host.sh push`, then on `gpu-host`
   `~/.local/bin/uv sync --extra infer`; outputs fetched with
@@ -214,7 +261,7 @@ implementation. See `AGENTS.md` for the mandatory rules.
 ## 13. What This Project Does NOT Have
 
 - No TensorRT/ONNX path, no batching, no real-time optimisation.
-- No mask refiners for box-only detectors (SAM family, task_0005), no semantic segmentation, no fusion of masks across models (a fused instance keeps one member's mask), no object tracking or temporal smoothing. Masks are never saved to disk.
+- No fusion of masks across models (a fused instance keeps one member's mask) and no fusion of semantic maps (each segmenter keeps its own map); no FastSAM (not one-mask-per-box), no native `sam3` package (the SAM 3 tracker is used through `transformers`); no semantic CSV columns or video colour legend; no object tracking or temporal smoothing. Instance masks are never saved to disk (semantic labels are, on the depth-map grid, with `save_depth`).
 - No score calibration across detectors (fusion weights are fixed per detector); no new dependency for fusion (no `ensemble-boxes`, `torchvision.ops` or `scipy` in the core).
 - No ground-truth distance evaluation.
 - No CI, no Docker, no git remote, no web UI or API.

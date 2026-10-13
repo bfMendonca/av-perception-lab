@@ -48,6 +48,13 @@ def test_list_models(capsys):
         "wbf: iou_thr=0.55, class_agnostic=False, weights={}, conf_type='avg'",
         "weights (required)",
         "variant='large'",
+        "refiner:",
+        "sam2: targets='missing', max_boxes=32",
+        "model='facebook/sam2.1-hiera-large'",
+        "ultralytics_sam:",
+        "semantic:",
+        "segformer:",
+        "twinlitenet:",
     ):
         assert name in out
 
@@ -71,6 +78,19 @@ def test_configuration_errors_exit_with_code_2(tmp_path, config, capsys, monkeyp
     assert main(["--config", str(config), "--set", "depth.process_res=10"]) == 2
     assert "depth: process_res must be >= 14" in capsys.readouterr().err
     assert main(["--config", str(config), "--set", "source.stride=0"]) == 2
+    # task_0005: refiner, segmenter and exclusion errors, all before any load.
+    for override, message in [
+        ("refiners=[{type: sam_hq, score: object}]", "refiners[0].score: sam_hq has"),
+        (
+            "refiners=[{type: sam2}, {type: sam2}]",
+            "duplicate name 'sam2.1-hiera-large'",
+        ),
+        ("semantic=[{type: segformer}]", "semantic[0].name is required"),
+        ("semantic=[{name: s, type: segformer, size: [1, 1]}]", "semantic[0]: size"),
+        ("distance.exclude_semantic=[scene.road]", "no semantic segmenter configured"),
+    ]:
+        assert main(["--config", str(config), "--set", override]) == 2
+        assert message in capsys.readouterr().err
 
 
 def test_help_without_torch():

@@ -1,3 +1,4 @@
+import re
 from pathlib import Path
 
 import pytest
@@ -6,8 +7,10 @@ import yaml
 from det_depth_distance.core.labels import (
     COCO,
     OBJECTS365,
+    SEMANTIC_NAME_PATTERN,
     VOCABULARIES,
     LabelMap,
+    group_semantic_labels,
     identify_vocabulary,
     resolve_classes,
 )
@@ -135,3 +138,46 @@ def test_versioned_label_maps_share_canonical_names():
     assert set(maps) == {"coco_driving", "objects365_driving"}
     # Fusion by label needs the COCO names to exist on the Objects365 side.
     assert maps["coco_driving"].canonical <= maps["objects365_driving"].canonical
+
+
+NAMES = ("scene", "lanes")
+
+
+def test_group_semantic_labels():
+    labels = ["lanes.lane", "scene.road", "scene.traffic light", "scene.road"]
+    assert group_semantic_labels(labels, NAMES) == {
+        "scene": ("road", "traffic light"),  # given order, no duplicates
+        "lanes": ("lane",),
+    }
+    # Comma-separated string form (as `classes`), spaces trimmed.
+    assert group_semantic_labels(" scene.road, scene.sky ,", NAMES) == {
+        "scene": ("road", "sky"),
+        "lanes": (),
+    }
+    # Split at the first dot only: the class may contain dots.
+    assert group_semantic_labels(["a.b.c"], ["a"]) == {"a": ("b.c",)}
+    assert group_semantic_labels([], NAMES) == {"scene": (), "lanes": ()}
+    assert group_semantic_labels("", ()) == {}
+
+
+@pytest.mark.parametrize("label", ["road", ".sky", "scene.", "scene. "])
+def test_group_semantic_labels_needs_a_namespace(label):
+    with pytest.raises(ConfigError, match="expected '<segmenter>.<class>'"):
+        group_semantic_labels([label], NAMES)
+
+
+def test_group_semantic_labels_unknown_segmenter():
+    with pytest.raises(ConfigError, match=r"unknown segmenter 'sky' \(scene, lanes\)"):
+        group_semantic_labels(["sky.sky"], NAMES)
+    with pytest.raises(ConfigError, match="no semantic segmenter configured"):
+        group_semantic_labels("scene.road", ())
+
+
+@pytest.mark.parametrize(
+    ("name", "valid"),
+    [("scene", True), ("lanes_2", True), ("a-b", True), ("0x", True)]
+    + [("Scene", False), ("a.b", False), ("a,b", False), ("a b", False)]
+    + [("_a", False), ("", False)],
+)
+def test_semantic_name_pattern(name, valid):
+    assert bool(re.fullmatch(SEMANTIC_NAME_PATTERN, name)) is valid

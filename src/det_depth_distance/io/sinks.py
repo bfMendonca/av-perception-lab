@@ -19,6 +19,15 @@ metrics.json adds distance_regions and, with "both", region_comparison
 depth.npz holds `depth` (N, map_h, map_w) float16 metres, `frame_index`
 (N,), `intrinsics` (N, 4) fx, fy, cx, cy at map resolution, and `geometry`
 with its `geometry_fields` names (MapGeometry).
+
+detections.csv ends with mask_source (producer of the instance mask, "" if
+none) and mask_score (refiner quality, empty for detector masks).
+metrics.json adds mask_sources, refined (targets and filled masks per
+refiner) and, with semantic segmenters, semantic (per map: excluded
+classes, mean class fractions, excluded fraction; plus the excluded
+fraction of the union of all maps). No semantic CSV column. With
+save_depth, depth.npz adds semantic_labels_<name> (labels sampled on the
+depth-map grid) and semantic_classes_<name> per segmenter.
 """
 
 import csv
@@ -38,11 +47,17 @@ import numpy as np
 from det_depth_distance.config import RenderConfig, RunConfig
 from det_depth_distance.core.agreement import AgreementStats
 from det_depth_distance.core.pipeline import SetupInfo
-from det_depth_distance.core.types import FrameResult, MapGeometry, best_per_source
+from det_depth_distance.core.types import (
+    FrameResult,
+    Instances,
+    MapGeometry,
+    best_per_source,
+)
 from det_depth_distance.distance import (
     MASK_ROW_FIELDS,
     STATS_ROW_FIELDS,
     DistanceConfig,
+    resample_mask,
 )
 from det_depth_distance.io.source import VideoSource
 from det_depth_distance.io.video import VideoWriter
@@ -70,6 +85,8 @@ CSV_FIELDS: tuple[str, ...] = (
     "raw_labels",
     *MASK_ROW_FIELDS,
     "box_distance_m",
+    "mask_source",
+    "mask_score",
 )
 
 
@@ -87,6 +104,35 @@ class RunContext:
     @property
     def detector_names(self) -> list[str]:
         return [d["name"] for d in self.pipeline["components"]["detectors"]]
+
+    @property
+    def excluded_classes(self) -> dict[str, list[str]]:
+        """Semantic segmenter name -> excluded class names (only maps excluding some)."""
+        return self.pipeline["pipeline"]["exclude_semantic"]
+
+
+def refine_counts(
+    instances: Instances, refiners: Sequence[dict[str, Any]]
+) -> dict[str, tuple[int, int]]:
+    """(targets, filled masks) of every refiner in one frame, from the final
+    `mask_sources()` and the refiners' describe() (in pipeline order).
+
+    "filled" counts the masks a refiner produced; its targets are every
+    instance under `targets: all`, else the instances whose final mask came
+    from it, from a later refiner or from nobody (a refined mask that came back
+    empty leaves "").
+    """
+    sources = instances.mask_sources()
+    counts = {}
+    for i, refiner in enumerate(refiners):
+        name = refiner["name"]
+        if refiner["options"]["targets"] == "all":
+            targets = len(sources)
+        else:
+            later = {"", *(r["name"] for r in refiners[i:])}
+            targets = sum(s in later for s in sources)
+        counts[name] = (targets, sources.count(name))
+    return counts
 
 
 class Sink(ABC):
@@ -136,6 +182,7 @@ class CsvSink(Sink):
 
     def write(self, result: FrameResult) -> None:
         frame, inst = result.frame, result.instances
+        mask_sources, mask_scores = inst.mask_sources(), inst.mask_score
         for i, (stats, members) in enumerate(
             zip(result.stats, inst.provenance(), strict=True)
         ):
@@ -163,6 +210,12 @@ class CsvSink(Sink):
                     "raw_labels": "|".join(m.raw_label for m in best),
                     **stats.mask_row(),
                     "box_distance_m": box.distance if box is not None else None,
+                    "mask_source": mask_sources[i],
+                    "mask_score": (
+                        None
+                        if mask_scores is None or np.isnan(mask_scores[i])
+                        else round(float(mask_scores[i]), 4)
+                    ),
                 }
             )
 
@@ -171,13 +224,16 @@ class CsvSink(Sink):
 
 
 class VideoSink(Sink):
-    """video.mp4: boxes, instance masks, labels with distance, HUD and optional
-    depth panel.
+    """video.mp4: semantic layers, boxes, instance masks, labels with distance,
+    HUD and optional depth panel.
 
     With several detectors, boxes and HUD counts are coloured by `source`,
     unless the instances are fused (then by canonical label); fused labels
     show the number of agreeing detectors (×N). The distance HUD line names the
     region policy and erosion only in frames where some instance used its mask.
+    Refiners add a HUD line each ("refine <name> · filled/targets"), semantic
+    segmenters one each ("semantic <name> · excl <classes>"); the maps named
+    by `render.semantic_overlay` (all when None) are drawn in config order.
     """
 
     def __init__(self, cfg: RenderConfig, distance: DistanceConfig) -> None:
@@ -200,7 +256,14 @@ class VideoSink(Sink):
             cmap=cfg.cmap,
             font_path=cfg.font,
             mask_alpha=cfg.mask_alpha,
+            semantic_alpha=cfg.semantic_alpha,
         )
+        self._refiners = ctx.pipeline["components"]["refiners"]
+        self._semantic_hud = [
+            f"semantic {s['name']} · excl "
+            + (", ".join(ctx.excluded_classes.get(s["name"], [])) or "-")
+            for s in ctx.pipeline["components"]["semantic"]
+        ]
         policy = ctx.pipeline["pipeline"]
         self._region = f" · region {policy['region']} · erode {policy['mask_erode']}"
         thresholds = [(d["name"], d["options"]["threshold"]) for d in detectors]
@@ -271,6 +334,21 @@ class VideoSink(Sink):
             hud.append(
                 f"agree {p.matched} · only {p.a} {p.only_a} · only {p.b} {p.only_b}"
             )
+        hud += [
+            f"refine {name} · {filled}/{targets}"
+            for name, (targets, filled) in refine_counts(inst, self._refiners).items()
+        ]
+        hud += self._semantic_hud
+        overlay = self.cfg.semantic_overlay
+        layers = (
+            [
+                (m.labels, m.class_names)
+                for name, m in result.semantic.items()
+                if overlay is None or name in overlay
+            ]
+            if self.cfg.semantic_alpha > 0
+            else []
+        )
         side_by_side = self.cfg.layout == "side-by-side"
         self._writer.write(
             self._renderer.render(
@@ -278,6 +356,7 @@ class VideoSink(Sink):
                 annotations,
                 hud,
                 result.depth.depth_m if side_by_side else None,
+                semantic=layers,
             )
         )
         self.render_ms.append((time.perf_counter() - t0) * 1e3)
@@ -287,20 +366,29 @@ class VideoSink(Sink):
 
 
 class NpzSink(Sink):
-    """depth.npz: every depth map as float16 (all frames held in RAM until close)."""
+    """depth.npz: every depth map as float16 (all frames held in RAM until close),
+    plus each semantic map's labels sampled on the depth-map grid (the grid and
+    sampling of the distance eligibility), uint8 up to 256 classes."""
 
     def __init__(self) -> None:
         self._depth: list[np.ndarray] = []
         self._index: list[int] = []
         self._intrinsics: list[tuple[float, float, float, float]] = []
         self._geometry: MapGeometry | None = None
+        self._labels: dict[str, list[np.ndarray]] = defaultdict(list)
+        self._classes: dict[str, tuple[str, ...]] = {}
 
     def write(self, result: FrameResult) -> None:
         self._depth.append(result.depth.depth_m.astype(np.float16))
         self._index.append(result.frame.index)
         k = result.depth.intrinsics
         self._intrinsics.append((k.fx, k.fy, k.cx, k.cy))
-        self._geometry = result.depth.geometry
+        g = self._geometry = result.depth.geometry
+        for name, m in result.semantic.items():
+            dtype = np.uint8 if len(m.class_names) <= 256 else np.uint16
+            grid = resample_mask(m.labels, g, (0, 0, g.map_w, g.map_h))
+            self._labels[name].append(grid.astype(dtype))
+            self._classes[name] = m.class_names
 
     def close(self) -> None:
         if self._geometry is None:  # no frames: nothing to save
@@ -314,6 +402,10 @@ class NpzSink(Sink):
             intrinsics=np.asarray(self._intrinsics, dtype=np.float32),
             geometry=np.asarray(list(geometry.values()), dtype=np.float64),
             geometry_fields=np.asarray(list(geometry)),
+            **{f"semantic_labels_{n}": np.stack(v) for n, v in self._labels.items()},
+            **{
+                f"semantic_classes_{n}": np.asarray(c) for n, c in self._classes.items()
+            },
         )
 
 
@@ -339,6 +431,14 @@ class MetricsSink(Sink):
         self._regions: Counter = Counter()
         # (label, mask distance, box distance) of instances measured both ways
         self._region_pairs: list[tuple[str, float, float]] = []
+        self._mask_sources: Counter = Counter()
+        self._refined: dict[str, Counter] = defaultdict(Counter)
+        # semantic: per map, per-frame class fractions and excluded fraction; per
+        # frame, the excluded fraction of the union of all maps
+        self._class_fracs: dict[str, list[dict[str, float]]] = defaultdict(list)
+        self._excluded_fracs: dict[str, list[float]] = defaultdict(list)
+        self._union_fracs: list[float] = []
+        self._excluded_ids: dict[str, np.ndarray] | None = None  # at the first frame
         self.n_boxes = self.n_without_distance = 0
 
     def open(self, ctx: RunContext) -> None:
@@ -358,6 +458,14 @@ class MetricsSink(Sink):
         if result.agreement is not None:
             self._agreement.add(result.frame.index, result.agreement)
         self._regions.update("mask" if s.used_mask else "box" for s in result.stats)
+        self._mask_sources.update(s for s in result.instances.mask_sources() if s)
+        refiners = self.ctx.pipeline["components"]["refiners"]
+        for name, (targets, filled) in refine_counts(
+            result.instances, refiners
+        ).items():
+            self._refined[name].update(targets=targets, filled=filled)
+        if result.semantic:
+            self._add_semantic(result)
         if result.box_stats is not None:
             self._region_pairs += [
                 (label, s.distance, b.distance)
@@ -369,6 +477,43 @@ class MetricsSink(Sink):
         self.n_boxes += len(result.instances)
         self.n_without_distance += sum(s.distance is None for s in result.stats)
         self.n_frames += 1
+
+    def _add_semantic(self, result: FrameResult) -> None:
+        excluded = self.ctx.excluded_classes
+        if self._excluded_ids is None:  # class ids are fixed once the models load
+            self._excluded_ids = {
+                name: np.array(
+                    [m.class_names.index(c) for c in excluded.get(name, [])], np.int32
+                )
+                for name, m in result.semantic.items()
+            }
+        union = None
+        for name, m in result.semantic.items():
+            fractions = m.fractions()
+            self._class_fracs[name].append(fractions)
+            self._excluded_fracs[name].append(
+                sum(fractions[c] for c in excluded.get(name, []))
+            )
+            ids = self._excluded_ids[name]
+            if ids.size:
+                layer = np.isin(m.labels, ids)
+                union = layer if union is None else union | layer
+        self._union_fracs.append(0.0 if union is None else float(union.mean()))
+
+    def _semantic_summary(self) -> dict[str, Any]:
+        """Means over frames: per map its excluded classes, class fractions and
+        excluded fraction; on top, the excluded fraction of the union of maps
+        (maps overlap, e.g. road and lane, so the per-map values do not add up)."""
+        maps = {}
+        for name, frames in self._class_fracs.items():
+            maps[name] = {
+                "exclude": self.ctx.excluded_classes.get(name, []),
+                "class_frac_mean": {
+                    c: float(np.mean([f[c] for f in frames])) for c in frames[0]
+                },
+                "excluded_frac_mean": float(np.mean(self._excluded_fracs[name])),
+            }
+        return {"maps": maps, "excluded_frac_mean": float(np.mean(self._union_fracs))}
 
     def close(self) -> None:
         if self.n_frames == 0:  # failed run (the CLI reports it): nothing to summarise
@@ -392,6 +537,7 @@ class MetricsSink(Sink):
                 "k": cfg.distance.k,
                 "exclude_sky": cfg.exclude_sky,
                 "region": cfg.region,
+                "exclude_semantic": list(cfg.exclude_semantic),
             },
             "timings_ms": {
                 stage: latency_stats(values) for stage, values in timings.items()
@@ -411,6 +557,9 @@ class MetricsSink(Sink):
                 "mask": self._regions["mask"],
                 "box": self._regions["box"],
             },
+            # instances with a mask, by producer (detector, refiner)
+            "mask_sources": dict(self._mask_sources.most_common()),
+            "refined": {name: dict(c) for name, c in self._refined.items()},
             "versions": {
                 "python": platform.python_version(),
                 "torch": device["torch"],
@@ -418,6 +567,8 @@ class MetricsSink(Sink):
                 "rfdetr": package_version("rfdetr"),
                 "depth-anything-3": package_version("depth-anything-3"),
                 "ultralytics": package_version("ultralytics"),
+                "transformers": package_version("transformers"),
+                "timm": package_version("timm"),
                 "gpu": device["gpu"],
             },
             "repo_commit": git_commit(),
@@ -428,6 +579,8 @@ class MetricsSink(Sink):
             metrics["agreement"] = self._agreement.summary()
         if cfg.region == "both":
             metrics["region_comparison"] = _region_comparison(self._region_pairs)
+        if self._class_fracs:
+            metrics["semantic"] = self._semantic_summary()
         (ctx.run_dir / "metrics.json").write_text(
             json.dumps(metrics, indent=2, ensure_ascii=False)
         )

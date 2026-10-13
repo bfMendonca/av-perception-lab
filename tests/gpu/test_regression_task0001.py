@@ -100,6 +100,8 @@ def test_regression_against_task_0001(tmp_path, video):
         assert (n["n_sources"], n["sources"]) == ("1", "rfdetr-large")
         assert n["raw_labels"] == n["raw_label"]
         assert n["source_scores"] == n["confidence"]
+        # task_0005 columns: no refiner, so no mask producer and no score.
+        assert (n["mask_source"], n["mask_score"]) == ("", "")
 
     metrics = json.loads((run_dir / "metrics.json").read_text())
     reference = json.loads(REF_METRICS.read_text())
@@ -109,3 +111,6 @@ def test_regression_against_task_0001(tmp_path, video):
     # One detector: no agreement (task_0003), labels unmapped.
     assert "agreement" not in metrics and metrics["pipeline"]["agreement"] is None
     assert metrics["components"]["detectors"][0]["labels"] is None
+    # No refiner nor semantic segmenter (task_0005).
+    assert (metrics["mask_sources"], metrics["refined"]) == ({}, {})
+    assert "semantic" not in metrics

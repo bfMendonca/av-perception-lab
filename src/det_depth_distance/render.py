@@ -1,5 +1,6 @@
-"""Annotated-frame rendering: boxes, translucent instance masks, label pills,
-HUD and an optional side-by-side metric depth panel with a legend in metres.
+"""Annotated-frame rendering: translucent semantic layers, translucent instance
+masks, boxes, label pills, HUD and an optional side-by-side metric depth panel
+with a legend in metres.
 
 Ported from rf-detr's infer_video.py Renderer and depth-anything-3's
 run_test.py colorize_metric/metric_legend. Everything is RGB; OpenCV
@@ -58,6 +59,9 @@ PALETTE: list[tuple[int, int, int]] = [
     (0, 128, 128),
     (220, 190, 255),
 ]
+
+# Semantic class never drawn (e.g. TwinLiteNet+'s label 0).
+SEMANTIC_BACKGROUND: str = "background"
 
 FONT_CANDIDATES: list[str] = [
     "/usr/share/fonts/truetype/inter/Inter-SemiBold.ttf",
@@ -198,11 +202,14 @@ class Renderer:
         cmap: str = "turbo",
         font_path: Path | None = None,
         mask_alpha: float = 0.35,
+        semantic_alpha: float = 0.4,
     ) -> None:
         if layout not in ("overlay", "side-by-side"):
             raise ValueError(f"unknown layout {layout!r}")
         if not 0.0 <= mask_alpha <= 1.0:
             raise ValueError(f"mask_alpha must be in [0, 1], got {mask_alpha}")
+        if not 0.0 <= semantic_alpha <= 1.0:
+            raise ValueError(f"semantic_alpha must be in [0, 1], got {semantic_alpha}")
         try:
             self._cmap = getattr(cv2, f"COLORMAP_{cmap.upper()}")
         except AttributeError:
@@ -213,6 +220,8 @@ class Renderer:
         self.title = title
         self.show_hud = show_hud
         self.mask_alpha = mask_alpha
+        self.semantic_alpha = semantic_alpha
+        self._luts: dict[tuple[str, ...], np.ndarray] = {}  # by class_names
         scale = frame_h / 1080
         self.box_width = max(2, round(3 * scale))
         self.font = load_font(font_path, max(14, round(22 * scale)))
@@ -237,9 +246,19 @@ class Renderer:
         boxes: Sequence[BoxAnnotation],
         hud_lines: Sequence[str],
         depth_m: np.ndarray | None = None,
+        *,
+        semantic: Sequence[tuple[np.ndarray, Sequence[str]]] = (),
     ) -> np.ndarray:
-        """Annotated frame of size `output_size()`; `depth_m` is required for side-by-side."""
-        left = self._draw(frame_rgb, boxes, hud_lines if self.show_hud else None)
+        """Annotated frame of size `output_size()`; `depth_m` is required for side-by-side.
+
+        `semantic` holds layers (labels (H, W), class_names) in drawing order (the
+        last one on top), drawn on the frame panel only, under masks and boxes.
+        """
+        image = frame_rgb
+        if self.semantic_alpha > 0:
+            for labels, class_names in semantic:
+                image = self._blend_semantic(image, labels, tuple(class_names))
+        left = self._draw(image, boxes, hud_lines if self.show_hud else None)
         if self._legend is None:
             return left
         if depth_m is None:
@@ -316,6 +335,41 @@ class Renderer:
             window[inside] = np.rint(
                 (1 - self.mask_alpha) * window[inside] + tint
             ).astype(np.uint8)
+        return out
+
+    def _semantic_lut(self, class_names: tuple[str, ...]) -> np.ndarray:
+        """(C, 4) uint8 lookup table: RGB colour of each class (color_for) and its
+        alpha (semantic_alpha * 255; 0 for SEMANTIC_BACKGROUND), cached per tuple."""
+        lut = self._luts.get(class_names)
+        if lut is None:
+            alpha = round(self.semantic_alpha * 255)
+            lut = np.array(
+                [
+                    (*color_for(name), 0 if name == SEMANTIC_BACKGROUND else alpha)
+                    for name in class_names
+                ],
+                dtype=np.uint8,
+            ).reshape(-1, 4)
+            self._luts[class_names] = lut
+        return lut
+
+    def _blend_semantic(
+        self, image_rgb: np.ndarray, labels: np.ndarray, class_names: tuple[str, ...]
+    ) -> np.ndarray:
+        """Tint every non-background pixel with its class colour (color_for) at
+        `semantic_alpha`, using a per-class lookup table. Drawn first, under the
+        instance masks and boxes, on the frame panel only. With several maps the
+        layers are applied in order, each over the previous one; colours follow
+        the class name, so a class shared by two maps keeps one colour."""
+        rgba = self._semantic_lut(class_names)[labels]
+        drawn = rgba[..., 3] > 0
+        if not drawn.any():
+            return image_rgb
+        out = image_rgb.copy()
+        alpha = rgba[drawn, 3:].astype(np.float32) / 255
+        out[drawn] = np.rint((1 - alpha) * out[drawn] + alpha * rgba[drawn, :3]).astype(
+            np.uint8
+        )
         return out
 
     def _hud(

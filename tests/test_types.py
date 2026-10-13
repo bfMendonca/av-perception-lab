@@ -17,6 +17,8 @@ from det_depth_distance.core.types import (
     Instances,
     MapGeometry,
     Provenance,
+    RefinedMasks,
+    SemanticMap,
     best_per_source,
     check_array,
     per_instance,
@@ -224,3 +226,77 @@ def test_frame_result_box_stats_is_optional(make_instances):
     assert plain.box_stats is None and plain.agreement is None
     both = FrameResult(frame, inst, stats, depth, {}, box_stats=(stats[0], None))
     assert both.box_stats == (stats[0], None)
+
+
+def _two_with_one_mask(make_instances):
+    """Two 10x10 instances in a 20x20 frame; only the first has a mask in its box."""
+    masks = np.zeros((2, 20, 20), dtype=bool)
+    masks[0, 2:5, 2:5] = True
+    return make_instances([[0, 0, 10, 10], [10, 10, 20, 20]], source="seg", masks=masks)
+
+
+def test_mask_fields_are_validated_and_selected(make_instances):
+    inst = _two_with_one_mask(make_instances)
+    refined = dataclasses.replace(
+        inst,
+        mask_source=("seg", "sam"),
+        mask_score=np.array([np.nan, 0.8], np.float32),
+    )
+    refined.validate(20, 20)
+    kept = refined.select(np.array([1]))
+    assert kept.mask_source == ("sam",) and kept.mask_score.tolist() == [
+        pytest.approx(0.8)
+    ]
+    with pytest.raises(ContractError, match="mask_source"):
+        dataclasses.replace(refined, mask_source=("seg",)).validate(20, 20)
+    with pytest.raises(ContractError, match="mask_score: expected float32"):
+        dataclasses.replace(refined, mask_score=np.zeros(2)).validate(20, 20)
+    assert inst.mask_source is None and inst.mask_score is None  # optional
+
+
+def test_mask_sources_synthesised(make_instances):
+    assert _two_with_one_mask(make_instances).mask_sources() == ("seg", "")
+    assert make_instances([[0, 0, 1, 1]], source="det").mask_sources() == ("",)
+    inst = dataclasses.replace(
+        _two_with_one_mask(make_instances), mask_source=("seg", "sam")
+    )
+    assert inst.mask_sources() == ("seg", "sam")  # set by a refiner: used as is
+
+
+def test_refined_masks_validate():
+    ok = RefinedMasks(np.zeros((2, 4, 6), bool), np.zeros(2, np.float32))
+    ok.validate(2, 6, 4)
+    with pytest.raises(ContractError, match="masks: shape"):
+        ok.validate(2, 4, 6)
+    with pytest.raises(ContractError, match="masks: expected bool"):
+        RefinedMasks(np.zeros((2, 4, 6), np.uint8), ok.score).validate(2, 6, 4)
+    with pytest.raises(ContractError, match="score: shape"):
+        RefinedMasks(ok.masks, np.zeros(3, np.float32)).validate(2, 6, 4)
+
+
+def test_semantic_map_validate_and_fractions():
+    labels = np.zeros((4, 5), np.int32)
+    labels[:, :2] = 2
+    m = SemanticMap(labels, ("road", "sky", "lane"))
+    m.validate(5, 4)
+    assert m.fractions() == {"road": 0.6, "sky": 0.0, "lane": 0.4}
+    assert sum(m.fractions().values()) == pytest.approx(1.0)
+    with pytest.raises(ContractError, match="outside"):
+        SemanticMap(labels + 1, m.class_names).validate(5, 4)
+    with pytest.raises(ContractError, match="outside"):
+        SemanticMap(labels - 1, m.class_names).validate(5, 4)
+    with pytest.raises(ContractError, match="expected int32"):
+        SemanticMap(labels.astype(np.int64), m.class_names).validate(5, 4)
+    with pytest.raises(ContractError, match="shape"):
+        m.validate(4, 5)
+
+
+def test_frame_result_semantic_defaults_to_an_unshared_dict(make_instances):
+    geometry = MapGeometry(10, 10, 10, 10, 1.0, 1.0)
+    depth = DepthResult(
+        np.ones((10, 10), np.float32), CameraIntrinsics(1, 1, 5, 5), None, geometry
+    )
+    frame = Frame(0, 0.0, np.zeros((10, 10, 3), np.uint8))
+    a = FrameResult(frame, Instances.empty(), (), depth, {})
+    b = FrameResult(frame, Instances.empty(), (), depth, {})
+    assert a.semantic == {} and a.semantic is not b.semantic
