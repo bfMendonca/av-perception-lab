@@ -23,7 +23,11 @@ from typing import Any, ClassVar
 
 import numpy as np
 
-from det_depth_distance.core.labels import identify_vocabulary, resolve_classes
+from det_depth_distance.core.labels import (
+    LabelMap,
+    identify_vocabulary,
+    resolve_classes,
+)
 from det_depth_distance.core.options import ConfigError
 from det_depth_distance.core.types import (
     CameraIntrinsics,
@@ -114,7 +118,7 @@ class DetectorOptions:
 
     threshold: float = 0.5  # minimum score, in (0, 1]
     classes: str | tuple[str, ...] = "driving"  # "all", a preset, or class names
-    labels: Path | None = None  # LabelMap YAML; read from task_0003 on
+    labels: Path | None = None  # LabelMap YAML (raw -> canonical labels); None = raw
 
     def __post_init__(self) -> None:
         if not 0.0 < self.threshold <= 1.0:
@@ -129,12 +133,16 @@ class Detector(Component):
     kind = "detector"
 
     def __init__(self, options: DetectorOptions, *, name: str | None = None) -> None:
-        # An option without effect must not be accepted silently.
-        if options.labels is not None:
-            raise ConfigError("labels: label maps arrive with task_0003")
+        """Raises ConfigError for an unreadable or invalid label map (before any load)."""
         super().__init__(options, name=name)
         self._keep: frozenset[str] | None = None
         self._vocabulary = "custom"
+        self.label_map: LabelMap | None = None
+        if options.labels is not None:
+            try:
+                self.label_map = LabelMap.load(options.labels)
+            except ConfigError as exc:
+                raise ConfigError(f"labels: {exc}") from None
 
     @property
     @abstractmethod
@@ -152,9 +160,26 @@ class Detector(Component):
         vocabulary = identify_vocabulary(self.class_names)
         self._vocabulary = vocabulary.name if vocabulary else "custom"
         self._keep = resolve_classes(self.options.classes, self.class_names)
+        if self.label_map is not None:
+            try:
+                self.label_map.check(self.class_names, self._vocabulary)
+            except ConfigError as exc:
+                raise ConfigError(f"{self.name}.labels: {exc}") from None
+
+    @property
+    def output_labels(self) -> frozenset[str]:
+        """Labels this detector can emit: the classes kept by the filter, mapped
+        by the label map (valid after load)."""
+        self._require_loaded()
+        raw = tuple(self.class_names if self._keep is None else self._keep)
+        if self.label_map is None:
+            return frozenset(raw)
+        labels, keep = self.label_map.apply(raw)
+        return frozenset(label for label, k in zip(labels, keep, strict=True) if k)
 
     def describe(self) -> dict[str, Any]:
-        return {**super().describe(), "vocabulary": self._vocabulary}
+        labels = self.label_map.describe() if self.label_map else None
+        return {**super().describe(), "vocabulary": self._vocabulary, "labels": labels}
 
     def __call__(self, frame: Frame) -> Instances:
         """Detect instances in `frame`.
@@ -200,8 +225,13 @@ class Detector(Component):
         )
 
     def _map_labels(self, instances: Instances) -> Instances:
-        """Raw -> canonical labels; identity until the LabelMap of task_0003."""
-        return instances
+        """Raw -> canonical labels through the label map (identity without one);
+        drops unmapped instances when the map says `unmapped: drop`."""
+        if self.label_map is None:
+            return instances
+        labels, keep = self.label_map.apply(instances.raw_label)
+        instances = instances.with_labels(labels)
+        return instances if keep.all() else instances.select(keep)
 
 
 class DepthEstimator(Component):

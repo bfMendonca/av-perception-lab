@@ -1,9 +1,14 @@
 """Run outputs, one sink per artefact: detections.csv (one row per
 instance: frame, box, label, all BoxDepthStats fields, then source and
-raw_label), video.mp4 (annotated; colour by source when several detectors),
-depth.npz (optional) and metrics.json (component descriptions under
-"components", pipeline policy under "pipeline", focal and its source,
-timings, GPU memory, versions, resolved config).
+raw_label), video.mp4 (annotated; colour by source when several detectors
+are concatenated), depth.npz (optional) and metrics.json (component
+descriptions under "components", pipeline policy under "pipeline", focal and
+its source, timings, GPU memory, versions, cross-detector agreement,
+resolved config).
+
+detections.csv also ends with n_sources, sources, source_scores and
+raw_labels: one entry per contributing detector (its best member),
+"|"-separated, in decreasing score; for unfused instances n_sources is 1.
 
 depth.npz holds `depth` (N, map_h, map_w) float16 metres, `frame_index`
 (N,), `intrinsics` (N, 4) fx, fy, cx, cy at map resolution, and `geometry`
@@ -25,8 +30,9 @@ from typing import Any
 import numpy as np
 
 from det_depth_distance.config import RenderConfig, RunConfig
+from det_depth_distance.core.agreement import AgreementStats
 from det_depth_distance.core.pipeline import SetupInfo
-from det_depth_distance.core.types import FrameResult, MapGeometry
+from det_depth_distance.core.types import FrameResult, MapGeometry, best_per_source
 from det_depth_distance.distance import STATS_ROW_FIELDS, DistanceConfig
 from det_depth_distance.io.source import VideoSource
 from det_depth_distance.io.video import VideoWriter
@@ -48,6 +54,10 @@ CSV_FIELDS: tuple[str, ...] = (
     *STATS_ROW_FIELDS,
     "source",
     "raw_label",
+    "n_sources",
+    "sources",
+    "source_scores",
+    "raw_labels",
 )
 
 
@@ -114,7 +124,10 @@ class CsvSink(Sink):
 
     def write(self, result: FrameResult) -> None:
         frame, inst = result.frame, result.instances
-        for i, stats in enumerate(result.stats):
+        for i, (stats, members) in enumerate(
+            zip(result.stats, inst.provenance(), strict=True)
+        ):
+            best = best_per_source(members)
             x0, y0, x1, y1 = (float(v) for v in inst.xyxy[i])
             self._rows.writerow(
                 {
@@ -130,6 +143,11 @@ class CsvSink(Sink):
                     **stats.to_row(),
                     "source": inst.source[i],
                     "raw_label": inst.raw_label[i],
+                    "n_sources": len(best),
+                    "sources": "|".join(m.source for m in best),
+                    # same representation as `confidence`
+                    "source_scores": "|".join(str(round(m.score, 4)) for m in best),
+                    "raw_labels": "|".join(m.raw_label for m in best),
                 }
             )
 
@@ -140,7 +158,9 @@ class CsvSink(Sink):
 class VideoSink(Sink):
     """video.mp4: boxes, labels with distance, HUD and optional depth panel.
 
-    With several detectors, boxes and HUD counts are coloured by `source`.
+    With several detectors, boxes and HUD counts are coloured by `source`,
+    unless the instances are fused (then by canonical label); fused labels
+    show the number of agreeing detectors (×N).
     """
 
     def __init__(self, cfg: RenderConfig, distance: DistanceConfig) -> None:
@@ -168,6 +188,13 @@ class VideoSink(Sink):
             self._conf = "conf " + ", ".join(f"{n} ≥ {t:.2f}" for n, t in thresholds)
         else:
             self._conf = f"conf ≥ {thresholds[0][1]:.2f}"
+        aggregator = ctx.pipeline["components"]["aggregator"]
+        self._fusion = None
+        if aggregator["type"] != "concat":
+            iou_thr = aggregator["options"].get("iou_thr")
+            self._fusion = aggregator["type"] + (
+                f" · IoU ≥ {iou_thr:g}" if iou_thr is not None else ""
+            )
         audio = source.is_whole_video and source.info.has_audio
         self._writer = VideoWriter(
             ctx.run_dir / "video.mp4",
@@ -180,9 +207,13 @@ class VideoSink(Sink):
     def write(self, result: FrameResult) -> None:
         t0 = time.perf_counter()
         inst, d, focal = result.instances, self.distance, self.ctx.setup.focal_frame_px
+        by_source = self._by_source and inst.sources is None
         annotations = []
-        for i, stats in enumerate(result.stats):
+        for i, (stats, members) in enumerate(
+            zip(result.stats, inst.provenance(), strict=True)
+        ):
             name, score = inst.label[i], float(inst.score[i])
+            n_sources = len(best_per_source(members))
             spread = (
                 stats.std
                 if self.cfg.show_stats and stats.distance is not None
@@ -198,9 +229,9 @@ class VideoSink(Sink):
                     tuple(float(v) for v in inst.xyxy[i]),
                     name,
                     score,
-                    format_label(name, score, stats.distance, spread),
+                    format_label(name, score, stats.distance, spread, n_sources),
                     inner,
-                    color_key=inst.source[i] if self._by_source else None,
+                    color_key=inst.source[i] if by_source else None,
                 )
             )
         ms, n_total = result.timings_ms, self.ctx.source.info.n_frames
@@ -210,6 +241,13 @@ class VideoSink(Sink):
             f"{d.stat} · {d.outlier} · shrink {d.box_shrink:g} · {d.distance_type}",
             f"focal {focal:.0f} px" if focal else "focal: model-predicted",
         ]
+        if self._fusion:
+            hud.append(self._fusion)
+        if result.agreement is not None and len(result.agreement.pairs) == 1:
+            p = result.agreement.pairs[0]
+            hud.append(
+                f"agree {p.matched} · only {p.a} {p.only_a} · only {p.b} {p.only_b}"
+            )
         side_by_side = self.cfg.layout == "side-by-side"
         self._writer.write(
             self._renderer.render(
@@ -274,10 +312,13 @@ class MetricsSink(Sink):
         self._timings: dict[str, list[float]] = defaultdict(list)
         self._labels: Counter = Counter()
         self._sources: Counter = Counter()
+        self._n_sources: Counter = Counter()
         self.n_boxes = self.n_without_distance = 0
 
     def open(self, ctx: RunContext) -> None:
         super().open(ctx)
+        agreement = ctx.config.agreement
+        self._agreement = AgreementStats(agreement.iou_thr, agreement.class_aware)
         self._t_start = time.perf_counter()
 
     def write(self, result: FrameResult) -> None:
@@ -285,6 +326,11 @@ class MetricsSink(Sink):
             self._timings[stage].append(ms)
         self._labels.update(result.instances.label)
         self._sources.update(result.instances.source)
+        self._n_sources.update(
+            len(best_per_source(m)) for m in result.instances.provenance()
+        )
+        if result.agreement is not None:
+            self._agreement.add(result.frame.index, result.agreement)
         self.n_boxes += len(result.instances)
         self.n_without_distance += sum(s.distance is None for s in result.stats)
         self.n_frames += 1
@@ -319,6 +365,7 @@ class MetricsSink(Sink):
             ],
             "detections_total": dict(self._labels.most_common()),
             "detections_by_source": dict(self._sources.most_common()),
+            "detections_by_n_sources": dict(sorted(self._n_sources.items())),
             "boxes_total": self.n_boxes,
             "boxes_without_distance": self.n_without_distance,
             "versions": {
@@ -334,6 +381,8 @@ class MetricsSink(Sink):
             "host": platform.node(),
             "config": cfg.to_dict(),
         }
+        if self._agreement:  # some frame had agreement (>= 2 detectors, enabled)
+            metrics["agreement"] = self._agreement.summary()
         (ctx.run_dir / "metrics.json").write_text(
             json.dumps(metrics, indent=2, ensure_ascii=False)
         )

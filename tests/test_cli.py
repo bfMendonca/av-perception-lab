@@ -44,6 +44,8 @@ def test_list_models(capsys):
         "yolo:",
         "da3:",
         "concat:",
+        "nms: iou_thr=0.5, class_agnostic=False, weights={}",
+        "wbf: iou_thr=0.55, class_agnostic=False, weights={}, conf_type='avg'",
         "weights (required)",
         "variant='large'",
     ):

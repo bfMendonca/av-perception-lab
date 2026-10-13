@@ -4,7 +4,8 @@ import numpy as np
 import pytest
 
 from det_depth_distance.camera import IntrinsicsProvider, IntrinsicsResult
-from det_depth_distance.core.aggregate import Concat
+from det_depth_distance.config import AgreementConfig
+from det_depth_distance.core.aggregate import Concat, Nms
 from det_depth_distance.core.components import (
     DepthEstimator,
     Detector,
@@ -16,7 +17,9 @@ from det_depth_distance.core.types import (
     CameraIntrinsics,
     DepthResult,
     Frame,
+    Instances,
     MapGeometry,
+    Provenance,
 )
 from det_depth_distance.distance import DistanceConfig
 from det_depth_distance.io.source import FrameSource
@@ -127,15 +130,24 @@ def scene(make_instances):
     return log, FakeDetector(instances, log, name="det")
 
 
-def make_pipeline(detectors, depth, *, exclude_sky=True, provider=None):
+def make_pipeline(
+    detectors,
+    depth,
+    *,
+    exclude_sky=True,
+    provider=None,
+    aggregator=None,
+    agreement=None,
+):
     return Pipeline(
         detectors,
         depth,
-        SpyConcat(),
+        aggregator or SpyConcat(),
         DistanceConfig(box_shrink=0.0),
         exclude_sky=exclude_sky,
         intrinsics=provider,
         device="cpu",
+        agreement=agreement,
     )
 
 
@@ -213,6 +225,38 @@ def test_detector_names_must_be_unique(scene):
         make_pipeline([], FakeDepth(log))
 
 
+def test_single_detector_concat_without_labels_is_unchanged(scene):
+    # Regression invariant of task_0003: one detector, concat and no label map
+    # (with the default agreement section on) behave exactly as in task_0002.
+    log, det = scene
+    pipeline = make_pipeline(
+        [det],
+        FakeDepth(log, needs_intrinsics=False),
+        aggregator=Concat(Concat.Options()),
+        agreement=AgreementConfig(),
+    )
+    pipeline.setup(Source())
+    result = pipeline.process(FRAME)
+    inst, raw = result.instances, det.instances
+    for name in ("xyxy", "score", "class_id"):
+        np.testing.assert_array_equal(getattr(inst, name), getattr(raw, name))
+    assert (inst.label, inst.raw_label, inst.source) == (
+        raw.label,
+        raw.raw_label,
+        raw.source,
+    )
+    assert inst.masks is None and inst.sources is None and result.agreement is None
+    assert inst.provenance() == (
+        (Provenance("det", "car", pytest.approx(0.9)),),
+        (Provenance("det", "person", pytest.approx(0.6)),),
+    )
+    assert list(result.timings_ms) == ["det", "det.det", "aggregate", "depth", "dist"]
+    desc = pipeline.describe()
+    assert desc["components"]["aggregator"] == {"type": "concat", "options": {}}
+    assert desc["components"]["detectors"][0]["labels"] is None
+    assert desc["pipeline"] == {"exclude_sky": True, "agreement": None}
+
+
 def test_describe_separates_components_and_policy(scene):
     log, det = scene
     pipeline = make_pipeline(
@@ -223,4 +267,119 @@ def test_describe_separates_components_and_policy(scene):
     assert set(desc) == {"components", "pipeline"}
     assert set(desc["components"]) == {"detectors", "depth", "aggregator"}
     assert desc["components"]["detectors"][0]["name"] == "det"
-    assert desc["pipeline"] == {"exclude_sky": False}
+    assert desc["pipeline"] == {"exclude_sky": False, "agreement": None}
+
+
+@pytest.fixture
+def two_detectors(scene, make_instances):
+    """`det` (car + person) and `yolo` (the same car, slightly shifted)."""
+    log, det = scene
+    yolo = FakeDetector(
+        make_instances([[2, 0, 100, 100]], labels=["car"], source="yolo"),
+        log,
+        name="yolo",
+    )
+    return log, det, yolo
+
+
+def test_agreement_with_two_detectors(two_detectors):
+    log, det, yolo = two_detectors
+    pipeline = make_pipeline(
+        [det, yolo],
+        FakeDepth(log, needs_intrinsics=False),
+        agreement=AgreementConfig(iou_thr=0.5),
+    )
+    pipeline.setup(Source())
+    result = pipeline.process(FRAME)
+    (pair,) = result.agreement.pairs
+    assert (pair.a, pair.b, pair.matched, pair.only_a, pair.only_b) == (
+        "det",
+        "yolo",
+        1,
+        1,
+        0,
+    )
+    assert list(result.timings_ms)[3:5] == ["agree", "aggregate"]
+    desc = pipeline.describe()
+    assert desc["pipeline"]["agreement"] == {
+        "enabled": True,
+        "iou_thr": 0.5,
+        "class_aware": True,
+    }
+    assert "agreement" not in desc["components"]
+
+
+@pytest.mark.parametrize("agreement", [None, AgreementConfig(enabled=False)])
+def test_agreement_off(two_detectors, agreement):
+    log, det, yolo = two_detectors
+    pipeline = make_pipeline(
+        [det, yolo], FakeDepth(log, needs_intrinsics=False), agreement=agreement
+    )
+    pipeline.setup(Source())
+    result = pipeline.process(FRAME)
+    assert result.agreement is None and "agree" not in result.timings_ms
+
+
+def test_agreement_needs_two_detectors(scene):
+    log, det = scene
+    pipeline = make_pipeline(
+        [det], FakeDepth(log, needs_intrinsics=False), agreement=AgreementConfig()
+    )
+    pipeline.setup(Source())
+    assert pipeline.process(FRAME).agreement is None
+    assert pipeline.describe()["pipeline"]["agreement"] is None
+
+
+def test_fusion_through_the_pipeline(two_detectors):
+    log, det, yolo = two_detectors
+    pipeline = make_pipeline(
+        [det, yolo],
+        FakeDepth(log, needs_intrinsics=False),
+        aggregator=Nms(Nms.Options(weights={"yolo": 0.5})),
+    )
+    pipeline.setup(Source())
+    result = pipeline.process(FRAME)
+    assert result.instances.label == ("car", "person")
+    assert [m.source for m in result.instances.sources[0]] == ["det", "yolo"]
+    assert len(result.stats) == 2  # distance of the fused instances
+    assert pipeline.describe()["components"]["aggregator"]["weights"] == {
+        "det": 1.0,
+        "yolo": 0.5,
+    }
+
+
+def test_unknown_weight_is_a_config_error(scene):
+    log, det = scene
+    with pytest.raises(ConfigError, match="aggregation.weights: unknown detector"):
+        make_pipeline(
+            [det],
+            FakeDepth(log),
+            aggregator=Nms(Nms.Options(weights={"yolo": 2.0})),
+        )
+
+
+class OtherVocabulary(FakeDetector):
+    @property
+    def class_names(self):
+        return ["suv", "pedestrian"]
+
+
+def test_warns_when_fused_detectors_share_no_label(scene, capsys):
+    log, det = scene
+    other = OtherVocabulary(Instances.empty(), log, name="o365")
+    for class_agnostic, warned in [(False, True), (True, False)]:
+        pipeline = make_pipeline(
+            [det, other],
+            FakeDepth(log, needs_intrinsics=False),
+            aggregator=Nms(Nms.Options(class_agnostic=class_agnostic)),
+        )
+        pipeline.setup(Source())
+        err = capsys.readouterr().err
+        assert ("[warn] nms fuses by label, but det and o365" in err) is warned
+    same_vocabulary = FakeDetector(Instances.empty(), log, name="b")
+    make_pipeline(
+        [det, same_vocabulary],
+        FakeDepth(log, needs_intrinsics=False),
+        aggregator=Nms(Nms.Options()),
+    ).setup(Source())
+    assert capsys.readouterr().err == ""

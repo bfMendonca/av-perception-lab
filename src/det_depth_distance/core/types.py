@@ -19,7 +19,7 @@ it never imports `core.pipeline`, `config`, `camera`, `io` or adapters
 
 import dataclasses
 import math
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Literal
 
@@ -183,6 +183,36 @@ def _check_xyxy(name: str, value: Any, n: int, frame_w: int, frame_h: int) -> No
         raise ContractError(f"{name}: box outside the {frame_w}x{frame_h} frame")
 
 
+@dataclass(frozen=True, slots=True)
+class Provenance:
+    """One detection that contributed to an instance: the detector's name, its
+    raw label and its original (unweighted) score."""
+
+    source: str
+    raw_label: str
+    score: float
+
+
+def _check_sources(name: str, value: Any, n: int, frame_w: int, frame_h: int) -> None:
+    if not isinstance(value, tuple) or len(value) != n:
+        raise ContractError(f"{name}: expected a tuple of {n} member tuples")
+    for members in value:
+        if not isinstance(members, tuple) or not members:
+            raise ContractError(f"{name}: every instance needs a non-empty tuple")
+        if not all(isinstance(m, Provenance) for m in members):
+            raise ContractError(f"{name}: members must be Provenance")
+
+
+def best_per_source(members: Sequence[Provenance]) -> tuple[Provenance, ...]:
+    """One member per detector (its highest score), by decreasing score; ties
+    keep the order of `members`."""
+    best: dict[str, Provenance] = {}
+    for m in members:
+        if m.source not in best or m.score > best[m.source].score:
+            best[m.source] = m
+    return tuple(sorted(best.values(), key=lambda m: -m.score))
+
+
 def _per_instance_fields(cls: type) -> tuple[dataclasses.Field, ...]:
     return tuple(f for f in dataclasses.fields(cls) if f.metadata.get("per_instance"))
 
@@ -191,11 +221,15 @@ def _per_instance_fields(cls: type) -> tuple[dataclasses.Field, ...]:
 class Instances:
     """Instances detected (or segmented) in one frame, possibly by several models.
 
+    `score` is a confidence in [0, 1] (written as the CSV `confidence` and
+    shown as a percentage; fused scores keep that range).
     `label` is the canonical name used downstream, `raw_label` the name in the
     producing model's vocabulary, `source` the producing component's name.
     `masks`, when present, are boolean (N, H, W) at frame resolution; an
     all-False mask means "no mask" for that instance, which lets detectors with
     and without masks be concatenated (missing masks are filled with False).
+    `sources`, set by fusion aggregators, lists the detections merged into
+    each instance; `provenance()` reads it for fused and plain instances alike.
     """
 
     # Open for extension: select/concat/validate iterate the fields carrying
@@ -210,6 +244,12 @@ class Instances:
     masks: np.ndarray | None = field(
         default=None,
         metadata=per_instance(check_array(np.bool_, ("h", "w")), concat_fill="zeros"),
+    )
+    # Members of each fused instance, best weighted score first; None = not
+    # fused. Only fusion aggregators fill it and their output is never
+    # concatenated again, hence no concat_fill.
+    sources: tuple[tuple[Provenance, ...], ...] | None = field(
+        default=None, metadata=per_instance(_check_sources)
     )
 
     def __len__(self) -> int:
@@ -241,6 +281,19 @@ class Instances:
             else:
                 values[f.name] = value[idx]
         return dataclasses.replace(self, **values)
+
+    def provenance(self) -> tuple[tuple[Provenance, ...], ...]:
+        """Members of every instance: `sources` when instances were fused, else one
+        member per instance built from (source, raw_label, score). Lets consumers
+        treat fused and plain instances alike."""
+        if self.sources is not None:
+            return self.sources
+        return tuple(
+            (Provenance(source, raw_label, float(score)),)
+            for source, raw_label, score in zip(
+                self.source, self.raw_label, self.score, strict=True
+            )
+        )
 
     def with_labels(self, labels: Sequence[str]) -> "Instances":
         """Same instances with new canonical labels (raw_label is kept)."""
@@ -328,6 +381,27 @@ class DepthResult:
 
 
 @dataclass(frozen=True, slots=True)
+class PairAgreement:
+    """One-to-one IoU matches between the deduplicated instances of two detectors."""
+
+    a: str
+    b: str
+    matched: int
+    only_a: int
+    only_b: int
+    iou_sum: float  # sum of the matched IoUs (mean = iou_sum / matched)
+
+
+@dataclass(frozen=True, slots=True)
+class FrameAgreement:
+    """Cross-detector agreement in one frame (see core.agreement)."""
+
+    instances: Mapping[str, int]  # per detector, after deduplication
+    duplicates: Mapping[str, int]  # per detector, suppressed by the deduplication
+    pairs: tuple[PairAgreement, ...]  # combinations in detector order
+
+
+@dataclass(frozen=True, slots=True)
 class FrameResult:
     """Everything computed for one frame; input of the sinks."""
 
@@ -335,4 +409,6 @@ class FrameResult:
     instances: Instances
     stats: "tuple[BoxDepthStats, ...]"  # aligned with instances
     depth: DepthResult
-    timings_ms: dict[str, float]  # "det", "det.<name>", "aggregate", "depth", "dist"
+    # "det", "det.<name>", "agree" (when computed), "aggregate", "depth", "dist"
+    timings_ms: dict[str, float]
+    agreement: FrameAgreement | None = None  # None with one detector or disabled

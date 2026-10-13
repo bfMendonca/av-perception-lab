@@ -1,3 +1,4 @@
+import dataclasses
 from dataclasses import dataclass, field
 
 import numpy as np
@@ -12,6 +13,8 @@ from det_depth_distance.core.types import (
     ContractError,
     Frame,
     Instances,
+    Provenance,
+    best_per_source,
     check_array,
     per_instance,
 )
@@ -137,3 +140,51 @@ def test_scale_intrinsics_matches_intrinsics_from_focal(method):
     k = g.scale_intrinsics(CameraIntrinsics.centered(1390.4, 1920, 1080))
     assert k == intrinsics_from_focal(1390.4, g)  # bit-identical
     assert k.fx == 1390.4 * g.sx and k.cy == 540 * g.sy + g.oy
+
+
+def _fused(inst, sources):
+    return dataclasses.replace(inst, sources=sources)
+
+
+def test_sources_travel_with_select_and_concat(make_instances):
+    p, q = Provenance("a", "car", 0.9), Provenance("b", "suv", 0.7)
+    fused = _fused(make_instances([[0, 0, 1, 1], [0, 0, 2, 2]]), ((p, q), (q,)))
+    assert fused.select(np.array([1])).sources == ((q,),)
+    assert Instances.concat([fused, fused]).sources == ((p, q), (q,)) * 2
+    # No concat_fill: concatenating with unfused instances drops the field.
+    assert Instances.concat([fused, make_instances([[0, 0, 1, 1]])]).sources is None
+
+
+def test_provenance_synthesises_single_members(make_instances):
+    inst = make_instances([[0, 0, 1, 1]], score=[0.5], labels=["suv"], source="y")
+    assert inst.provenance() == ((Provenance("y", "suv", 0.5),),)
+    fused = _fused(inst, ((Provenance("a", "car", 0.9),),))
+    assert fused.provenance() is fused.sources
+
+
+def test_best_per_source():
+    members = (
+        Provenance("a", "car", 0.6),
+        Provenance("b", "suv", 0.8),
+        Provenance("a", "truck", 0.7),
+        Provenance("c", "van", 0.8),
+    )
+    assert best_per_source(members) == (
+        Provenance("b", "suv", 0.8),
+        Provenance("c", "van", 0.8),  # tie: order of members
+        Provenance("a", "truck", 0.7),
+    )
+
+
+@pytest.mark.parametrize(
+    "sources",
+    [
+        (),  # wrong length
+        ((),),  # empty member tuple
+        (("a",),),  # not Provenance
+        [(Provenance("a", "car", 0.9),)],  # not a tuple
+    ],
+)
+def test_validate_rejects_bad_sources(make_instances, sources):
+    with pytest.raises(ContractError, match="sources"):
+        _fused(make_instances([[0, 0, 1, 1]]), sources).validate(10, 10)

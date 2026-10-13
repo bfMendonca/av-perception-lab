@@ -24,6 +24,7 @@ CLASS_COLORS: dict[str, tuple[int, int, int]] = {
     "person": (255, 99, 132),
     "bicycle": (255, 159, 64),
     "car": (54, 162, 235),
+    "vehicle": (54, 162, 235),  # canonical label of the driving label maps
     "suv": (90, 130, 255),
     "van": (120, 200, 255),
     "sports car": (0, 200, 230),
@@ -145,12 +146,19 @@ def metric_legend(height: int, max_depth: float, cmap: int) -> np.ndarray:
 
 
 def format_label(
-    class_name: str, score: float, distance: float | None, spread: float | None = None
+    class_name: str,
+    score: float,
+    distance: float | None,
+    spread: float | None = None,
+    n_sources: int = 1,
 ) -> str:
-    """Box label, e.g. "truck 94% · 12.3 m ± 0.4" (spread optional) or "truck 94% · n/a"."""
+    """Box label, e.g. "truck 94% · 12.3 m ± 0.4" (spread optional) or "truck 94% · n/a";
+    with n_sources > 1 the number of agreeing detectors follows the score
+    ("vehicle 91% ×2 · 12.3 m")."""
+    head = f"{class_name} {score:.0%}" + (f" ×{n_sources}" if n_sources > 1 else "")
     if distance is None:
-        return f"{class_name} {score:.0%} · n/a"
-    text = f"{class_name} {score:.0%} · {distance:.1f} m"
+        return f"{head} · n/a"
+    text = f"{head} · {distance:.1f} m"
     return text if spread is None else f"{text} ± {spread:.1f}"
 
 

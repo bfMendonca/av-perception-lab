@@ -20,8 +20,11 @@ driving footage (1920×1080 HEVC).
 Current state: task_0001 built the first RF-DETR + DA3 pipeline; task_0002
 reorganised it into model-agnostic components with abstract contracts,
 adapters per framework (RF-DETR, YOLO26, DA3), several detectors per frame
-(concatenated, tagged by source) and a YAML run configuration. The CLI
-writes an annotated video, a per-box CSV and a metrics JSON.
+(concatenated, tagged by source) and a YAML run configuration. task_0003
+added per-detector label maps (raw -> canonical labels), cross-detector
+fusion (NMS, WBF) that keeps every merged detection, and cross-detector
+agreement metrics. The CLI writes an annotated video, a per-box CSV and a
+metrics JSON.
 
 ## 2. Technology Stack
 
@@ -42,16 +45,19 @@ writes an annotated video, a per-box CSV and a metrics JSON.
 det-depth-distance/
 ├── pyproject.toml           # uv manifest; "infer" extra holds the GPU stack; pytest "gpu" marker
 ├── uv.lock
-├── configs/                 # example run YAMLs: rfdetr_da3, yolo_o365_da3, multi_detector
+├── configs/                 # example run YAMLs: rfdetr_da3, yolo_o365_da3, multi_detector, multi_detector_fused
+│   └── labels/              # versioned label maps: coco_driving, objects365_driving
 ├── src/det_depth_distance/
 │   ├── core/                # contracts + orchestration, no ML framework imports
 │   │   ├── types.py         # Frame, Instances, DepthResult, FrameResult, MapGeometry, CameraIntrinsics, ContractError
 │   │   ├── options.py       # ConfigError, from_mapping (typed YAML -> dataclass, dotted error paths)
 │   │   ├── components.py    # LoadContext, Component, DetectorOptions, Detector, DepthEstimator (ABCs)
 │   │   ├── registry.py      # @register, build, available, load_adapters (ADAPTER_MODULES)
-│   │   ├── labels.py        # Vocabulary, COCO / OBJECTS365 presets, identify_vocabulary, resolve_classes
-│   │   ├── aggregate.py     # Aggregator (bind_sources hook), Concat
-│   │   └── pipeline.py      # Pipeline: detectors -> aggregation -> depth -> distance, timings
+│   │   ├── labels.py        # Vocabulary, COCO / OBJECTS365 presets, identify_vocabulary, resolve_classes, LabelMap
+│   │   ├── boxes.py         # numpy box geometry: iou_matrix, label_groups, greedy_match, nms_clusters, wbf_clusters
+│   │   ├── aggregate.py     # Aggregator (bind_sources hook), Concat, FusionOptions, FusionAggregator, Nms, Wbf
+│   │   ├── agreement.py     # frame_agreement, AgreementStats (cross-detector agreement)
+│   │   └── pipeline.py      # Pipeline: detectors -> agreement -> aggregation -> depth -> distance, timings
 │   ├── adapters/detectors/  # rfdetr.py (RFDETRDetector), ultralytics_yolo.py (YoloDetector)
 │   ├── adapters/depth/      # da3.py (DA3Depth + geometry/focal/unit helpers)
 │   ├── io/                  # video.py (ffmpeg pipes), source.py (VideoSource), sinks.py (CSV/video/npz/metrics)
@@ -74,14 +80,15 @@ No database. Everything crossing a component boundary is a frozen numpy
 dataclass (`core/types.py`), never a framework object:
 
 - `Frame`: index, t, rgb (H, W, 3) uint8 upright RGB.
-- `Instances`: xyxy (N,4) float32 frame pixels (continuous edges), score, class_id, `label` (canonical), `raw_label` (model vocabulary), `source` (component name), optional `masks` (N,H,W) bool. Each per-instance field declares its validator and concat fill in its metadata (`per_instance`), so `select`/`concat`/`validate` handle future fields unchanged; an all-False mask means "no mask".
+- `Instances`: xyxy (N,4) float32 frame pixels (continuous edges), score, class_id, `label` (canonical), `raw_label` (model vocabulary), `source` (component name), optional `masks` (N,H,W) bool, optional `sources` (per instance, a tuple of `Provenance(source, raw_label, score)` members; set only by fusion aggregators, `provenance()` synthesises one member per unfused instance). Each per-instance field declares its validator and concat fill in its metadata (`per_instance`), so `select`/`concat`/`validate` handle future fields unchanged; an all-False mask means "no mask".
 - `DepthResult`: depth_m (map_h, map_w) float32 metres, `CameraIntrinsics` at map resolution, optional sky mask, and the frame -> map `MapGeometry`.
 - `CameraIntrinsics` uses continuous pixel coordinates (principal point of a centred camera at (W/2, H/2)); `MapGeometry.scale_intrinsics` maps frame K to map K.
-- `FrameResult`: frame, instances, per-instance `BoxDepthStats`, depth, timings.
+- `FrameResult`: frame, instances, per-instance `BoxDepthStats`, depth, timings, optional `FrameAgreement` (per detector `instances`/`duplicates` after in-detector NMS, and one `PairAgreement(a, b, matched, only_a, only_b, iou_sum)` per detector pair).
+- `LabelMap` (core/labels.py): name, raw -> canonical `mapping`, `unmapped` policy (`keep`/`drop`), optional declared `vocabulary`; loaded from `configs/labels/*.yaml`, checked against the model's class names and identified vocabulary at load.
 - `DistanceConfig` / `BoxDepthStats` (distance.py): parameters and per-box statistics.
-- `RunConfig` (config.py): the YAML run (source, detectors, depth, camera, aggregation, distance, render, output, device).
+- `RunConfig` (config.py): the YAML run (source, detectors, depth, camera, aggregation, agreement, distance, render, output, device).
 
-Per run: `video.mp4`, `detections.csv` (one row per box; task_0001 columns then `source`, `raw_label`), `metrics.json` (`components`, `pipeline`, focal, timings incl. `det.<name>` and `aggregate`, `detections_by_source`, resolved `config`), optional `depth.npz`.
+Per run: `video.mp4`, `detections.csv` (one row per box; task_0001 columns then `source`, `raw_label`, `n_sources`, `sources`, `source_scores`, `raw_labels` — the last three `|`-joined, best member per detector), `metrics.json` (`components`, `pipeline` incl. `agreement` policy, focal, timings incl. `det.<name>`, `agree` and `aggregate`, `detections_by_source`, `detections_by_n_sources`, `agreement` summary with >= 2 detectors, resolved `config`), optional `depth.npz`.
 
 ## 5. Architecture Patterns
 
@@ -101,8 +108,22 @@ Per run: `video.mp4`, `detections.csv` (one row per box; task_0001 columns then 
   `ADAPTER_MODULES`.
 - Pipeline: resolves camera intrinsics first (only if the depth model needs
   them; the focal-estimation DA3 model is loaded, used and released), then
-  loads detectors and depth; per frame runs every detector, the aggregator
-  (`concat`), depth and `box_depth_stats`, timing each stage.
+  loads detectors and depth; per frame runs every detector, the agreement
+  metrics (>= 2 detectors), the aggregator, depth and `box_depth_stats`,
+  timing each stage. Distances are computed on the aggregated (possibly
+  fused) boxes.
+- Label harmonisation: `Detector._map_labels` applies the detector's
+  `LabelMap` after the class filter (by raw label) and before validation.
+- Fusion: `FusionAggregator` is a template method (concat -> per-detector
+  weights -> label groups -> `_fuse` -> instance per cluster with
+  `sources`); `Nms` keeps the best weighted member's own box and score,
+  `Wbf` averages boxes by score (own numpy port of
+  ZFTurbo/Weighted-Boxes-Fusion, MIT, which keeps cluster membership; the
+  `avg` score is capped at 1 so it stays a confidence). Both
+  fuse duplicates within one detector too. Weights are fixed per detector
+  (`aggregation.weights`) and only rescale scores; they are not a
+  calibration. Box geometry lives in `core/boxes.py` (numpy only; no
+  torchvision/scipy in the light env).
 - Sinks (CSV, video, npz, metrics) consume `FrameResult`s; the CLI is only a
   composition root. Configuration errors raise `ConfigError` (exit code 2);
   adapter bugs raise `ContractError`.
@@ -129,7 +150,7 @@ None. Local CLI tool; no users, sessions or network services.
 No network API. The interface is the CLI `det-depth-distance` /
 `python -m det_depth_distance --config run.yaml [VIDEO] [--set key=value]...`
 and `--list-models`. The YAML schema (sections source, detectors, depth,
-camera, aggregation, distance, render, output, device) is documented in the
+camera, aggregation, agreement, distance, render, output, device) is documented in the
 README; the task_0001 flags were replaced without aliases.
 
 ## 8. Key Business Concepts
@@ -141,6 +162,11 @@ README; the task_0001 flags were replaced without aliases.
   to metres; either calibrated or estimated by an any-view DA3 model.
 - **Box shrink / outlier rejection**: techniques to suppress background
   pixels inside a non-tight bounding box.
+- **Canonical label**: detector-independent class name (e.g. `vehicle`)
+  that label maps assign to raw names of each vocabulary, so instances of
+  different models can be compared and fused.
+- **Agreement**: per detector pair, how many deduplicated instances match
+  one-to-one by IoU (and how many only one detector sees).
 
 ## 9. Security Model
 
@@ -176,6 +202,7 @@ implementation. See `AGENTS.md` for the mandatory rules.
 ## 13. What This Project Does NOT Have
 
 - No TensorRT/ONNX path, no batching, no real-time optimisation.
-- No segmentation masks (the `Instances.masks` contract exists, but no adapter fills it and distance uses boxes only), no cross-model fusion (NMS/WBF), no object tracking or temporal smoothing.
+- No segmentation masks (the `Instances.masks` contract exists, but no adapter fills it and distance uses boxes only), no object tracking or temporal smoothing.
+- No score calibration across detectors (fusion weights are fixed per detector); no new dependency for fusion (no `ensemble-boxes`, `torchvision.ops` or `scipy` in the core).
 - No ground-truth distance evaluation.
 - No CI, no Docker, no git remote, no web UI or API.

@@ -96,9 +96,16 @@ def test_regression_against_task_0001(tmp_path, video):
         for col in FLOATS:
             assert _close(n[col], r[col], 1e-6), (i, col, r[col], n[col])
         assert n["source"] == "rfdetr-large" and n["raw_label"] == n["class_name"]
+        # task_0003 columns: one unfused member, restating source/raw_label/score.
+        assert (n["n_sources"], n["sources"]) == ("1", "rfdetr-large")
+        assert n["raw_labels"] == n["raw_label"]
+        assert n["source_scores"] == n["confidence"]
 
     metrics = json.loads((run_dir / "metrics.json").read_text())
     reference = json.loads(REF_METRICS.read_text())
     assert math.isclose(metrics["focal_frame_px"], REF_FOCAL, rel_tol=1e-9)
     assert metrics["focal_map_intrinsics"] == reference["focal_map_intrinsics"]
     assert metrics["boxes_total"] == 102
+    # One detector: no agreement (task_0003), labels unmapped.
+    assert "agreement" not in metrics and metrics["pipeline"]["agreement"] is None
+    assert metrics["components"]["detectors"][0]["labels"] is None

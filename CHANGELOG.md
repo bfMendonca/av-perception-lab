@@ -4,6 +4,98 @@ Todas as mudancas relevantes do det-depth-distance serao documentadas neste arqu
 
 ---
 
+## [2026-10-13] Harmonizacao de rotulos e fusao entre detectores
+
+Com varios detectores no mesmo passo, o mesmo carro aparecia duas vezes e
+com nomes diferentes conforme o vocabulario de cada modelo (`truck` no
+COCO; `suv`, `van` ou `pickup truck` no Objects365). A task_0003 adiciona
+mapas de rotulos por detector, que traduzem os nomes de cada modelo para
+nomes canonicos comuns (ex.: tudo que e veiculo vira `vehicle`), e duas
+estrategias de fusao (NMS e WBF) que produzem uma lista unica de objetos,
+guardando quais detectores viram cada um e com quais scores. O
+`metrics.json` passa a medir a concordancia entre detectores. O
+comportamento padrao (`concat`) nao muda.
+
+### Novo: Mapas de rotulos por detector
+
+- **Opcao `labels`** em cada detector aponta um YAML de mapa
+  (`canonical: {vehicle: [car, truck, bus], ...}`), com politica para
+  rotulos fora do mapa (`unmapped: keep` ou `drop`).
+- **Mapas versionados** em `configs/labels/`: `coco_driving.yaml` (RF-DETR,
+  YOLO26 COCO) e `objects365_driving.yaml` (YOLO26 Objects365).
+- **Conferidos na carga:** nome que o modelo nao conhece, ou mapa escrito
+  para outro vocabulario, e erro antes do primeiro quadro.
+
+### Novo: Fusao entre detectores (`aggregation: nms` / `wbf`)
+
+- **`nms`:** supressao de nao-maximos sobre todas as caixas, entre
+  detectores e tambem duplicatas de um mesmo detector, por rotulo canonico
+  (ou sem olhar o rotulo, com `class_agnostic: true`).
+- **`wbf`:** Weighted Boxes Fusion; cada grupo vira uma caixa media
+  ponderada pelo score (implementacao propria, sem dependencia nova). O
+  score fundido fica limitado a 1: com pesos desiguais e duplicatas de um
+  mesmo detector, a formula de referencia passaria de 1.
+- **Pesos por detector** (`aggregation.weights`) para favorecer um modelo;
+  nao e calibracao de score.
+- **Instancia fundida guarda seus membros:** detector, rotulo original e
+  score original de cada deteccao que a compoe.
+
+### Novo: Concordancia entre detectores
+
+- Secao `agreement` no YAML (ligada por padrao; vale com 2 ou mais
+  detectores, inclusive com `concat`).
+- `metrics.json` ganha `agreement`: por par de detectores, quantos objetos
+  casam por IoU, quantos sao exclusivos de cada um e a IoU media, no total
+  e por quadro; por detector, quantas duplicatas internas foram removidas.
+
+### Novo: Exemplo de configuracao
+
+- `configs/multi_detector_fused.yaml`: RF-DETR large + YOLO26-L Objects365
+  com mapas de rotulos, fusao `wbf` e concordancia.
+
+### Como usar
+
+1. No laptop: `utils/sync_gpu_host.sh push`.
+2. No servidor: `uv run --extra infer python -m det_depth_distance --config configs/multi_detector_fused.yaml`.
+3. Mesmo YAML sem fusao: `--set 'aggregation={type: concat}'`; com NMS:
+   `--set aggregation.type=nms`.
+
+### Detalhes tecnicos
+
+- `detections.csv` ganha no fim `n_sources`, `sources`, `source_scores` e
+  `raw_labels` (um item por detector, separados por `|`); a coluna
+  `class_name` passa a ser o rotulo canonico quando ha mapa.
+- `metrics.json`: `detections_by_n_sources`, tempo `agree`,
+  `pipeline.agreement` e, em cada detector, a descricao do mapa (`labels`);
+  o agregador descreve os pesos efetivos.
+- Video: com fusao, a cor e pelo rotulo canonico, o rotulo mostra o numero
+  de detectores que viram o objeto (ex.: "vehicle 91% x2", com o sinal de
+  multiplicacao) e o painel mostra o agregador e a concordancia.
+- Geometria de caixas (IoU, NMS, WBF, casamento) em `core/boxes.py`, numpy
+  puro, testada no ambiente leve; reutilizavel pelo rastreamento futuro.
+- `--list-models` passa a listar `nms` e `wbf` com suas opcoes.
+
+### Observacoes importantes
+
+- Os scores de RF-DETR e YOLO26 Objects365 nao estao na mesma escala (nos
+  mesmos veiculos, mediana de 0.90 contra 0.71); a fusao ponderada
+  favorece o modelo mais confiante. Os pesos so reescalam.
+- O YOLO26 Objects365 costuma emitir duas caixas de veiculo diferentes
+  (ex.: `pickup truck` e `suv`) para o mesmo objeto; com o mapa para
+  `vehicle`, a fusao as junta.
+- A validacao de ponta a ponta no servidor GPU (testes `-m gpu` dos mapas,
+  regressao da task_0002 e execucoes concat/nms/wbf) ficou pendente: o
+  servidor estava fora do ar durante a implementacao.
+
+### O que nao muda
+
+- `aggregation: concat` continua sendo o padrao; YAMLs sem `labels` e com
+  um so detector produzem as mesmas deteccoes e distancias de antes (as
+  colunas novas do CSV ficam no fim).
+- Nenhuma dependencia nova.
+
+---
+
 ## [2026-10-13] Pipeline modular com configuracao YAML e detector YOLO26
 
 O pipeline deixa de ser amarrado ao RF-DETR e ao Depth Anything 3 (task_0002):

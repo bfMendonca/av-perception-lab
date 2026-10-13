@@ -3,6 +3,7 @@ from dataclasses import dataclass
 
 import numpy as np
 import pytest
+import yaml
 
 from det_depth_distance.core import registry
 from det_depth_distance.core.components import (
@@ -93,9 +94,60 @@ def test_default_name_is_type_name():
     assert FakeDetector().name == "fake"
 
 
-def test_labels_option_is_refused_until_task_0003(tmp_path):
-    with pytest.raises(ConfigError, match="labels"):
-        FakeDetector(DetectorOptions(labels=tmp_path / "map.yaml"))
+def _label_map(tmp_path, **data):
+    path = tmp_path / "map.yaml"
+    path.write_text(yaml.safe_dump({"canonical": {"vehicle": ["car"]}, **data}))
+    return path
+
+
+def test_label_map_maps_raw_labels(tmp_path):
+    det = FakeDetector(DetectorOptions(classes="all", labels=_label_map(tmp_path)))
+    det.load(CTX)
+    out = det(FRAME)
+    assert out.label == ("vehicle", "person", "dog")
+    assert out.raw_label == ("car", "person", "dog")
+    expected = set(COCO.presets["driving"]) - {"car"} | {"vehicle", "dog"}
+    assert det.output_labels == expected
+    desc = json.loads(json.dumps(det.describe()))
+    assert desc["labels"]["canonical"] == {"vehicle": ["car"]}
+    assert FakeDetector().describe()["labels"] is None
+
+
+def test_label_map_drop_after_class_filter(tmp_path):
+    path = _label_map(tmp_path, unmapped="drop")
+    det = FakeDetector(DetectorOptions(labels=path))  # classes: driving drops "dog"
+    det.load(CTX)
+    out = det(FRAME)
+    assert out.label == ("vehicle",) and out.source == ("fake",)
+    assert det.output_labels == {"vehicle"}
+
+
+def test_label_map_errors(tmp_path):
+    with pytest.raises(ConfigError, match=r"^labels: .*label map not found"):
+        FakeDetector(DetectorOptions(labels=tmp_path / "nope.yaml"))
+    # Raw names and vocabulary are only checked against the loaded model.
+    det = FakeDetector(
+        DetectorOptions(labels=_label_map(tmp_path, vocabulary="objects365"))
+    )
+    with pytest.raises(ConfigError, match=r"^fake\.labels: map: written for"):
+        det.load(CTX)
+    det = FakeDetector(
+        DetectorOptions(labels=_label_map(tmp_path, canonical={"vehicle": ["suv"]}))
+    )
+    with pytest.raises(ConfigError, match="'suv'"):
+        det.load(CTX)
+
+
+def test_label_map_errors_through_registry(tmp_path, monkeypatch):
+    registry.load_adapters()
+    monkeypatch.setitem(registry._REGISTRY["detector"], "fake", FakeDetector)
+    path = tmp_path / "map.yaml"
+    path.write_text("canonical: {vehicle: [car], truck: [car]}")
+    spec = {"type": "fake", "labels": str(path)}
+    with pytest.raises(
+        ConfigError, match=r"^detectors\[1\]\.labels: .*'car' mapped to both"
+    ):
+        registry.build("detector", spec, path="detectors[1]")
 
 
 @pytest.mark.parametrize("threshold", [0, 1.5])

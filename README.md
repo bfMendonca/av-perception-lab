@@ -60,6 +60,9 @@ o desenvolvimento e os testes unitários rodam localmente.
 
 - **Detectar** objetos quadro a quadro com RF-DETR (`nano`, `small`, `medium`, `large`, ou checkpoint próprio) e/ou Ultralytics YOLO26 (pesos COCO ou Objects365), com filtro de classes por preset do vocabulário (`driving` para COCO e Objects365) validado contra as classes do modelo.
 - **Combinar** vários detectores no mesmo passo (`aggregation: concat`): todas as caixas são mantidas e marcadas com o modelo de origem (`source`), no CSV e por cor no vídeo.
+- **Harmonizar** rótulos entre vocabulários com mapas por detector (`labels: configs/labels/*.yaml`, ex. COCO `car`/`truck`/`bus` e Objects365 `suv`/`van`/`pickup truck` → `vehicle`), conferidos contra as classes do modelo na carga.
+- **Fundir** as detecções do mesmo objeto (`aggregation: nms` ou `wbf`), entre detectores e também duplicatas de um mesmo detector, preservando os membros de cada instância fundida (detector, rótulo original, score original) e com peso fixo opcional por detector.
+- **Medir a concordância** entre detectores (`agreement`): por par, quantos objetos casam por IoU e quantos são exclusivos de cada um, por quadro e no total do `metrics.json`.
 - **Estimar** profundidade métrica com Depth Anything 3 (`da3metric-large` com focal informada ou estimada; modelos NESTED já em metros).
 - **Calcular** a distância de cada caixa com estatísticas robustas: encolhimento da caixa, exclusão de céu, rejeição de outliers (`iqr`, `mad`, `sigma`) e estatística configurável (`median`, `mean`, `trimmed`, `mode`, `pXX`), em profundidade `z` ou distância euclidiana.
 - **Renderizar** vídeo anotado (rótulo `classe conf · D m ± σ`, HUD com tempos) e, opcionalmente, o mapa de profundidade lado a lado com legenda em metros.
@@ -97,16 +100,19 @@ rodam sem torch.
 det-depth-distance/
 ├── pyproject.toml           # manifesto uv; extra "infer" com a stack GPU
 ├── uv.lock                  # lock versionado
-├── configs/                 # exemplos de YAML: rfdetr_da3, yolo_o365_da3, multi_detector
+├── configs/                 # exemplos de YAML: rfdetr_da3, yolo_o365_da3, multi_detector, multi_detector_fused
+│   └── labels/              # mapas de rótulos por vocabulário: coco_driving, objects365_driving
 ├── src/det_depth_distance/
 │   ├── core/                # contratos e orquestração, sem frameworks
 │   │   ├── types.py         # Frame, Instances, DepthResult, FrameResult, MapGeometry, CameraIntrinsics
 │   │   ├── options.py       # ConfigError, from_mapping (YAML -> dataclass com caminho nos erros)
 │   │   ├── components.py    # Component, Detector, DetectorOptions, DepthEstimator (ABCs)
 │   │   ├── registry.py      # @register, build, available, load_adapters
-│   │   ├── labels.py        # vocabulários COCO/Objects365 e presets de classes
-│   │   ├── aggregate.py     # Aggregator, Concat
-│   │   └── pipeline.py      # Pipeline: detectores -> agregação -> profundidade -> distância
+│   │   ├── labels.py        # vocabulários COCO/Objects365, presets de classes, LabelMap
+│   │   ├── boxes.py         # IoU, casamento guloso, clusters de NMS e WBF (numpy puro)
+│   │   ├── aggregate.py     # Aggregator, Concat, FusionAggregator, Nms, Wbf
+│   │   ├── agreement.py     # concordância entre detectores por quadro + resumo
+│   │   └── pipeline.py      # Pipeline: detectores -> concordância -> agregação -> profundidade -> distância
 │   ├── adapters/
 │   │   ├── detectors/       # rfdetr.py, ultralytics_yolo.py
 │   │   └── depth/           # da3.py (geometria do mapa, focal, conversão para metros)
@@ -197,21 +203,67 @@ antes de carregar qualquer modelo.
 
 Exemplos versionados em `configs/`: `rfdetr_da3.yaml` (comportamento da
 `task_0001`), `yolo_o365_da3.yaml` (YOLO26-L Objects365) e
-`multi_detector.yaml` (os dois detectores, `layout: side-by-side`). Caminhos
-aceitam `~`; chaves desconhecidas são erro (com o caminho, ex.
+`multi_detector.yaml` (os dois detectores, `layout: side-by-side`) e
+`multi_detector_fused.yaml` (os mesmos dois detectores com mapas de rótulos,
+fusão `wbf` e concordância). Caminhos aceitam `~` e, quando relativos, são
+resolvidos a partir do diretório de execução (a raiz do repositório); chaves
+desconhecidas são erro (com o caminho, ex.
 `detectors[0].treshold: unknown option`).
 
 | Seção | Chaves (padrão) |
 |---|---|
 | topo | `device` (`cuda:0`) |
 | `source` | `video` (obrigatório aqui ou como `VIDEO`); `start` (0 s); `duration` (0 = até o fim); `max_frames` (0 = todos); `stride` (1) |
-| `detectors` | Lista (≥ 1); cada item tem `type`, `name` opcional (padrão: `rfdetr-<variant>`, `rfdetr-<arquivo de pesos>` ou, no YOLO, o nome do arquivo de pesos) e as opções do adaptador. Comuns: `threshold` (0.5, em (0, 1]), `classes` (`driving`, `all`, lista ou nomes separados por vírgula), `labels` (reservado para os mapas de rótulos da `task_0003`; hoje só aceita `null`). `rfdetr`: `variant` (`large`), `weights` (checkpoint próprio), `optimize` (TorchScript + FP16). `yolo`: `weights` (obrigatório, `.pt`), `imgsz` (640, múltiplo de 32), `half` (FP16) |
+| `detectors` | Lista (≥ 1); cada item tem `type`, `name` opcional (padrão: `rfdetr-<variant>`, `rfdetr-<arquivo de pesos>` ou, no YOLO, o nome do arquivo de pesos) e as opções do adaptador. Comuns: `threshold` (0.5, em (0, 1]), `classes` (`driving`, `all`, lista ou nomes separados por vírgula), `labels` (null; YAML de mapa de rótulos, ver abaixo). `rfdetr`: `variant` (`large`), `weights` (checkpoint próprio), `optimize` (TorchScript + FP16). `yolo`: `weights` (obrigatório, `.pt`), `imgsz` (640, múltiplo de 32), `half` (FP16) |
 | `depth` | `type: da3`; `model` (`da3metric-large`; alias, repo HF ou diretório; modelos relativos são recusados); `process_res` (504, ≥ 14); `process_res_method` (`upper_bound_resize`); `hf_cache` |
 | `camera` | `focal_px` (null; focal em px do vídeo, tem precedência); `estimate` (`model: da3-large-1.1`, `frames: 16`, `process_res`, `process_res_method`, `hf_cache`; `null` desliga a estimativa) |
-| `aggregation` | `type: concat` (mantém todas as caixas, marcadas por `source`) |
+| `aggregation` | `type`: `concat` (padrão; mantém todas as caixas, marcadas por `source`), `nms` ou `wbf` (opções abaixo) |
+| `agreement` | `enabled` (true; só tem efeito com ≥ 2 detectores); `iou_thr` (0.5, em (0, 1)); `class_aware` (true: só casa rótulos canônicos iguais) |
 | `distance` | `box_shrink` (0.1); `outlier` (`iqr`); `outlier_k` (null = padrão do método); `stat` (`median`, `mean`, `trimmed`, `mode`, `pXX`); `distance_type` (`z` ou `euclidean`); `min_valid_px` (20); `max_range` (0 = sem limite); `exclude_sky` (true) |
 | `render` | `layout` (`overlay` ou `side-by-side`); `show_stats` (false); `draw_inner_box` (false); `max_depth` (30 m); `cmap` (`turbo`); `crf` (20); `hud` (true); `font` (null) |
 | `output` | `out_root` (`_testbed/outputs`); `tag` (""); `save_depth` (false) |
+
+### Mapas de rótulos e fusão entre detectores
+
+Cada detector pode ter um mapa `labels` que traduz os nomes do seu
+vocabulário para nomes canônicos comuns. Versionados em `configs/labels/`:
+`coco_driving.yaml` (RF-DETR e YOLO26 COCO) e `objects365_driving.yaml`
+(YOLO26 Objects365); ambos agrupam as classes de veículo em `vehicle`, porque
+os modelos trocam `car`/`truck`/`suv`/`pickup truck` no mesmo objeto.
+
+```yaml
+vocabulary: coco        # opcional; conferido contra o vocabulário do modelo carregado
+unmapped: keep          # rótulos fora do mapa: keep (mantém o nome original) ou drop (descarta)
+canonical:
+  vehicle: [car, truck, bus]
+  person: [person]
+```
+
+Nomes do mapa que não existem no modelo, ou um mapa escrito para outro
+vocabulário (ex. o mapa COCO num modelo Objects365, onde `truck` tem outro
+sentido), são erro na carga, antes do primeiro quadro. A coluna `class_name`
+passa a ser o rótulo canônico; `raw_label` mantém o nome original.
+
+| Agregador | Opções (padrão) | Comportamento |
+|---|---|---|
+| `concat` | — | Mantém todas as caixas de todos os detectores |
+| `nms` | `iou_thr` (0.5); `class_agnostic` (false); `weights` ({}) | Supressão de não-máximos sobre a união das caixas (entre detectores e dentro de cada um), por rótulo canônico; a caixa de maior score ponderado sobrevive com sua caixa e score originais |
+| `wbf` | `iou_thr` (0.55); `class_agnostic` (false); `weights` ({}); `conf_type` (`avg` ou `max`); `skip_box_thr` (0.0) | Weighted Boxes Fusion: cada grupo vira uma caixa média ponderada por score; com `avg`, o score é a média dos scores ponderados × min(T, n) / Σpesos (T = nº de detectores), então um objeto visto por só um de dois detectores de mesmo peso fica com metade do score; limitado a 1 (a referência passa de 1 com pesos desiguais) |
+
+`weights` mapeia nome do detector → peso > 0 (ausente = 1); nomes que não
+são detectores da execução são erro. **Limitação:** os scores de modelos
+diferentes não estão na mesma escala (nos mesmos veículos, mediana de 0.90
+no RF-DETR e 0.71 no YOLO26-L Objects365); o peso só reescala os scores para
+decidir o vencedor do NMS e a média do WBF — não é calibração. Com fusão por
+rótulo e detectores sem nenhum rótulo canônico em comum, o pipeline avisa
+(`[warn]` no stderr) na carga. A instância fundida leva `class_id`,
+`raw_label` e `source` do membro de maior score ponderado e a máscara (quando
+houver) do melhor membro que tenha máscara.
+
+Para rodar o mesmo YAML sem fusão, substitua a seção inteira:
+`--set 'aggregation={type: concat}'`; as opções comuns (`iou_thr`,
+`class_agnostic`, `weights`) permitem trocar `--set aggregation.type=nms`
+sobre o `multi_detector_fused.yaml`.
 
 ---
 
@@ -221,9 +273,9 @@ Cada execução cria `<output.out_root>/<AAAAmmdd_HHMMSS>_<vídeo>_<detectores>_
 
 | Arquivo | Conteúdo |
 |---|---|
-| `video.mp4` | Vídeo anotado (H.264); com mais de um detector, cor e contagem do HUD por modelo de origem; áudio copiado quando o vídeo inteiro é processado sem `stride` |
-| `detections.csv` | Uma linha por caixa: quadro, tempo, classe, confiança, caixa, região amostrada no mapa, `n_valid`/`n_inliers`/`inlier_frac`, média, mediana, desvio, variância, p10–p90, mín/máx, `distance_m` (vazio = n/a) e, no fim, `source` (detector de origem) e `raw_label` (nome no vocabulário do modelo) |
-| `metrics.json` | `components` (descrição de cada detector, da profundidade e do agregador), `pipeline` (política, ex. `exclude_sky`), tempos por etapa (`det`, `det.<nome>`, `aggregate`, `depth`, `dist`, `render`), VRAM, focal (px do quadro e intrínsecos do mapa) e origem, parâmetros de distância, contagens (`detections_total`, `detections_by_source`), versões, commit e `config` (YAML resolvido) |
+| `video.mp4` | Vídeo anotado (H.264); com mais de um detector e `concat`, cor e contagem do HUD por modelo de origem; com fusão, cor pelo rótulo canônico, `×N` no rótulo quando N detectores viram o objeto e linhas de HUD com o agregador e a concordância (`agree <m> · only <a> <x> · only <b> <y>`); áudio copiado quando o vídeo inteiro é processado sem `stride` |
+| `detections.csv` | Uma linha por caixa: quadro, tempo, classe, confiança, caixa, região amostrada no mapa, `n_valid`/`n_inliers`/`inlier_frac`, média, mediana, desvio, variância, p10–p90, mín/máx, `distance_m` (vazio = n/a) e, no fim, `source` (detector de origem), `raw_label` (nome no vocabulário do modelo), `n_sources` (nº de detectores que viram o objeto; 1 sem fusão), `sources`, `source_scores` e `raw_labels` (um item por detector, o seu melhor membro, separados por `\|`, em score decrescente) |
+| `metrics.json` | `components` (descrição de cada detector, da profundidade e do agregador), `pipeline` (política: `exclude_sky`, `agreement`), tempos por etapa (`det`, `det.<nome>`, `agree`, `aggregate`, `depth`, `dist`, `render`), VRAM, focal (px do quadro e intrínsecos do mapa) e origem, parâmetros de distância, contagens (`detections_total`, `detections_by_source`, `detections_by_n_sources`), `agreement` (com ≥ 2 detectores: por detector `instances`/`duplicates`; por par `matched`/`only_a`/`only_b`/`mean_iou`; séries por quadro em `per_frame`), versões, commit e `config` (YAML resolvido) |
 | `depth.npz` | Só com `output.save_depth: true`: mapas em metros (`float16`), índices dos quadros, intrínsecos por quadro (`fx, fy, cx, cy` na resolução do mapa) e geometria (`geometry` + `geometry_fields`) |
 
 Prévia leve para trazer ao laptop:
@@ -267,7 +319,7 @@ Variáveis opcionais: `SYNC_HOST` (padrão `gpu-host`) e `SYNC_DEST` (padrão
 - [x] **Padrão de projeto** — esqueleto do repositório, AGENTS/CLAUDE/DESCRIPTION/CHANGELOG.
 - [x] **Pipeline RF-DETR + DA3** (`task_0001`) — distância por caixa, vídeo anotado, CSV e métricas.
 - [x] **Pipeline modular** (`task_0002`) — componentes abstratos, configuração YAML, detector YOLO26 e vários detectores no mesmo passo.
-- [ ] **Fusão entre detectores** (`task_0003`) — harmonização de rótulos e NMS/WBF entre modelos.
+- [x] **Fusão entre detectores** (`task_0003`) — harmonização de rótulos, NMS/WBF entre modelos e métricas de concordância.
 - [ ] **Segmentação de instâncias** (`task_0004`) — YOLO26-seg e RF-DETR-Seg; distância pela máscara.
 - [ ] **Refinadores de máscara e segmentação semântica** (`task_0005`) — família SAM (SAM2, EdgeTAM, SAM-HQ, SAM, SAM3) e MobileSAM via hierarquia `BoxPromptRefiner`; vários segmentadores semânticos nomeados (SegFormer, TwinLiteNet+) com exclusão de classes por `<nome>.<classe>`.
 - [ ] **Rastreamento e suavização temporal** (`task_0006`) — ID por objeto, distância suavizada e velocidade relativa.

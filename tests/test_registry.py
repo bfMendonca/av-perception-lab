@@ -7,7 +7,7 @@ from det_depth_distance.adapters.depth.da3 import DA3Depth
 from det_depth_distance.adapters.detectors.rfdetr import RFDETRDetector
 from det_depth_distance.adapters.detectors.ultralytics_yolo import YoloDetector
 from det_depth_distance.core import registry
-from det_depth_distance.core.aggregate import Concat
+from det_depth_distance.core.aggregate import Concat, Nms, Wbf
 from det_depth_distance.core.options import ConfigError
 
 
@@ -15,7 +15,7 @@ def test_available_lists_every_family():
     found = registry.available()
     assert found["detector"] == {"rfdetr": RFDETRDetector, "yolo": YoloDetector}
     assert found["depth"] == {"da3": DA3Depth}
-    assert found["aggregator"] == {"concat": Concat}
+    assert found["aggregator"] == {"concat": Concat, "nms": Nms, "wbf": Wbf}
     assert registry.available("depth") == {"depth": {"da3": DA3Depth}}
 
 

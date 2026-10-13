@@ -1,4 +1,5 @@
-"""Model-agnostic per-frame pipeline: detectors -> aggregation -> depth -> distance.
+"""Model-agnostic per-frame pipeline: detectors -> (agreement) -> aggregation ->
+depth -> distance.
 
 Depends only on the abstract components; timings are measured here around
 each stage so components stay stateless per call. `describe()` keeps
@@ -11,20 +12,25 @@ Import direction: this module may import configuration dataclasses from
 `core.pipeline`. `core.types` and `core.components` stay contract-only.
 """
 
+import sys
 import time
 from collections import Counter
 from collections.abc import Callable, Sequence
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
+from itertools import combinations
 from typing import Any, Self, TypeVar
 
 from det_depth_distance.camera import IntrinsicsProvider
-from det_depth_distance.core.aggregate import Aggregator
+from det_depth_distance.config import AgreementConfig
+from det_depth_distance.core.aggregate import Aggregator, FusionAggregator
+from det_depth_distance.core.agreement import frame_agreement
 from det_depth_distance.core.components import DepthEstimator, Detector, LoadContext
 from det_depth_distance.core.options import ConfigError
 from det_depth_distance.core.types import (
     CameraIntrinsics,
     DepthResult,
     Frame,
+    FrameAgreement,
     FrameResult,
     Instances,
 )
@@ -65,8 +71,13 @@ class Pipeline:
         exclude_sky: bool = True,
         intrinsics: IntrinsicsProvider | None = None,
         device: str = "cuda:0",
+        agreement: AgreementConfig | None = None,
     ) -> None:
-        """Raises ConfigError for no detectors or duplicate detector names."""
+        """Raises ConfigError for no detectors, duplicate detector names or
+        aggregator settings naming unknown detectors (`bind_sources`).
+
+        `agreement` takes effect only when enabled and with two or more detectors.
+        """
         if not detectors:
             raise ConfigError("detectors: at least one detector is required")
         duplicates = [n for n, c in Counter(d.name for d in detectors).items() if c > 1]
@@ -81,7 +92,13 @@ class Pipeline:
         self.exclude_sky = exclude_sky
         self.intrinsics = intrinsics
         self.device = device
-        aggregator.bind_sources([d.name for d in self.detectors])
+        names = [d.name for d in self.detectors]
+        aggregator.bind_sources(names)
+        self.agreement = (
+            agreement
+            if agreement is not None and agreement.enabled and len(names) > 1
+            else None
+        )
 
     def resolve_intrinsics(self, source: FrameSource) -> SetupInfo:
         """Frame intrinsics, only when the depth model needs them (may run and
@@ -105,7 +122,26 @@ class Pipeline:
         ctx = LoadContext(self.device, source.frame_size, info.frame_intrinsics)
         for detector in self.detectors:
             detector.load(ctx)
+        self._warn_disjoint_labels()
         self.depth.load(ctx)
+
+    def _warn_disjoint_labels(self) -> None:
+        # Fusing by label merges nothing across two detectors whose label sets
+        # are disjoint (e.g. a COCO and an Objects365 model without label maps).
+        aggregator = self.aggregator
+        if (
+            not isinstance(aggregator, FusionAggregator)
+            or aggregator.options.class_agnostic
+        ):
+            return
+        for a, b in combinations(self.detectors, 2):
+            if not a.output_labels & b.output_labels:
+                print(
+                    f"[warn] {aggregator.type_name} fuses by label, but {a.name} and "
+                    f"{b.name} share no label: set label maps (labels) or "
+                    "aggregation.class_agnostic",
+                    file=sys.stderr,
+                )
 
     def setup(self, source: FrameSource) -> SetupInfo:
         """Resolve camera intrinsics if the depth model needs them, then load all models.
@@ -123,25 +159,30 @@ class Pipeline:
     def process(self, frame: Frame) -> FrameResult:
         """Instances, depth and per-instance distance statistics of one frame.
 
-        Timings (ms): "det" (sum), "det.<name>" per detector, "aggregate",
-        "depth", "dist".
+        Timings (ms): "det" (sum), "det.<name>" per detector, "agree" (when
+        agreement is computed), "aggregate", "depth", "dist".
         """
         parts: list[Instances] = []
         det_ms: dict[str, float] = {}
         for detector in self.detectors:
             instances, det_ms[f"det.{detector.name}"] = _timed(detector, frame)
             parts.append(instances)
-        instances, aggregate_ms = _timed(self.aggregator, parts)
-        depth, depth_ms = _timed(self.depth, frame)
-        stats, dist_ms = _timed(self._distances, instances, depth)
-        timings = {
-            "det": sum(det_ms.values()),
-            **det_ms,
-            "aggregate": aggregate_ms,
-            "depth": depth_ms,
-            "dist": dist_ms,
-        }
-        return FrameResult(frame, instances, stats, depth, timings)
+        timings = {"det": sum(det_ms.values()), **det_ms}
+        agreement = None
+        if self.agreement is not None:
+            agreement, timings["agree"] = _timed(self._agreement_of, parts)
+        instances, timings["aggregate"] = _timed(self.aggregator, parts)
+        depth, timings["depth"] = _timed(self.depth, frame)
+        stats, timings["dist"] = _timed(self._distances, instances, depth)
+        return FrameResult(frame, instances, stats, depth, timings, agreement)
+
+    def _agreement_of(self, parts: Sequence[Instances]) -> FrameAgreement:
+        return frame_agreement(
+            parts,
+            [d.name for d in self.detectors],
+            iou_thr=self.agreement.iou_thr,
+            class_aware=self.agreement.class_aware,
+        )
 
     def _distances(
         self, instances: Instances, depth: DepthResult
@@ -174,7 +215,10 @@ class Pipeline:
                 "depth": self.depth.describe(),
                 "aggregator": self.aggregator.describe(),
             },
-            "pipeline": {"exclude_sky": self.exclude_sky},
+            "pipeline": {
+                "exclude_sky": self.exclude_sky,
+                "agreement": asdict(self.agreement) if self.agreement else None,
+            },
         }
 
     def __enter__(self) -> Self:

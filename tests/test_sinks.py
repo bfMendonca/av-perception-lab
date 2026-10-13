@@ -14,8 +14,11 @@ from det_depth_distance.core.types import (
     CameraIntrinsics,
     DepthResult,
     Frame,
+    FrameAgreement,
     FrameResult,
     MapGeometry,
+    PairAgreement,
+    Provenance,
 )
 from det_depth_distance.distance import DistanceConfig, box_depth_stats
 from det_depth_distance.io.sinks import (
@@ -68,6 +71,10 @@ def test_csv_fields_order():
         "distance_m",
         "source",
         "raw_label",
+        "n_sources",
+        "sources",
+        "source_scores",
+        "raw_labels",
     )
 
 
@@ -139,8 +146,55 @@ def test_csv_sink(ctx, result):
     assert [r["class_name"] for r in rows] == ["car", "suv"]
     assert rows[0]["t"] == "0.2346" and rows[0]["confidence"] == "0.9123"
     assert rows[0]["source"] == "yolo" and rows[1]["raw_label"] == "suv"
+    # Unfused (concat) rows: one member, the instance itself.
+    assert [rows[0][k] for k in ("n_sources", "sources", "source_scores")] == [
+        "1",
+        "yolo",
+        "0.9123",
+    ]
+    assert rows[1]["raw_labels"] == "suv"
+    # The task_0003 columns of unfused rows only restate the task_0002 ones.
+    for row in rows:
+        assert (row["sources"], row["raw_labels"]) == (row["source"], row["raw_label"])
+        assert row["source_scores"] == row["confidence"]
     assert float(rows[0]["distance_m"]) == pytest.approx(12.0)
     assert rows[1]["distance_m"] == ""  # 25 px < min_valid_px
+
+
+@pytest.fixture
+def fused_result(result):
+    """`result` with the first instance fused from two detectors (three members)."""
+    members = (
+        Provenance("yolo26l-objv1-150", "suv", 0.71),
+        Provenance("rfdetr-large", "truck", 0.9031),
+        Provenance("yolo26l-objv1-150", "pickup truck", 0.65),
+    )
+    sources = (members, (Provenance("yolo", "suv", 0.5),))
+    instances = replace(
+        result.instances.with_labels(["vehicle", "vehicle"]), sources=sources
+    )
+    pair = PairAgreement("rfdetr-large", "yolo26l-objv1-150", 3, 1, 2, 2.7)
+    agreement = FrameAgreement(
+        {"rfdetr-large": 4, "yolo26l-objv1-150": 5},
+        {"rfdetr-large": 0, "yolo26l-objv1-150": 1},
+        (pair,),
+    )
+    return replace(result, instances=instances, agreement=agreement)
+
+
+def test_csv_sink_fused_row(ctx, fused_result):
+    sink = CsvSink()
+    sink.open(ctx)
+    sink.write(fused_result)
+    sink.close()
+    with open(ctx.run_dir / "detections.csv", newline="") as fh:
+        rows = list(csv.DictReader(fh))
+    first = rows[0]
+    assert first["class_name"] == "vehicle" and first["n_sources"] == "2"
+    assert first["sources"] == "rfdetr-large|yolo26l-objv1-150"
+    assert first["source_scores"] == "0.9031|0.71"
+    assert first["raw_labels"] == "truck|suv"  # best member of each detector
+    assert rows[1]["n_sources"] == "1"
 
 
 def test_npz_sink(ctx, result):
@@ -192,6 +246,9 @@ def test_metrics_sink(ctx, result):
     assert metrics["focal_frame_px"] == 90.0 and metrics["focal_source"] == "spy"
     assert metrics["focal_map_intrinsics"]["fx"] == 1.0
     assert metrics["detections_by_source"] == {"yolo": 2}
+    # One detector, concat: no agreement summary, every instance has one source.
+    assert "agreement" not in metrics
+    assert metrics["detections_by_n_sources"] == {"1": 2}
     assert metrics["detections_total"] == {"car": 1, "suv": 1}
     assert (metrics["boxes_total"], metrics["boxes_without_distance"]) == (2, 1)
     assert metrics["distance"]["k"] == 1.5
@@ -199,11 +256,62 @@ def test_metrics_sink(ctx, result):
     assert math.isfinite(metrics["wall_time_s"])
 
 
+def test_metrics_sink_agreement(ctx, result, fused_result):
+    monitor = SimpleNamespace(
+        summary=lambda: dict.fromkeys(
+            [
+                "peak_vram_torch_allocated_gb",
+                "device_mem_used_delta_gb_approx",
+                "torch",
+                "cuda",
+                "gpu",
+            ]
+        )
+    )
+    sink = MetricsSink(monitor, dict)
+    sink.open(ctx)
+    sink.write(result)  # no agreement in this frame (e.g. one detector)
+    sink.write(fused_result)
+    sink.close()
+    metrics = json.loads((ctx.run_dir / "metrics.json").read_text())
+    assert metrics["detections_by_n_sources"] == {"1": 3, "2": 1}
+    agreement = metrics["agreement"]
+    assert agreement["per_frame"]["frame"] == [7]
+    assert agreement["pairs"][0]["mean_iou"] == pytest.approx(0.9)
+    assert agreement["detectors"]["yolo26l-objv1-150"] == {
+        "instances": 5,
+        "duplicates": 1,
+    }
+    assert (agreement["iou_thr"], agreement["class_aware"]) == (0.5, True)
+
+
 def test_metrics_sink_writes_nothing_without_frames(ctx):
     sink = MetricsSink(SimpleNamespace(), dict)
     sink.open(ctx)
     sink.close()
     assert not (ctx.run_dir / "metrics.json").exists()
+
+
+@pytest.mark.skipif(shutil.which("ffmpeg") is None, reason="needs ffmpeg/ffprobe")
+def test_video_sink_single_detector_concat_is_unchanged(ctx, result, tmp_path):
+    # Regression invariant: one detector + concat draws what task_0002 drew.
+    clip = tmp_path / "clip.mp4"
+    with VideoWriter(clip, 100, 100, "10/1") as writer:
+        writer.write(np.zeros((100, 100, 3), np.uint8))
+    ctx = replace(ctx, source=VideoSource(SourceConfig(video=clip)))
+    sink = VideoSink(RenderConfig(), DistanceConfig())
+    sink.open(ctx)
+    drawn = []
+    sink._renderer.render = lambda rgb, boxes, hud, depth: (
+        drawn.append((boxes, hud)) or rgb
+    )
+    sink.write(result)
+    sink.close()
+    (boxes, hud) = drawn[0]
+    assert [b.color_key for b in boxes] == [None, None]  # colour by label
+    assert [b.label for b in boxes] == ["car 91% · 12.0 m", "suv 50% · n/a"]
+    assert len(hud) == 4  # no fusion or agreement line
+    assert hud[1].endswith("conf ≥ 0.40")
 
 
 @pytest.mark.skipif(shutil.which("ffmpeg") is None, reason="needs ffmpeg/ffprobe")
@@ -228,3 +336,41 @@ def test_video_sink_colours_by_source_with_several_detectors(ctx, result, tmp_pa
     sink.close()
     assert probe(ctx.run_dir / "video.mp4").n_frames == 1
     assert len(sink.render_ms) == 1
+
+
+@pytest.mark.skipif(shutil.which("ffmpeg") is None, reason="needs ffmpeg/ffprobe")
+def test_video_sink_fused_labels_colours_and_hud(ctx, fused_result, tmp_path):
+    clip = tmp_path / "clip.mp4"
+    with VideoWriter(clip, 100, 100, "10/1") as writer:
+        writer.write(np.zeros((100, 100, 3), np.uint8))
+    detectors = [
+        {"name": "rfdetr-large", "options": {"threshold": 0.5}},
+        {"name": "yolo26l-objv1-150", "options": {"threshold": 0.4}},
+    ]
+    aggregator = {"type": "wbf", "options": {"iou_thr": 0.55}, "weights": {}}
+    components = {
+        **ctx.pipeline["components"],
+        "detectors": detectors,
+        "aggregator": aggregator,
+    }
+    ctx = replace(
+        ctx,
+        source=VideoSource(SourceConfig(video=clip)),
+        pipeline={**ctx.pipeline, "components": components},
+    )
+    sink = VideoSink(RenderConfig(), DistanceConfig())
+    sink.open(ctx)
+    drawn = []
+    sink._renderer.render = lambda rgb, boxes, hud, depth: (
+        drawn.append((boxes, hud)) or rgb
+    )
+    sink.write(fused_result)
+    sink.close()
+    (boxes, hud) = drawn[0]
+    assert [b.key for b in boxes] == ["vehicle", "vehicle"]  # colour by label
+    assert boxes[0].label.startswith("vehicle 91% ×2 · ")
+    assert boxes[1].label.startswith("vehicle 50% · ")
+    assert hud[-2:] == [
+        "wbf · IoU ≥ 0.55",
+        "agree 3 · only rfdetr-large 1 · only yolo26l-objv1-150 2",
+    ]

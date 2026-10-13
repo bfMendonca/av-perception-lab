@@ -68,6 +68,8 @@ def _options_text(options_cls: type) -> str:
     for f in dataclasses.fields(options_cls):
         if f.default is not dataclasses.MISSING:
             parts.append(f"{f.name}={f.default!r}")
+        elif f.default_factory is not dataclasses.MISSING:
+            parts.append(f"{f.name}={f.default_factory()!r}")
         else:
             parts.append(f"{f.name} (required)")
     return ", ".join(parts) or "(no options)"
@@ -106,6 +108,7 @@ def run(cfg: RunConfig) -> Path:
         exclude_sky=cfg.exclude_sky,
         intrinsics=build_intrinsics_provider(cfg.camera),
         device=cfg.device,
+        agreement=cfg.agreement,
     )
     source = VideoSource(cfg.source)
     monitor = DeviceMonitor(cfg.device)

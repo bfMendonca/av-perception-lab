@@ -18,6 +18,11 @@ def test_format_label():
     assert format_label("truck", 0.94, 12.34) == "truck 94% · 12.3 m"
     assert format_label("truck", 0.94, 12.34, 0.42) == "truck 94% · 12.3 m ± 0.4"
     assert format_label("car", 0.5, None, 1.0) == "car 50% · n/a"
+    assert format_label("vehicle", 0.91, 12.34, n_sources=1) == "vehicle 91% · 12.3 m"
+    assert (
+        format_label("vehicle", 0.91, 12.34, n_sources=2) == "vehicle 91% ×2 · 12.3 m"
+    )
+    assert format_label("vehicle", 0.91, None, 0.4, 2) == "vehicle 91% ×2 · n/a"
 
 
 def test_colorize_metric_is_rgb_near_warm():
@@ -67,6 +72,7 @@ def test_bad_cmap():
 def test_color_for():
     assert color_for("car") == CLASS_COLORS["car"] == color_for("Car")
     assert color_for("pickup truck") == CLASS_COLORS["pickup truck"]
+    assert color_for("vehicle") == CLASS_COLORS["car"]  # canonical label of the maps
     # Unknown keys (e.g. detector names) get a stable palette colour.
     assert color_for("rfdetr-large") in PALETTE
     assert color_for("rfdetr-large") == color_for("rfdetr-large")

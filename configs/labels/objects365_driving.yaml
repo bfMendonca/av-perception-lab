@@ -1,0 +1,16 @@
+# Canonical driving vocabulary for Objects365 v1 models (YOLO26 objv1-150).
+# car/suv/van/pickup truck/truck are confused with each other across models
+# on the same object (task_0003 Fact 3), so they all map to "vehicle".
+# tricycle, traffic cone, street lights and fire hydrant stay unmapped (kept
+# with their raw name).
+vocabulary: objects365
+unmapped: keep
+canonical:
+  person: [person]
+  bicycle: [bicycle]
+  motorcycle: [motorcycle]
+  vehicle: [car, suv, van, pickup truck, sports car, truck, bus,
+            machinery vehicle, fire truck, ambulance]
+  traffic light: [traffic light]
+  stop sign: [stop sign]
+  traffic sign: [traffic sign, crosswalk sign]

@@ -5,6 +5,7 @@ import yaml
 
 from det_depth_distance.config import (
     PIPELINE_DISTANCE_KEYS,
+    AgreementConfig,
     apply_overrides,
     load_config,
 )
@@ -12,7 +13,9 @@ from det_depth_distance.core import registry
 from det_depth_distance.core.options import ConfigError
 from det_depth_distance.distance import DistanceConfig
 
-CONFIGS = sorted((Path(__file__).parents[1] / "configs").glob("*.yaml"))
+REPO = Path(__file__).parents[1]
+CONFIGS = sorted((REPO / "configs").glob("*.yaml"))
+FUSED = REPO / "configs" / "multi_detector_fused.yaml"
 MINIMAL = {"detectors": [{"type": "rfdetr"}], "depth": {"type": "da3"}}
 
 
@@ -26,6 +29,7 @@ def test_defaults(tmp_path):
     cfg = load_config(write(tmp_path, MINIMAL))
     assert cfg.distance == DistanceConfig() and cfg.exclude_sky
     assert cfg.aggregation == {"type": "concat"}
+    assert cfg.agreement == AgreementConfig(enabled=True, iou_thr=0.5, class_aware=True)
     assert cfg.camera.focal_px is None and cfg.camera.estimate.model == "da3-large-1.1"
     assert cfg.render.layout == "overlay" and cfg.output.out_root == Path(
         "_testbed/outputs"
@@ -34,7 +38,8 @@ def test_defaults(tmp_path):
 
 
 @pytest.mark.parametrize("path", CONFIGS, ids=lambda p: p.name)
-def test_example_configs_build_without_frameworks(path):
+def test_example_configs_build_without_frameworks(path, monkeypatch):
+    monkeypatch.chdir(REPO)  # label map paths are relative to the repository
     cfg = load_config(path)
     for i, spec in enumerate(cfg.detectors):
         assert not registry.build("detector", spec, path=f"detectors[{i}]").is_loaded
@@ -45,7 +50,12 @@ def test_example_configs_build_without_frameworks(path):
 
 def test_example_configs_cover_the_planned_runs():
     names = {p.name for p in CONFIGS}
-    assert names == {"rfdetr_da3.yaml", "yolo_o365_da3.yaml", "multi_detector.yaml"}
+    assert names == {
+        "rfdetr_da3.yaml",
+        "yolo_o365_da3.yaml",
+        "multi_detector.yaml",
+        "multi_detector_fused.yaml",
+    }
     multi = load_config(CONFIGS[0].with_name("multi_detector.yaml"))
     assert [d["type"] for d in multi.detectors] == ["rfdetr", "yolo"]
 
@@ -165,3 +175,30 @@ def test_missing_or_invalid_file(tmp_path):
     bad.write_text("detectors: [")
     with pytest.raises(ConfigError, match="invalid YAML"):
         load_config(bad)
+
+
+def test_fused_config_switches_aggregation(monkeypatch):
+    monkeypatch.chdir(REPO)
+    cfg = load_config(FUSED)
+    assert cfg.aggregation["type"] == "wbf" and cfg.agreement.class_aware
+    detectors = [
+        registry.build("detector", spec, path=f"detectors[{i}]")
+        for i, spec in enumerate(cfg.detectors)
+    ]
+    assert [d.label_map.name for d in detectors] == [
+        "coco_driving",
+        "objects365_driving",
+    ]
+    wbf = registry.build("aggregator", cfg.aggregation, path="aggregation")
+    wbf.bind_sources([d.name for d in detectors])  # weights name both detectors
+    nms = load_config(FUSED, ["aggregation.type=nms"]).aggregation
+    assert registry.build("aggregator", nms, path="aggregation").type_name == "nms"
+    concat = load_config(FUSED, ["aggregation={type: concat}"]).aggregation
+    assert concat == {"type": "concat"}
+    registry.build("aggregator", concat, path="aggregation")
+
+
+@pytest.mark.parametrize("override", ["agreement.iou_thr=1", "agreement.iou_thr=0"])
+def test_agreement_iou_thr_range(tmp_path, override):
+    with pytest.raises(ConfigError, match=r"^agreement: iou_thr must be in"):
+        load_config(write(tmp_path, MINIMAL), [override])

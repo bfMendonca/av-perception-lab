@@ -43,9 +43,10 @@ GPU `gpu-host` (RTX PRO 6000 Blackwell, sm_120) instala o extra `infer`
 commit git, `ultralytics==8.4.175`). Não há git remote: o código vai por rsync.
 
 Código em camadas: `core/` (contratos `Instances`/`DepthResult`, ABCs
-`Detector`/`DepthEstimator`, registro, `Pipeline`) não importa frameworks;
-`adapters/` envolve cada framework; `io/` (vídeo, fonte, sinks); `cli.py` é
-só a raiz de composição.
+`Detector`/`DepthEstimator`, registro, `LabelMap`, agregadores
+`concat`/`nms`/`wbf`, geometria de caixas, concordância, `Pipeline`) não
+importa frameworks; `adapters/` envolve cada framework; `io/` (vídeo,
+fonte, sinks); `cli.py` é só a raiz de composição.
 
 ## Leia primeiro / Gotchas não-óbvios
 
@@ -81,6 +82,19 @@ só a raiz de composição.
 - Opções de adaptador são dataclasses `frozen, slots, kw_only`; uma filha
   com `__post_init__` próprio chama `DetectorOptions.__post_init__(self)` —
   `super().__post_init__()` sem argumentos levanta `TypeError` com `slots=True`.
+- O YOLO26 Objects365 emite caixas sobrepostas de classes de veículo
+  diferentes para o mesmo objeto (`pickup truck` × `suv`: 71 pares com
+  IoU ≥ 0.5 em ~60 quadros); por isso os mapas agrupam veículos em
+  `vehicle` e a fusão/concordância também atuam **dentro** de um detector.
+- Scores do YOLO26 Objects365 ficam ~0.2 abaixo dos do RF-DETR nos mesmos
+  objetos (mediana 0.71 × 0.90): `aggregation.weights` só reescala, não
+  calibra.
+- Mapas de rótulos (`configs/labels/`) declaram o `vocabulary` e são
+  conferidos na carga (`LabelMap.check`): o mapa COCO num modelo Objects365
+  é erro (`truck` tem outro sentido lá). Caminhos relativos do YAML
+  (`labels`, `source.video`) partem do diretório de execução (raiz do repo).
+- `Instances.sources` não tem `concat_fill`: concatenar instâncias fundidas
+  com não fundidas zera o campo; consumidores leem `provenance()`.
 - No `gpu-host`: sem sudo, `uv` em `~/.local/bin` (fora do PATH), disco quase
   cheio (preferir `/dev/shm` para temporários grandes), e `nvidia-smi` pode
   falhar por driver mismatch — usar `torch.cuda.mem_get_info()`.

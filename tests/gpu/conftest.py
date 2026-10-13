@@ -85,11 +85,18 @@ DETECTOR_SPECS = {
 
 
 @pytest.fixture(params=list(DETECTOR_SPECS))
-def detector_case(request):
-    """(unloaded detector, expected vocabulary) for each adapter/vocabulary pair."""
+def detector_spec(request):
+    """(detector spec, expected vocabulary) for each adapter/vocabulary pair."""
     spec, vocabulary = DETECTOR_SPECS[request.param]
     if "weights" in spec and not Path(spec["weights"]).is_file():
         pytest.skip(f"missing weights {spec['weights']}")
+    return spec, vocabulary
+
+
+@pytest.fixture
+def detector_case(detector_spec):
+    """(unloaded detector, expected vocabulary) for each adapter/vocabulary pair."""
+    spec, vocabulary = detector_spec
     return registry.build("detector", spec, path="detector"), vocabulary
 
 

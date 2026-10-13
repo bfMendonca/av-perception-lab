@@ -99,12 +99,13 @@ uv run ruff format .
   propósito e o contrato; comentários explicam o "porquê" (ex.: convenções
   de escala do modelo métrico), não o "quê".
 - **Organização**: código em `src/det_depth_distance/`: `core/` (contratos,
-  ABCs, registro, rótulos, agregação, pipeline — sem frameworks),
+  ABCs, registro, rótulos e mapas de rótulos, geometria de caixas,
+  agregação/fusão, concordância, pipeline — sem frameworks),
   `adapters/` (um módulo por framework, registrado com `@register` e listado
   em `ADAPTER_MODULES`), `io/` (vídeo, fontes, sinks), e módulos de topo
   `camera.py`, `config.py`, `distance.py`, `render.py`, `runtime.py`,
-  `cli.py`. Configurações de exemplo em `configs/`. Scripts utilitários
-  bash em `utils/`.
+  `cli.py`. Configurações de exemplo em `configs/` (mapas de rótulos
+  versionados em `configs/labels/`). Scripts utilitários bash em `utils/`.
 - **Testes**: pytest em `tests/`, espelhando os módulos
   (`distance.py` → `tests/test_distance.py`). Testes unitários não dependem
   de GPU nem de pesos de modelos; `Instances` de teste são criadas pela

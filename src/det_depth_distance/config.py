@@ -91,6 +91,20 @@ class RenderConfig:
 
 
 @dataclass(frozen=True, slots=True)
+class AgreementConfig:
+    """Cross-detector agreement metrics (core.agreement); only computed with
+    two or more detectors."""
+
+    enabled: bool = True
+    iou_thr: float = 0.5  # same-object overlap, in (0, 1)
+    class_aware: bool = True  # match only equal (canonical) labels
+
+    def __post_init__(self) -> None:
+        if not 0.0 < self.iou_thr < 1.0:
+            raise ValueError(f"iou_thr must be in (0, 1), got {self.iou_thr}")
+
+
+@dataclass(frozen=True, slots=True)
 class OutputConfig:
     """Where the run folder goes and what it holds."""
 
@@ -115,6 +129,7 @@ class RunConfig:
     camera: CameraConfig = field(default_factory=CameraConfig)
     # Flat spec {type, **options}, validated by registry.build("aggregator", ...).
     aggregation: Mapping[str, Any] = field(default_factory=lambda: {"type": "concat"})
+    agreement: AgreementConfig = field(default_factory=AgreementConfig)
     distance: DistanceConfig = field(default_factory=DistanceConfig)
     exclude_sky: bool = True  # from distance.exclude_sky (PIPELINE_DISTANCE_KEYS)
     render: RenderConfig = field(default_factory=RenderConfig)

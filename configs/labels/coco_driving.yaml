@@ -1,0 +1,14 @@
+# Canonical driving vocabulary for COCO-80 models (RF-DETR, YOLO26 COCO).
+# car/truck/bus are confused with each other on the same object, even between
+# two COCO models (task_0003 Fact 3), so they all map to "vehicle"; the
+# canonical names are a subset of objects365_driving.yaml's, so fusion by
+# label can merge the instances of a COCO and an Objects365 model.
+vocabulary: coco
+unmapped: keep
+canonical:
+  person: [person]
+  bicycle: [bicycle]
+  motorcycle: [motorcycle]
+  vehicle: [car, truck, bus]
+  traffic light: [traffic light]
+  stop sign: [stop sign]
