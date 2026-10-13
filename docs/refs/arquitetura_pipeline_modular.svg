@@ -1,0 +1,334 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1800" height="1300" viewBox="0 0 1800 1300" font-family="DejaVu Sans, Helvetica, Arial, sans-serif">
+  <title>det-depth-distance — arquitetura alvo do pipeline modular (tasks 0002–0007)</title>
+  <defs>
+    <marker id="arr" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse">
+      <path d="M0,0 L10,5 L0,10 z" fill="#334155"/>
+    </marker>
+    <style>
+      .bg{fill:#f8fafc}
+      .panel{fill:#ffffff;stroke:#cbd5e1;stroke-width:1.5}
+      .ptitle{font-size:17px;font-weight:700;fill:#0f172a}
+      .t{font-size:13px;fill:#1e293b}
+      .s{font-size:11.5px;fill:#475569}
+      .m{font-family:DejaVu Sans Mono, Menlo, monospace;font-size:11.5px;fill:#0f172a}
+      .stage{stroke-width:2;rx:8}
+      .st{font-size:13.5px;font-weight:700;fill:#0f172a}
+      .flow{stroke:#334155;stroke-width:2;fill:none;marker-end:url(#arr)}
+      .dash{stroke:#64748b;stroke-width:1.5;fill:none;stroke-dasharray:5 4;marker-end:url(#arr)}
+      .t2{fill:#dbeafe;stroke:#2563eb}
+      .t3{fill:#ffedd5;stroke:#ea580c}
+      .t4{fill:#dcfce7;stroke:#16a34a}
+      .t5{fill:#f3e8ff;stroke:#9333ea}
+      .t6{fill:#ccfbf1;stroke:#0d9488}
+      .t7{fill:#fee2e2;stroke:#dc2626}
+      .t1{fill:#e2e8f0;stroke:#64748b}
+      .badge{font-size:10.5px;font-weight:700;fill:#ffffff}
+    </style>
+  </defs>
+
+  <rect class="bg" width="1800" height="1300"/>
+
+  <!-- Header -->
+  <text x="30" y="40" font-size="24" font-weight="700" fill="#0f172a">det-depth-distance — arquitetura alvo do pipeline modular</text>
+  <text x="30" y="64" class="s">Estado planejado após as tasks 0002→0007 (ordem linear estrita). Fonte: docs/task_0002.md … task_0007.md consolidados e auditados entre planos em 2026-10-12/13. Código atual (ddbb153) = layout da task_0001.</text>
+
+  <!-- ============ Row A: setup ============ -->
+  <rect class="panel" x="30" y="85" width="420" height="190" rx="10"/>
+  <text x="45" y="110" class="ptitle">Configuração e CLI</text>
+  <rect x="380" y="95" width="56" height="18" rx="9" fill="#2563eb"/><text x="408" y="108" text-anchor="middle" class="badge">0002</text>
+  <text x="45" y="134" class="m">det-depth-distance --config run.yaml [VIDEO]</text>
+  <text x="45" y="152" class="m">  --set a.b=valor   --list-models</text>
+  <text x="45" y="176" class="t">config.py · RunConfig (YAML → dataclasses)</text>
+  <text x="45" y="195" class="s">seções: source, detectors[ ], depth, camera, aggregation,</text>
+  <text x="45" y="211" class="s">distance (+ política: exclude_sky · region · exclude_semantic),</text>
+  <text x="45" y="227" class="s">refiners[ ], semantic[ ] (name único), tracking, smoothing, agreement, render, output</text>
+  <text x="45" y="250" class="s">core/options.py: from_mapping · ConfigError (saída 2)</text>
+  <text x="45" y="266" class="s">configs/*.yaml · configs/labels/*.yaml (0003)</text>
+
+  <rect class="panel" x="465" y="85" width="400" height="190" rx="10"/>
+  <text x="480" y="110" class="ptitle">Fonte de quadros</text>
+  <rect x="795" y="95" width="56" height="18" rx="9" fill="#2563eb"/><text x="823" y="108" text-anchor="middle" class="badge">0002</text>
+  <text x="480" y="134" class="t">io/source.py · FrameSource / VideoSource</text>
+  <text x="480" y="153" class="s">io/video.py: ffprobe/ffmpeg (portado de video_io.py, 0001)</text>
+  <text x="480" y="172" class="s">Frame(rgb uint8 HxWx3, index, t) — sempre RGB</text>
+  <text x="480" y="191" class="s">start · duration · max_frames · stride</text>
+  <rect x="480" y="205" width="370" height="58" rx="6" class="t7" stroke-width="1.5"/>
+  <text x="490" y="224" class="t">FrameTransform: Undistorter (opcional)</text>
+  <text x="490" y="242" class="s">correção de distorção antes dos modelos</text>
+  <text x="490" y="257" class="s">io/quicktime.py: metadados da câmera (MOV)</text>
+  <rect x="790" y="210" width="56" height="18" rx="9" fill="#dc2626"/><text x="818" y="223" text-anchor="middle" class="badge">0007</text>
+
+  <rect class="panel" x="880" y="85" width="420" height="190" rx="10"/>
+  <text x="895" y="110" class="ptitle">Câmera · camera.py</text>
+  <rect x="1230" y="95" width="56" height="18" rx="9" fill="#2563eb"/><text x="1258" y="108" text-anchor="middle" class="badge">0002</text>
+  <text x="895" y="134" class="t">IntrinsicsProvider.resolve(source) → IntrinsicsResult</text>
+  <text x="895" y="155" class="s">• FixedIntrinsics — camera.focal_px</text>
+  <text x="895" y="173" class="s">• EstimatedIntrinsics — DA3 any-view, mediana de N quadros,</text>
+  <text x="895" y="189" class="s">   carrega → usa → libera (antes dos modelos principais)</text>
+  <text x="895" y="211" class="s" fill="#b91c1c">• CalibratedIntrinsics — arquivo cv2.FileStorage (0007)</text>
+  <text x="895" y="235" class="s">só resolvido se depth.needs_intrinsics (DA3METRIC)</text>
+  <text x="895" y="253" class="s">convenção contínua: pixel i centrado em i+0,5; cx = W/2</text>
+
+  <rect class="panel" x="1315" y="85" width="455" height="190" rx="10"/>
+  <text x="1330" y="110" class="ptitle">Registro · core/registry.py</text>
+  <rect x="1700" y="95" width="56" height="18" rx="9" fill="#2563eb"/><text x="1728" y="108" text-anchor="middle" class="badge">0002</text>
+  <text x="1330" y="132" class="s">@register(kind, name) · build(kind, spec) · load_adapters()</text>
+  <text x="1330" y="150" class="s">imports de framework só em _load() → ambiente leve sem torch</text>
+  <text x="1330" y="174" class="m">detector   rfdetr · yolo</text>
+  <text x="1330" y="191" class="m">depth      da3</text>
+  <text x="1330" y="208" class="m">aggregator concat · nms · wbf</text>
+  <text x="1330" y="224" class="m">refiner    sam · sam_hq · sam2 · edgetam ·</text>
+  <text x="1386" y="239" class="m">sam3_tracker · ultralytics_sam</text>
+  <text x="1330" y="254" class="m">semantic   segformer · twinlitenet</text>
+  <text x="1330" y="269" class="m">tracker    iou</text>
+  <text x="1610" y="208" class="s" fill="#c2410c">nms·wbf: 0003</text>
+  <text x="1725" y="224" class="s" fill="#7e22ce">0005</text>
+  <text x="1725" y="254" class="s" fill="#7e22ce">0005</text>
+  <text x="1725" y="269" class="s" fill="#0f766e">0006</text>
+
+  <!-- ============ Row B: pipeline ============ -->
+  <rect class="panel" x="30" y="295" width="1740" height="330" rx="10"/>
+  <text x="45" y="322" class="ptitle">core/pipeline.py · Pipeline.setup() → process(frame) → FrameResult (por quadro, sequencial na mesma GPU)</text>
+
+  <!-- row 1 -->
+  <rect x="50" y="345" width="120" height="96" class="stage t1"/>
+  <text x="110" y="378" text-anchor="middle" class="st">Frame</text>
+  <text x="110" y="398" text-anchor="middle" class="s">RGB, índice, t</text>
+
+  <rect x="200" y="345" width="250" height="96" class="stage t2"/>
+  <text x="215" y="368" class="st">Detectores ×N</text>
+  <text x="215" y="388" class="s">rfdetr (nano…large, seg-* 0004)</text>
+  <text x="215" y="404" class="s">yolo (COCO, Objects365, -seg 0004)</text>
+  <text x="215" y="420" class="s">YOLO: RGB→BGR no adaptador</text>
+  <text x="215" y="435" class="s">→ Instances com source, raw_label</text>
+
+  <rect x="480" y="345" width="190" height="96" class="stage t3"/>
+  <text x="495" y="368" class="st">Concordância</text>
+  <text x="495" y="388" class="s">core/agreement.py</text>
+  <text x="495" y="404" class="s">IoU entre detectores</text>
+  <text x="495" y="420" class="s">(antes da agregação;</text>
+  <text x="495" y="435" class="s">só com ≥ 2 detectores)</text>
+
+  <rect x="700" y="345" width="250" height="96" class="stage t3"/>
+  <text x="715" y="368" class="st">Agregador</text>
+  <text x="715" y="388" class="s">concat (padrão, 0002)</text>
+  <text x="715" y="404" class="s">nms · wbf + LabelMap canônico (0003)</text>
+  <text x="715" y="420" class="s">sources = [Provenance(source,</text>
+  <text x="715" y="435" class="s">raw_label, score)]</text>
+
+  <rect x="980" y="345" width="250" height="96" class="stage t5"/>
+  <text x="995" y="368" class="st">Refinadores (MaskRefiner)</text>
+  <text x="995" y="388" class="s">sam2 (padrão) · edgetam · sam_hq ·</text>
+  <text x="995" y="403" class="s">sam · sam3_tracker · ultralytics_sam</text>
+  <text x="995" y="418" class="s">targets: missing → masks, mask_source</text>
+  <text x="995" y="433" class="s">opcional (padrão: refiners: [ ])</text>
+
+  <rect x="1260" y="345" width="230" height="96" class="stage t6"/>
+  <text x="1275" y="368" class="st">Rastreador (Tracker)</text>
+  <text x="1275" y="388" class="s">iou — numpy, core/tracking.py</text>
+  <text x="1275" y="404" class="s">reusa core/boxes.py (0003)</text>
+  <text x="1275" y="420" class="s">→ track_id estável</text>
+  <text x="1275" y="435" class="s">opcional (desligado por padrão)</text>
+
+  <line x1="170" y1="393" x2="196" y2="393" class="flow"/>
+  <line x1="450" y1="393" x2="476" y2="393" class="flow"/>
+  <line x1="670" y1="393" x2="696" y2="393" class="flow"/>
+  <line x1="950" y1="393" x2="976" y2="393" class="flow"/>
+  <line x1="1230" y1="393" x2="1256" y2="393" class="flow"/>
+  <polyline points="1490,393 1520,393 1520,465 110,465 110,486" class="flow"/>
+
+  <!-- row 2 -->
+  <rect x="50" y="490" width="250" height="110" class="stage t2"/>
+  <text x="65" y="513" class="st">Profundidade</text>
+  <text x="65" y="533" class="s">da3 — DA3METRIC: metros =</text>
+  <text x="65" y="549" class="s">saída·(fx+fy)/2/300 (K no mapa)</text>
+  <text x="65" y="565" class="s">NESTED: já em metros</text>
+  <text x="65" y="581" class="s">→ DepthResult(depth_m, K, sky,</text>
+  <text x="65" y="596" class="s">geometry quadro→mapa)</text>
+
+  <rect x="330" y="490" width="220" height="110" class="stage t5"/>
+  <text x="345" y="513" class="st">Semântica</text>
+  <text x="345" y="533" class="s">SemanticSegmenter ×N (name único)</text>
+  <text x="345" y="549" class="s">segformer (Cityscapes, 19)</text>
+  <text x="345" y="565" class="s">twinlitenet (área/faixa)</text>
+  <text x="345" y="581" class="s">→ {name: SemanticMap}, sem fusão</text>
+  <text x="345" y="596" class="s">opcional (padrão: semantic: [ ])</text>
+
+  <rect x="580" y="490" width="230" height="110" class="stage t5"/>
+  <text x="595" y="513" class="st">Elegibilidade</text>
+  <text x="595" y="533" class="s">distance.map_eligibility</text>
+  <text x="595" y="549" class="s">= ¬céu (DA3) ∧ ¬classes</text>
+  <text x="595" y="565" class="s">excluídas: &lt;name&gt;.&lt;classe&gt; (união)</text>
+  <text x="595" y="581" class="s">sem semântica: exatamente ¬céu</text>
+  <text x="595" y="596" class="s">(bit-idêntico à 0001)</text>
+
+  <rect x="840" y="490" width="300" height="110" class="stage t4"/>
+  <text x="855" y="513" class="st">Distância por instância</text>
+  <text x="855" y="533" class="s">distance.py (numpy puro, já da 0001)</text>
+  <text x="855" y="549" class="s">instance_depth_stats: region mask|box|both</text>
+  <text x="855" y="565" class="s">máscara → mapa (vizinho) + erosão (0004)</text>
+  <text x="855" y="581" class="s">shrink · outliers iqr/mad/sigma · stat</text>
+  <text x="855" y="596" class="s">median/mean/trimmed/mode/pXX · z|euclid</text>
+
+  <rect x="1170" y="490" width="250" height="110" class="stage t6"/>
+  <text x="1185" y="513" class="st">Suavização temporal</text>
+  <text x="1185" y="533" class="s">temporal.py (numpy puro)</text>
+  <text x="1185" y="549" class="s">TrackSmoother por track_id:</text>
+  <text x="1185" y="565" class="s">kalman (padrão; vel. relativa)</text>
+  <text x="1185" y="581" class="s">· ema · median; σ medida =</text>
+  <text x="1185" y="596" class="s">max(0,5·std, 0,01·d)</text>
+
+  <rect x="1450" y="490" width="300" height="110" class="stage t2"/>
+  <text x="1465" y="513" class="st">FrameResult</text>
+  <text x="1465" y="533" class="m">frame, instances, stats, depth,</text>
+  <text x="1465" y="549" class="m">timings_ms, agreement(0003),</text>
+  <text x="1465" y="565" class="m">box_stats(0004), semantic{}(0005),</text>
+  <text x="1465" y="581" class="m">temporal(0006)</text>
+  <text x="1465" y="596" class="s">campos novos com padrão None (semantic: {})</text>
+
+  <line x1="300" y1="545" x2="326" y2="545" class="flow"/>
+  <line x1="550" y1="545" x2="576" y2="545" class="flow"/>
+  <line x1="810" y1="545" x2="836" y2="545" class="flow"/>
+  <line x1="1140" y1="545" x2="1166" y2="545" class="flow"/>
+  <line x1="1420" y1="545" x2="1446" y2="545" class="flow"/>
+  <text x="45" y="617" class="s">Ordem dos estágios (task_0005 D1, estendida pela task_0006): detectores → (concordância) → agregação → refinadores → rastreador → profundidade → semântica → elegibilidade → distância → suavização. Cada estágio é cronometrado em timings_ms.</text>
+
+  <!-- ============ Row C: contracts & ABCs ============ -->
+  <rect class="panel" x="30" y="645" width="860" height="285" rx="10"/>
+  <text x="45" y="672" class="ptitle">Contratos de dados · core/types.py (numpy, sem objetos de framework)</text>
+  <text x="45" y="698" class="t" font-weight="700">Instances</text>
+  <text x="130" y="698" class="m">xyxy (N,4) px do quadro · score · class_id · label · raw_label · source</text>
+  <text x="130" y="716" class="m">masks (N,H,W) bool, concat_fill=zeros, tudo-False = sem máscara</text>
+  <text x="790" y="716" class="s" fill="#15803d">0004</text>
+  <text x="130" y="734" class="m">sources: Provenance(source, raw_label, score)</text>
+  <text x="790" y="734" class="s" fill="#c2410c">0003</text>
+  <text x="130" y="752" class="m">mask_source · mask_score</text>
+  <text x="790" y="752" class="s" fill="#7e22ce">0005</text>
+  <text x="130" y="770" class="m">track_id (N,) int64 ≥ 1</text>
+  <text x="790" y="770" class="s" fill="#0f766e">0006</text>
+  <text x="130" y="788" class="s">select · concat · with_labels · validate (checker declarado em cada campo: per_instance)</text>
+  <text x="45" y="814" class="t" font-weight="700">DepthResult</text>
+  <text x="160" y="814" class="m">depth_m (resolução nativa) · intrinsics · sky · geometry</text>
+  <text x="45" y="836" class="t" font-weight="700">MapGeometry</text>
+  <text x="160" y="836" class="m">afim por eixo quadro→mapa (sx, sy, ox, oy) · scale_intrinsics</text>
+  <text x="45" y="858" class="t" font-weight="700">SemanticMap</text>
+  <text x="160" y="858" class="m">labels (H,W) int32 · class_names · um por segmentador (FrameResult.semantic[name])</text>
+  <text x="790" y="858" class="s" fill="#7e22ce">0005</text>
+  <text x="45" y="880" class="t" font-weight="700">TrackEstimate</text>
+  <text x="160" y="880" class="m">distância suavizada ± σ · vel. relativa ± σ</text>
+  <text x="790" y="880" class="s" fill="#0f766e">0006</text>
+  <text x="45" y="906" class="s">Regra de import: core/types importa distance só sob TYPE_CHECKING (evita ciclo distance ↔ core.types).</text>
+  <text x="45" y="922" class="s">Compatibilidade: campos/colunas/kwargs novos (0003–0007) têm padrão None ou desligado → regressão de 60 quadros segue bit-idêntica.</text>
+
+  <rect class="panel" x="910" y="645" width="860" height="285" rx="10"/>
+  <text x="925" y="672" class="ptitle">Componentes · core/components.py (ABCs) — adaptadores herdam</text>
+  <rect x="1180" y="688" width="320" height="44" rx="8" class="t2" stroke-width="2"/>
+  <text x="1340" y="707" text-anchor="middle" class="st">Component</text>
+  <text x="1340" y="724" text-anchor="middle" class="s">name · load(ctx)/_load · close · describe</text>
+
+  <rect x="925" y="770" width="160" height="112" rx="8" class="t2" stroke-width="2"/>
+  <text x="1005" y="790" text-anchor="middle" class="st">Detector</text>
+  <text x="935" y="808" class="s">__call__ = template:</text>
+  <text x="935" y="823" class="s">_predict → filtro →</text>
+  <text x="935" y="838" class="s">_map_labels → validate</text>
+  <text x="935" y="856" class="m">RFDETRDetector</text>
+  <text x="935" y="872" class="m">YoloDetector</text>
+
+  <rect x="1095" y="770" width="160" height="112" rx="8" class="t2" stroke-width="2"/>
+  <text x="1175" y="790" text-anchor="middle" class="st">DepthEstimator</text>
+  <text x="1105" y="808" class="s">needs_intrinsics</text>
+  <text x="1105" y="823" class="s">checa forma/dtype</text>
+  <text x="1105" y="856" class="m">DA3Depth</text>
+
+  <rect x="1265" y="770" width="160" height="112" rx="8" class="t5" stroke-width="2"/>
+  <text x="1345" y="790" text-anchor="middle" class="st">MaskRefiner</text>
+  <text x="1273" y="806" class="s" font-size="10.5">_refine → RefinedMasks</text>
+  <text x="1273" y="819" class="s" font-size="10.5">↳ BoxPromptRefiner</text>
+  <text x="1281" y="832" class="s" font-size="10.5">↳ HFSamRefiner</text>
+  <text x="1291" y="845" class="m" font-size="9.5">sam2·edgetam·sam_hq</text>
+  <text x="1291" y="858" class="m" font-size="9.5">sam·sam3_tracker</text>
+  <text x="1281" y="873" class="s" font-size="10.5">↳ UltralyticsSamRefiner</text>
+
+  <rect x="1435" y="770" width="160" height="112" rx="8" class="t5" stroke-width="2"/>
+  <text x="1515" y="790" text-anchor="middle" class="st" font-size="12">SemanticSegmenter</text>
+  <text x="1445" y="808" class="s">class_names</text>
+  <text x="1445" y="823" class="s">_segment → mapa</text>
+  <text x="1445" y="856" class="m" font-size="10.5">SegformerSegmenter</text>
+  <text x="1445" y="872" class="m" font-size="10.5">TwinLiteNetSegmenter</text>
+
+  <rect x="1605" y="770" width="155" height="112" rx="8" class="t6" stroke-width="2"/>
+  <text x="1682" y="790" text-anchor="middle" class="st">Tracker</text>
+  <text x="1615" y="808" class="s">reset · _assign</text>
+  <text x="1615" y="823" class="s">estado entre quadros</text>
+  <text x="1615" y="856" class="m">IouTracker</text>
+
+  <path d="M1005,770 L1005,750 L1682,750 L1682,770" fill="none" stroke="#334155" stroke-width="1.5"/>
+  <line x1="1175" y1="750" x2="1175" y2="770" stroke="#334155" stroke-width="1.5"/>
+  <line x1="1345" y1="750" x2="1345" y2="770" stroke="#334155" stroke-width="1.5"/>
+  <line x1="1515" y1="750" x2="1515" y2="770" stroke="#334155" stroke-width="1.5"/>
+  <line x1="1340" y1="750" x2="1340" y2="736" class="flow"/>
+  <text x="925" y="902" class="s">Aggregator (core/aggregate.py): Concat (0002) · FusionAggregator → Nms, Wbf (0003); bind_sources() sem efeito por padrão.</text>
+  <text x="925" y="920" class="s">Opções = dataclass validada (DetectorOptions, RefinerOptions→BoxPromptOptions, TrackerOptions); filhas chamam Base.__post_init__(self).</text>
+
+  <!-- ============ Row D: outputs & offline tools ============ -->
+  <rect class="panel" x="30" y="950" width="860" height="225" rx="10"/>
+  <text x="45" y="977" class="ptitle">Saídas · io/sinks.py (open · write · close) → &lt;out_root&gt;/&lt;ts&gt;_&lt;vídeo&gt;_…/</text>
+  <rect x="45" y="992" width="200" height="70" rx="8" class="t2" stroke-width="2"/>
+  <text x="55" y="1012" class="st">VideoSink</text>
+  <text x="55" y="1030" class="s">render.py: caixas, máscaras,</text>
+  <text x="55" y="1045" class="s">semântica, HUD, painel depth</text>
+  <rect x="255" y="992" width="200" height="70" rx="8" class="t2" stroke-width="2"/>
+  <text x="265" y="1012" class="st">CsvSink</text>
+  <text x="265" y="1030" class="s">detections.csv — 45 colunas</text>
+  <text x="265" y="1045" class="s">ordem fixa, testada</text>
+  <rect x="465" y="992" width="200" height="70" rx="8" class="t2" stroke-width="2"/>
+  <text x="475" y="1012" class="st">MetricsSink</text>
+  <text x="475" y="1030" class="s">metrics.json: components,</text>
+  <text x="475" y="1045" class="s">pipeline, config, timings, VRAM</text>
+  <rect x="675" y="992" width="200" height="70" rx="8" class="t2" stroke-width="2"/>
+  <text x="685" y="1012" class="st">NpzSink</text>
+  <text x="685" y="1030" class="s">depth.npz (opcional): depth, K,</text>
+  <text x="685" y="1045" class="s">geometria, semantic_*_&lt;name&gt;</text>
+  <text x="45" y="1088" class="t" font-weight="700">Colunas do CSV por task</text>
+  <text x="45" y="1108" class="s">0001 (28): quadro, t, classe, conf, caixa, região no mapa, n_valid/n_inliers, média, mediana, desvio, var, p10–p90, mín/máx, distance_m</text>
+  <text x="45" y="1125" class="s"><tspan fill="#1d4ed8">0002: source, raw_label</tspan> · <tspan fill="#c2410c">0003: n_sources, sources, source_scores, raw_labels</tspan></text>
+  <text x="45" y="1142" class="s"><tspan fill="#15803d">0004: used_mask, mask_px, mask_erode, box_distance_m</tspan> · <tspan fill="#7e22ce">0005: mask_source, mask_score</tspan></text>
+  <text x="45" y="1159" class="s"><tspan fill="#0f766e">0006: track_id, distance_smooth_m, distance_smooth_std_m, rel_speed_mps, rel_speed_std_mps</tspan></text>
+
+  <rect class="panel" x="910" y="950" width="860" height="225" rx="10"/>
+  <text x="925" y="977" class="ptitle">Ferramentas offline (task 0007) · fora do laço por quadro</text>
+  <rect x="925" y="992" width="250" height="88" rx="8" class="t7" stroke-width="2"/>
+  <text x="935" y="1012" class="st">det-depth-distance-calibrate</text>
+  <text x="935" y="1030" class="s">calibration.py: tabuleiro / ChArUco</text>
+  <text x="935" y="1045" class="s">(cv2 4.11, sem opencv-contrib)</text>
+  <text x="935" y="1060" class="s">calibrate · board · inspect</text>
+  <text x="935" y="1074" class="s">→ calibração (K, distorção)</text>
+  <rect x="1205" y="992" width="270" height="88" rx="8" class="t7" stroke-width="2"/>
+  <text x="1215" y="1012" class="st">det-depth-distance-evaluate</text>
+  <text x="1215" y="1030" class="s">evaluation/: references · run_data ·</text>
+  <text x="1215" y="1045" class="s">matching · stats · report</text>
+  <text x="1215" y="1060" class="s">erro abs./rel. por faixa, classe,</text>
+  <text x="1215" y="1074" class="s">detector, caixa×máscara, bruto×suave</text>
+  <rect x="1505" y="992" width="250" height="88" rx="8" class="t1" stroke-width="2"/>
+  <text x="1515" y="1012" class="st">Dados de campo (usuário)</text>
+  <text x="1515" y="1030" class="s">vídeo do tabuleiro (mesma câmera,</text>
+  <text x="1515" y="1045" class="s">resolução e modo de gravação)</text>
+  <text x="1515" y="1060" class="s">distâncias de referência + incerteza</text>
+  <text x="1515" y="1074" class="s">docs/refs/protocolo_…md</text>
+  <text x="925" y="1105" class="s">calibração → camera.calibration (CalibratedIntrinsics + Undistorter) no próximo run</text>
+  <text x="925" y="1123" class="s">evaluate lê detections.csv + metrics.json do run + configs/references/*.yaml</text>
+  <text x="925" y="1141" class="s">Fato (metadados MOV): IMG_4021/4022 = iPhone 14 Pro Max, lente 6,86 mm f/1,78, 24 mm equiv.;</text>
+  <text x="925" y="1159" class="s">focal estimada 1390 × 1503 px (≈ 8 %) → motivação da calibração</text>
+
+  <!-- ============ Legend ============ -->
+  <rect class="panel" x="30" y="1195" width="1740" height="90" rx="10"/>
+  <text x="45" y="1220" class="ptitle">Legenda (task que introduz o elemento)</text>
+  <rect x="45" y="1235" width="22" height="16" rx="3" class="t1" stroke-width="1.5"/><text x="74" y="1248" class="t">0001 / dados</text>
+  <rect x="190" y="1235" width="22" height="16" rx="3" class="t2" stroke-width="1.5"/><text x="219" y="1248" class="t">0002 pipeline modular + YOLO</text>
+  <rect x="440" y="1235" width="22" height="16" rx="3" class="t3" stroke-width="1.5"/><text x="469" y="1248" class="t">0003 rótulos e fusão</text>
+  <rect x="630" y="1235" width="22" height="16" rx="3" class="t4" stroke-width="1.5"/><text x="659" y="1248" class="t">0004 segmentação de instâncias</text>
+  <rect x="890" y="1235" width="22" height="16" rx="3" class="t5" stroke-width="1.5"/><text x="919" y="1248" class="t">0005 refinadores + semântica</text>
+  <rect x="1100" y="1235" width="22" height="16" rx="3" class="t6" stroke-width="1.5"/><text x="1129" y="1248" class="t">0006 rastreamento + suavização</text>
+  <rect x="1370" y="1235" width="22" height="16" rx="3" class="t7" stroke-width="1.5"/><text x="1399" y="1248" class="t">0007 calibração + avaliação</text>
+  <text x="45" y="1274" class="s">Ambientes: núcleo numpy (distance, temporal, core/boxes, agreement, tracking, config) roda no ambiente leve do laptop; adaptadores (torch, rfdetr, depth-anything-3, ultralytics, transformers, timm) só com --extra infer no gpu-host.</text>
+</svg>
