@@ -1,13 +1,17 @@
-"""Per-box object distance from a metric depth map (pure numpy).
+"""Per-instance object distance from a metric depth map (pure numpy).
 
-Maps a detector box (frame pixels) onto the depth map through `MapGeometry`
-(per-axis affine: Depth Anything 3 resizes anisotropically and may
-centre-crop), shrinks it, drops invalid / masked pixels, rejects background
-outliers and reduces the remaining depths to one distance with a robust
-statistic. No torch, OpenCV or PIL imports: this module must stay importable
-and unit-testable on a machine without the GPU stack.
+The sampled region is either the detector box or the instance mask. A box is
+mapped onto the depth map through `MapGeometry` (per-axis affine: Depth
+Anything 3 resizes anisotropically and may centre-crop) and shrunk; a mask
+(frame resolution) is resampled by nearest neighbour inside the unshrunk box
+window and eroded in depth-map pixels, because depth edges mix object and
+background. Both then drop invalid / ineligible pixels, reject outliers and
+reduce the remaining depths with the same robust statistic. No torch, OpenCV
+or PIL imports: this module must stay importable and unit-testable on a
+machine without the GPU stack.
 """
 
+import dataclasses
 import math
 import re
 from collections.abc import Callable, Sequence
@@ -22,6 +26,8 @@ from det_depth_distance.core.types import CameraIntrinsics, MapGeometry
 
 OutlierMethod = Literal["none", "iqr", "mad", "sigma"]
 DistanceType = Literal["z", "euclidean"]
+# Region sampled for each instance (see instance_depth_stats).
+RegionPolicy = Literal["mask", "box", "both"]
 DEFAULT_OUTLIER_K: dict[str, float] = {
     "none": 0.0,
     "iqr": 1.5,
@@ -51,6 +57,8 @@ STATS_ROW_FIELDS: tuple[str, ...] = (
     "max",
     "distance_m",
 )
+# Column order of BoxDepthStats.mask_row(), appended after the other CSV columns.
+MASK_ROW_FIELDS: tuple[str, ...] = ("used_mask", "mask_px", "mask_erode")
 
 _PERCENTILE_RE = re.compile(r"p(\d+(?:\.\d+)?)")
 _TRIM_FRACTION = 0.1  # per side, for the "trimmed" statistic
@@ -75,7 +83,7 @@ def parse_stat(stat: str) -> str:
 
 @dataclass(frozen=True, slots=True)
 class DistanceConfig:
-    """Parameters of `box_depth_stats`, validated on construction."""
+    """Parameters of `box_depth_stats` and `mask_depth_stats`, validated on construction."""
 
     box_shrink: float = 0.1
     outlier: OutlierMethod = "iqr"
@@ -84,6 +92,7 @@ class DistanceConfig:
     distance_type: DistanceType = "z"
     min_valid_px: int = 20
     max_range: float = 0.0  # 0 = no limit
+    mask_erode: int = 1  # instance-mask erosion, depth-map pixels
 
     def __post_init__(self) -> None:
         if not 0.0 <= self.box_shrink < 0.5:
@@ -94,6 +103,8 @@ class DistanceConfig:
             raise ValueError(f"unknown distance type {self.distance_type!r}")
         if self.min_valid_px < 0 or self.max_range < 0:
             raise ValueError("min_valid_px and max_range must be >= 0")
+        if self.mask_erode < 0:
+            raise ValueError(f"mask_erode must be >= 0, got {self.mask_erode}")
         parse_stat(self.stat)
 
     @property
@@ -108,7 +119,11 @@ class DistanceConfig:
 
 @dataclass(frozen=True, slots=True)
 class BoxDepthStats:
-    """Depth statistics of one box (metres). `distance` is None when too few inliers remain."""
+    """Depth statistics of one region (box or instance mask), in metres.
+
+    `distance` is None when too few inliers remain; `mask_px` / `mask_erode`
+    are set only when the region was the instance mask (`used_mask`).
+    """
 
     map_box: tuple[int, int, int, int]  # (c0, r0, c1, r1), half-open, depth-map pixels
     n_box_px: int
@@ -126,6 +141,18 @@ class BoxDepthStats:
     min: float
     max: float
     distance: float | None
+    mask_px: int | None = None  # depth-map pixels of the eroded mask region
+    mask_erode: int | None = None  # erosion actually applied (map pixels)
+
+    @property
+    def used_mask(self) -> bool:
+        """Whether the statistics were computed over the instance mask."""
+        return self.mask_px is not None
+
+    def mask_row(self) -> dict[str, int | None]:
+        """Flat dict keyed by MASK_ROW_FIELDS (used_mask as 0/1), for CSV output."""
+        values = (int(self.used_mask), self.mask_px, self.mask_erode)
+        return dict(zip(MASK_ROW_FIELDS, values, strict=True))
 
     def to_row(self) -> dict[str, float | int | None]:
         """Flat dict keyed by STATS_ROW_FIELDS, for CSV output."""
@@ -262,41 +289,65 @@ def ray_factors(
     return np.sqrt(1.0 + u[None, :] ** 2 + v[:, None] ** 2)
 
 
-def box_depth_stats(
-    depth_m: np.ndarray,
-    xyxy: Sequence[float],
-    geom: MapGeometry,
-    cfg: DistanceConfig,
-    *,
-    intrinsics: CameraIntrinsics | None = None,
-    mask: np.ndarray | None = None,
-) -> BoxDepthStats:
-    """Estimate the camera-to-object distance for one detection box.
+def resample_mask(
+    frame_mask: np.ndarray, geom: MapGeometry, map_box: tuple[int, int, int, int]
+) -> np.ndarray:
+    """Sample a frame-resolution 2-D array (mask or labels) at the centres of a
+    depth-map window.
 
-    Args:
-        depth_m: (map_h, map_w) depth in metres along the optical axis.
-        xyxy: box edges in frame pixels, as returned by the detector.
-        geom: frame -> depth-map mapping for this video.
-        cfg: shrink, outlier, statistic and validity parameters.
-        intrinsics: depth-map-resolution intrinsics; required when
-            cfg.distance_type == "euclidean".
-        mask: optional boolean (map_h, map_w) eligibility mask (e.g. not-sky,
-            instance segmentation).
+    Map pixel (r, c) reads the frame pixel under its centre,
+    (floor((c + 0.5 - ox) / sx), floor((r + 0.5 - oy) / sy)), clipped to the
+    frame: nearest neighbour with separate x/y scales and crop offsets. Mask
+    edges are half-open, so a box edge falling exactly on a pixel centre is
+    excluded (box_to_map_pixels includes it). Any dtype works and is preserved
+    (boolean masks, integer class labels).
 
     Returns:
-        BoxDepthStats; `distance` is None when fewer than cfg.min_valid_px
-        inliers remain (rendered as "n/a").
-
-    Raises:
-        ValueError: euclidean distance requested without intrinsics, or
-            mask/depth shape mismatch.
+        (r1 - r0, c1 - c0) array of the input dtype for map_box = (c0, r0, c1, r1).
     """
+    c0, r0, c1, r1 = map_box
+    h, w = frame_mask.shape
+    xs = np.floor((np.arange(c0, c1) + 0.5 - geom.ox) / geom.sx).astype(np.intp)
+    ys = np.floor((np.arange(r0, r1) + 0.5 - geom.oy) / geom.sy).astype(np.intp)
+    return frame_mask[np.ix_(np.clip(ys, 0, h - 1), np.clip(xs, 0, w - 1))]
+
+
+def erode_mask(mask: np.ndarray, iterations: int) -> np.ndarray:
+    """Binary erosion with a 3x3 square, `iterations` times (cv2.erode
+    equivalent with a zero border). Pixels outside the array count as
+    background, so regions touching the window edge erode there too."""
+    out = mask.astype(bool, copy=True)
+    for _ in range(iterations):
+        # The 3x3 minimum is separable: a horizontal then a vertical 3-tap AND.
+        padded = np.pad(out, 1)
+        rows = padded[:, :-2] & padded[:, 1:-1] & padded[:, 2:]
+        out = rows[:-2] & rows[1:-1] & rows[2:]
+    return out
+
+
+def _check_inputs(
+    depth_m: np.ndarray,
+    cfg: DistanceConfig,
+    intrinsics: CameraIntrinsics | None,
+    mask: np.ndarray | None,
+) -> None:
     if mask is not None and mask.shape != depth_m.shape:
         raise ValueError(f"mask shape {mask.shape} != depth shape {depth_m.shape}")
     if cfg.distance_type == "euclidean" and intrinsics is None:
         raise ValueError("euclidean distance needs camera intrinsics")
 
-    map_box = box_to_map_pixels(xyxy, geom, cfg.box_shrink)
+
+def _region_stats(
+    depth_m: np.ndarray,
+    map_box: tuple[int, int, int, int],
+    cfg: DistanceConfig,
+    *,
+    region: np.ndarray | None,
+    intrinsics: CameraIntrinsics | None,
+    mask: np.ndarray | None,
+) -> BoxDepthStats:
+    """Statistics over the pixels of `map_box` that are valid, eligible (`mask`)
+    and inside `region` (window-shaped bool; None = the whole window)."""
     c0, r0, c1, r1 = map_box
     patch = depth_m[r0:r1, c0:c1].astype(np.float64)
     valid = np.isfinite(patch) & (patch > 0)
@@ -304,6 +355,8 @@ def box_depth_stats(
         valid &= patch <= cfg.max_range
     if mask is not None:
         valid &= mask[r0:r1, c0:c1]
+    if region is not None:
+        valid &= region
     if cfg.distance_type == "euclidean":
         patch = patch * ray_factors(map_box, intrinsics)
 
@@ -337,3 +390,135 @@ def box_depth_stats(
         *summary,
         distance=robust_distance(inliers, cfg.stat) if enough else None,
     )
+
+
+def box_depth_stats(
+    depth_m: np.ndarray,
+    xyxy: Sequence[float],
+    geom: MapGeometry,
+    cfg: DistanceConfig,
+    *,
+    intrinsics: CameraIntrinsics | None = None,
+    mask: np.ndarray | None = None,
+) -> BoxDepthStats:
+    """Estimate the camera-to-object distance for one detection box.
+
+    Args:
+        depth_m: (map_h, map_w) depth in metres along the optical axis.
+        xyxy: box edges in frame pixels, as returned by the detector.
+        geom: frame -> depth-map mapping for this video.
+        cfg: shrink, outlier, statistic and validity parameters.
+        intrinsics: depth-map-resolution intrinsics; required when
+            cfg.distance_type == "euclidean".
+        mask: optional boolean (map_h, map_w) eligibility mask (e.g. not-sky);
+            instance masks go through `mask_depth_stats` instead.
+
+    Returns:
+        BoxDepthStats; `distance` is None when fewer than cfg.min_valid_px
+        inliers remain (rendered as "n/a").
+
+    Raises:
+        ValueError: euclidean distance requested without intrinsics, or
+            mask/depth shape mismatch.
+    """
+    _check_inputs(depth_m, cfg, intrinsics, mask)
+    map_box = box_to_map_pixels(xyxy, geom, cfg.box_shrink)
+    return _region_stats(
+        depth_m, map_box, cfg, region=None, intrinsics=intrinsics, mask=mask
+    )
+
+
+def mask_depth_stats(
+    depth_m: np.ndarray,
+    xyxy: Sequence[float],
+    instance_mask: np.ndarray,
+    geom: MapGeometry,
+    cfg: DistanceConfig,
+    *,
+    intrinsics: CameraIntrinsics | None = None,
+    mask: np.ndarray | None = None,
+) -> BoxDepthStats | None:
+    """Depth statistics of one instance over its mask instead of its box.
+
+    The window is the unshrunk box on the depth map (mask pixels outside the box
+    are ignored); the resampled mask is eroded by up to cfg.mask_erode map
+    pixels, backing off while fewer than max(cfg.min_valid_px, 1) pixels would
+    remain so thin objects keep a region. Validity, eligibility (`mask`),
+    outlier rejection and the statistic are those of `box_depth_stats`.
+
+    Args:
+        instance_mask: boolean (frame_h, frame_w) mask of the instance.
+        (other arguments as in `box_depth_stats`)
+
+    Returns:
+        BoxDepthStats with mask_px / mask_erode set, or None when the mask has
+        no pixel inside the window (caller falls back to the box).
+
+    Raises:
+        ValueError: as `box_depth_stats`, or an instance mask that is not
+            frame-sized.
+    """
+    _check_inputs(depth_m, cfg, intrinsics, mask)
+    if instance_mask.shape != (geom.frame_h, geom.frame_w):
+        raise ValueError(
+            f"instance mask shape {instance_mask.shape} != frame "
+            f"{(geom.frame_h, geom.frame_w)}"
+        )
+    map_box = box_to_map_pixels(xyxy, geom, 0.0)
+    region = resample_mask(instance_mask, geom, map_box)
+    if not region.any():
+        return None
+    # Erosion only removes pixels, so the region shrinks with every step: stop
+    # at the first step that would leave too few pixels for a distance.
+    need, applied, eroded = max(cfg.min_valid_px, 1), 0, region
+    for k in range(1, cfg.mask_erode + 1):
+        eroded = erode_mask(eroded, 1)
+        if np.count_nonzero(eroded) < need:
+            break
+        region, applied = eroded, k
+    stats = _region_stats(
+        depth_m, map_box, cfg, region=region, intrinsics=intrinsics, mask=mask
+    )
+    return dataclasses.replace(
+        stats, mask_px=int(np.count_nonzero(region)), mask_erode=applied
+    )
+
+
+def instance_depth_stats(
+    depth_m: np.ndarray,
+    xyxy: Sequence[float],
+    geom: MapGeometry,
+    cfg: DistanceConfig,
+    *,
+    region: RegionPolicy,
+    instance_mask: np.ndarray | None = None,
+    intrinsics: CameraIntrinsics | None = None,
+    mask: np.ndarray | None = None,
+) -> tuple[BoxDepthStats, BoxDepthStats | None]:
+    """Apply the distance region policy to one instance.
+
+    "box": box statistics. "mask": mask statistics when the instance has a
+    non-empty mask in its box, else box statistics. "both": as "mask", plus the
+    box statistics as second element when the mask was used (for comparison).
+
+    Returns:
+        (primary, box_alternative_or_None).
+    """
+    if region != "box" and instance_mask is not None:
+        by_mask = mask_depth_stats(
+            depth_m,
+            xyxy,
+            instance_mask,
+            geom,
+            cfg,
+            intrinsics=intrinsics,
+            mask=mask,
+        )
+        if by_mask is not None:
+            if region == "both":
+                return by_mask, box_depth_stats(
+                    depth_m, xyxy, geom, cfg, intrinsics=intrinsics, mask=mask
+                )
+            return by_mask, None
+    by_box = box_depth_stats(depth_m, xyxy, geom, cfg, intrinsics=intrinsics, mask=mask)
+    return by_box, None

@@ -28,6 +28,8 @@ def write(tmp_path, data) -> Path:
 def test_defaults(tmp_path):
     cfg = load_config(write(tmp_path, MINIMAL))
     assert cfg.distance == DistanceConfig() and cfg.exclude_sky
+    assert cfg.region == "mask" and cfg.distance.mask_erode == 1
+    assert cfg.render.mask_alpha == 0.35
     assert cfg.aggregation == {"type": "concat"}
     assert cfg.agreement == AgreementConfig(enabled=True, iou_thr=0.5, class_aware=True)
     assert cfg.camera.focal_px is None and cfg.camera.estimate.model == "da3-large-1.1"
@@ -55,6 +57,9 @@ def test_example_configs_cover_the_planned_runs():
         "yolo_o365_da3.yaml",
         "multi_detector.yaml",
         "multi_detector_fused.yaml",
+        "rfdetr_seg_da3.yaml",
+        "yolo_seg_da3.yaml",
+        "yolo_o365_seg_da3.yaml",
     }
     multi = load_config(CONFIGS[0].with_name("multi_detector.yaml"))
     assert [d["type"] for d in multi.detectors] == ["rfdetr", "yolo"]
@@ -132,7 +137,7 @@ def test_positional_video_overrides_source(tmp_path):
 
 
 def test_pipeline_distance_keys_go_to_run_config(tmp_path):
-    assert PIPELINE_DISTANCE_KEYS == ("exclude_sky",)
+    assert PIPELINE_DISTANCE_KEYS == ("exclude_sky", "region")
     cfg = load_config(write(tmp_path, MINIMAL), ["distance.exclude_sky=false"])
     assert cfg.exclude_sky is False and not hasattr(cfg.distance, "exclude_sky")
     with pytest.raises(ConfigError, match="under the distance section"):
@@ -140,9 +145,13 @@ def test_pipeline_distance_keys_go_to_run_config(tmp_path):
 
 
 def test_to_dict_restores_yaml_layout(tmp_path):
-    cfg = load_config(write(tmp_path, MINIMAL), ["distance.exclude_sky=false"])
+    cfg = load_config(
+        write(tmp_path, MINIMAL),
+        ["distance.exclude_sky=false", "distance.region=both"],
+    )
     data = cfg.to_dict()
     assert data["distance"]["exclude_sky"] is False and "exclude_sky" not in data
+    assert data["distance"]["region"] == "both" and "region" not in data
     assert data["output"]["out_root"] == "_testbed/outputs"
     assert isinstance(data["detectors"], list)
     assert load_config(write(tmp_path, data)) == cfg  # round trip
@@ -202,3 +211,39 @@ def test_fused_config_switches_aggregation(monkeypatch):
 def test_agreement_iou_thr_range(tmp_path, override):
     with pytest.raises(ConfigError, match=r"^agreement: iou_thr must be in"):
         load_config(write(tmp_path, MINIMAL), [override])
+
+
+def test_region_and_mask_options(tmp_path):
+    cfg = load_config(
+        write(tmp_path, MINIMAL),
+        ["distance.region=both", "distance.mask_erode=2", "render.mask_alpha=0"],
+    )
+    assert cfg.region == "both" and not hasattr(cfg.distance, "region")
+    assert cfg.distance.mask_erode == 2 and cfg.render.mask_alpha == 0.0
+    with pytest.raises(ConfigError, match="under the distance section"):
+        load_config(write(tmp_path, {**MINIMAL, "region": "box"}))
+
+
+@pytest.mark.parametrize(
+    ("override", "match"),
+    [
+        ("distance.region=diagonal", r"^region: 'diagonal' is not one of"),
+        ("distance.mask_erode=-1", r"^distance: mask_erode must be >= 0"),
+        ("distance.mask_erode=1.5", r"^distance\.mask_erode: expected int"),
+        ("render.mask_alpha=1.5", r"^render: mask_alpha must be in \[0, 1\]"),
+        ("render.mask_alpha=-0.1", r"^render: mask_alpha must be in \[0, 1\]"),
+    ],
+)
+def test_region_and_mask_options_are_validated(tmp_path, override, match):
+    with pytest.raises(ConfigError, match=match):
+        load_config(write(tmp_path, MINIMAL), [override])
+
+
+@pytest.mark.parametrize(
+    "name", ["rfdetr_seg_da3.yaml", "yolo_seg_da3.yaml", "yolo_o365_seg_da3.yaml"]
+)
+def test_seg_configs_compare_mask_and_box(name, monkeypatch):
+    monkeypatch.chdir(REPO)
+    cfg = load_config(REPO / "configs" / name)
+    assert cfg.region == "both" and cfg.distance.mask_erode == 1
+    assert cfg.render.layout == "side-by-side"

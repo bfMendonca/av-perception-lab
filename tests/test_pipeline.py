@@ -21,7 +21,7 @@ from det_depth_distance.core.types import (
     MapGeometry,
     Provenance,
 )
-from det_depth_distance.distance import DistanceConfig
+from det_depth_distance.distance import DistanceConfig, box_depth_stats
 from det_depth_distance.io.source import FrameSource
 
 FRAME = Frame(0, 0.0, np.zeros((100, 100, 3), np.uint8))
@@ -138,6 +138,7 @@ def make_pipeline(
     provider=None,
     aggregator=None,
     agreement=None,
+    region="mask",
 ):
     return Pipeline(
         detectors,
@@ -148,6 +149,7 @@ def make_pipeline(
         intrinsics=provider,
         device="cpu",
         agreement=agreement,
+        region=region,
     )
 
 
@@ -254,7 +256,14 @@ def test_single_detector_concat_without_labels_is_unchanged(scene):
     desc = pipeline.describe()
     assert desc["components"]["aggregator"] == {"type": "concat", "options": {}}
     assert desc["components"]["detectors"][0]["labels"] is None
-    assert desc["pipeline"] == {"exclude_sky": True, "agreement": None}
+    assert desc["pipeline"] == {
+        "exclude_sky": True,
+        "agreement": None,
+        "region": "mask",
+        "mask_erode": 1,
+    }
+    # task_0004: box-only instances keep the box statistics under the default policy.
+    assert all(not s.used_mask for s in result.stats) and result.box_stats is None
 
 
 def test_describe_separates_components_and_policy(scene):
@@ -267,7 +276,12 @@ def test_describe_separates_components_and_policy(scene):
     assert set(desc) == {"components", "pipeline"}
     assert set(desc["components"]) == {"detectors", "depth", "aggregator"}
     assert desc["components"]["detectors"][0]["name"] == "det"
-    assert desc["pipeline"] == {"exclude_sky": False, "agreement": None}
+    assert desc["pipeline"] == {
+        "exclude_sky": False,
+        "agreement": None,
+        "region": "mask",
+        "mask_erode": 1,
+    }
 
 
 @pytest.fixture
@@ -383,3 +397,103 @@ def test_warns_when_fused_detectors_share_no_label(scene, capsys):
         aggregator=Nms(Nms.Options()),
     ).setup(Source())
     assert capsys.readouterr().err == ""
+
+
+def _background_mask() -> np.ndarray:
+    """(1, 100, 100) frame mask over columns 85..100, the 40 m background of FakeDepth."""
+    masks = np.zeros((1, 100, 100), dtype=bool)
+    masks[0, :, 85:] = True
+    return masks
+
+
+@pytest.fixture
+def masked_scene(make_instances):
+    """`seg` sees the full-frame box with a mask over the background (box 10 m,
+    mask 40 m) and the person box without a mask."""
+    log = []
+    masks = np.concatenate([_background_mask(), np.zeros((1, 100, 100), bool)])
+    instances = make_instances(
+        [[0, 0, 100, 100], [0, 0, 20, 100]],
+        labels=["car", "person"],
+        score=[0.9, 0.6],
+        source="seg",
+        masks=masks,
+    )
+    return log, FakeDetector(instances, log, name="seg")
+
+
+@pytest.mark.parametrize(
+    ("region", "car_m", "used_mask"),
+    [("mask", 40.0, True), ("box", 10.0, False), ("both", 40.0, True)],
+)
+def test_region_policy(masked_scene, region, car_m, used_mask):
+    log, det = masked_scene
+    pipeline = make_pipeline(
+        [det], FakeDepth(log, needs_intrinsics=False), exclude_sky=False, region=region
+    )
+    pipeline.setup(Source())
+    result = pipeline.process(FRAME)
+    car, person = result.stats
+    assert car.distance == pytest.approx(car_m) and car.used_mask is used_mask
+    assert not person.used_mask  # all-False mask: box statistics
+    if region == "both":
+        assert result.box_stats[0].distance == pytest.approx(10.0)
+        assert result.box_stats[1] is None
+    else:
+        assert result.box_stats is None
+    assert list(result.timings_ms)[-1] == "dist"
+
+
+@pytest.mark.parametrize("region", ["mask", "box", "both"])
+def test_box_only_detector_is_unchanged_by_the_region_policy(scene, region):
+    log, det = scene
+    pipeline = make_pipeline(
+        [det], FakeDepth(log, needs_intrinsics=False), region=region
+    )
+    pipeline.setup(Source())
+    result = pipeline.process(FRAME)
+    depth = result.depth
+    expected = tuple(
+        box_depth_stats(
+            depth.depth_m,
+            box,
+            depth.geometry,
+            pipeline.distance,
+            intrinsics=depth.intrinsics,
+            mask=~depth.sky,
+        )
+        for box in result.instances.xyxy
+    )
+    assert result.stats == expected
+    assert result.box_stats == ((None, None) if region == "both" else None)
+
+
+def test_detector_without_masks_falls_back_to_the_box(make_instances):
+    log = []
+    seg = FakeDetector(
+        make_instances([[0, 0, 100, 100]], source="seg", masks=_background_mask()),
+        log,
+        name="seg",
+    )
+    det = FakeDetector(
+        make_instances([[0, 0, 100, 100]], source="det"), log, name="det"
+    )
+    pipeline = make_pipeline([seg, det], FakeDepth(log, needs_intrinsics=False))
+    pipeline.setup(Source())
+    result = pipeline.process(FRAME)
+    assert result.instances.masks.shape == (2, 100, 100)  # concat filled zeros
+    assert not result.instances.masks[1].any()
+    assert [s.used_mask for s in result.stats] == [True, False]
+    assert result.stats[0].distance == pytest.approx(40.0)
+    assert result.stats[1].distance == pytest.approx(10.0)
+
+
+def test_region_policy_is_validated_and_described(scene):
+    log, det = scene
+    with pytest.raises(
+        ConfigError, match=r"^distance\.region: 'diagonal' is not one of"
+    ):
+        make_pipeline([det], FakeDepth(log), region="diagonal")
+    desc = make_pipeline([det], FakeDepth(log), region="both").describe()
+    assert (desc["pipeline"]["region"], desc["pipeline"]["mask_erode"]) == ("both", 1)
+    assert "region" not in desc["components"]

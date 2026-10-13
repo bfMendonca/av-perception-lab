@@ -1,8 +1,15 @@
-"""Ultralytics YOLO detector adapter (YOLO26 COCO and Objects365 weights).
+"""Ultralytics YOLO detector adapter (YOLO26 COCO and Objects365 weights,
+detection and segmentation).
 
 predict() treats numpy input as BGR (OpenCV order), so RGB frames are
 flipped here. Boxes are letterbox-corrected and clipped to the frame by
 ultralytics. Class names are the checkpoint's own `model.names`.
+
+Segmentation weights (*-seg.pt, task "segment") also fill `masks`:
+predict() is called with retina_masks=True so masks come back at frame
+resolution with the letterbox removed (without it, masks stay at the
+letterboxed input size). Ultralytics crops masks to their boxes and drops
+predictions with an empty mask.
 
 YOLO_OFFLINE, YOLO_AUTOINSTALL and YOLO_CONFIG_DIR are set (setdefault)
 before the lazy import because ultralytics reads them at import time:
@@ -33,7 +40,7 @@ _STRIDE = 32  # max stride of the YOLO26 detection heads
 
 @register("detector", "yolo")
 class YoloDetector(Detector):
-    """An Ultralytics YOLO detection checkpoint (.pt) run with PyTorch."""
+    """An Ultralytics YOLO detection or segmentation checkpoint (.pt) run with PyTorch."""
 
     @dataclass(frozen=True, slots=True, kw_only=True)
     class Options(DetectorOptions):
@@ -54,6 +61,7 @@ class YoloDetector(Detector):
         self._model = None
         self._class_names: list[str] = []
         self._device = ""
+        self._task: str | None = None  # "detect" or "segment", from the checkpoint
 
     def default_name(self) -> str:
         return self.options.weights.stem
@@ -67,12 +75,15 @@ class YoloDetector(Detector):
         Path(os.environ["YOLO_CONFIG_DIR"]).mkdir(parents=True, exist_ok=True)
         from ultralytics import YOLO
 
-        model = YOLO(str(weights), task="detect")
-        if model.task != "detect":
+        # A .pt checkpoint carries its own task (ultralytics ignores task= for it),
+        # so no task is passed and the check below admits detect and segment.
+        model = YOLO(str(weights))
+        if model.task not in ("detect", "segment"):
             raise ConfigError(
-                f"weights: {weights} is a {model.task!r} model, not detect"
+                f"weights: {weights}: task {model.task!r} not supported (detect or segment)"
             )
         self._model = model
+        self._task = model.task
         self._class_names = [model.names[i] for i in sorted(model.names)]
         self._device = ctx.device
 
@@ -96,19 +107,31 @@ class YoloDetector(Detector):
             device=self._device,
             # `quantize` replaces the deprecated `half` flag in ultralytics 8.4.
             quantize=16 if self.options.half else None,
+            # Frame-resolution masks with the letterbox removed (segment only).
+            retina_masks=self._task == "segment",
             verbose=False,
         )[0]
         boxes = result.boxes
         class_id = boxes.cls.cpu().numpy().astype(np.int64)
+        masks = None
+        if self._task == "segment":
+            # ultralytics returns masks=None, not an empty stack, without detections.
+            masks = (
+                np.zeros((0, *rgb.shape[:2]), dtype=bool)
+                if result.masks is None
+                else result.masks.data.bool().cpu().numpy()
+            )
         return self._instances(
             boxes.xyxy.cpu().numpy(),
             boxes.conf.cpu().numpy(),
             class_id,
             [self._class_names[i] for i in class_id],
+            masks,
         )
 
     def _describe(self) -> dict[str, Any]:
         return {
+            "task": self._task,
             "n_classes": len(self._class_names),
             "version": package_version("ultralytics"),
         }

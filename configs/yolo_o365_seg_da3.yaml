@@ -1,0 +1,53 @@
+# YOLO26-L-objv1-seg (instance segmentation; Objects365 vocabulary expected, not yet
+# verified - LabelMap.check fails loudly if it is not) + DA3METRIC-LARGE: distance
+# over each instance mask, labels mapped to the canonical driving vocabulary.
+# Weights (not downloaded by the run): yolo26l-objv1-seg.pt from
+# https://github.com/ultralytics/assets/releases/download/v8.4.0/yolo26l-objv1-seg.pt
+# region: both records the mask and the box distance of every masked instance.
+# Run: det-depth-distance --config configs/yolo_o365_seg_da3.yaml [VIDEO] [--set key=value]...
+device: cuda:0
+source: {video: _testbed/data/IMG_4021.MOV, start: 0.0, duration: 0.0, max_frames: 0, stride: 1}
+detectors:
+  - type: yolo
+    weights: ~/dev/ultralytics/_testbed/weights/yolo26l-objv1-seg.pt
+    threshold: 0.4
+    imgsz: 640
+    classes: driving
+    labels: configs/labels/objects365_driving.yaml
+depth:
+  type: da3
+  model: da3metric-large
+  process_res: 504
+  process_res_method: upper_bound_resize
+  hf_cache: &hf ~/dev/depth-anything-3/_testbed/weights/hf
+camera:
+  focal_px: null  # focal length in pixels of the input video; takes precedence over estimate
+  estimate:
+    model: da3-large-1.1
+    frames: 16
+    process_res: 504
+    process_res_method: upper_bound_resize
+    hf_cache: *hf
+aggregation: {type: concat}
+distance:
+  box_shrink: 0.1
+  outlier: iqr
+  outlier_k: null
+  stat: median
+  distance_type: z
+  min_valid_px: 20
+  max_range: 0.0
+  mask_erode: 1  # instance-mask erosion in depth-map pixels
+  exclude_sky: true
+  region: both  # mask distance + box distance (box_distance_m) for comparison
+render:
+  layout: side-by-side
+  show_stats: false
+  draw_inner_box: false
+  max_depth: 30.0
+  cmap: turbo
+  crf: 20
+  hud: true
+  font: null
+  mask_alpha: 0.35  # instance-mask tint; 0 = no masks drawn
+output: {out_root: _testbed/outputs, tag: "", save_depth: false}

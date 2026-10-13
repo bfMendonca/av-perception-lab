@@ -4,6 +4,94 @@ Todas as mudancas relevantes do det-depth-distance serao documentadas neste arqu
 
 ---
 
+## [2026-10-13] Segmentacao de instancias e distancia pela mascara
+
+Objetos finos ou inclinados (pessoas, bicicletas, postes, implementos)
+ocupam pouco da propria caixa, e o fundo dominava a estimativa de
+distancia. A task_0004 adiciona modelos de segmentacao de instancias
+(RF-DETR Seg e YOLO26-seg) e passa a medir a distancia sobre a mascara de
+cada objeto sempre que o modelo a fornece. Detectores so de caixas
+continuam com exatamente o mesmo resultado de antes.
+
+### Novo: Modelos de segmentacao de instancias
+
+- **RF-DETR Seg:** `variant: seg-nano`, `seg-small`, `seg-medium`,
+  `seg-large`, `seg-xlarge` ou `seg-2xlarge` (COCO). Os pesos (~135-155 MB)
+  sao baixados pela biblioteca no primeiro uso.
+- **YOLO26-seg:** o adaptador `yolo` aceita pesos de segmentacao
+  (`yolo26*-seg.pt` COCO, `yolo26*-objv1-seg.pt` com vocabulario
+  Objects365 esperado, ainda a conferir); as mascaras saem na resolucao do
+  quadro. Antes, um peso de segmentacao era recusado.
+
+### Novo: Distancia pela mascara (`distance.region`)
+
+- **`mask` (padrao):** com mascara, as estatisticas usam so os pixels do
+  objeto (mascara levada ao mapa de profundidade e erodida para descartar a
+  borda); sem mascara, a caixa, como antes.
+- **`box`:** sempre a caixa (as mascaras so sao desenhadas).
+- **`both`:** como `mask`, e grava tambem a distancia pela caixa para
+  comparar.
+- **`distance.mask_erode`** (padrao 1): erosao em pixels do mapa de
+  profundidade; recua sozinha em objetos finos demais.
+
+### Novo: Mascaras no video e nas saidas
+
+- Mascara translucida na cor da instancia, no quadro e no painel de
+  profundidade (`render.mask_alpha`, padrao 0.35; 0 desliga). O painel de
+  informacoes mostra `region <politica> . erode <k>` nos quadros em que
+  alguma instancia usou a mascara.
+- `detections.csv` ganha no fim `used_mask`, `mask_px`, `mask_erode` e
+  `box_distance_m` (este so com `region: both`).
+- `metrics.json` ganha `distance_regions` (quantas instancias por mascara e
+  por caixa) e, com `both`, `region_comparison` (diferenca mascara - caixa
+  por rotulo: mediana com sinal, mediana e p90 absolutas, mediana
+  relativa).
+
+### Novo: Exemplos de configuracao
+
+- `configs/rfdetr_seg_da3.yaml`, `configs/yolo_seg_da3.yaml` e
+  `configs/yolo_o365_seg_da3.yaml`, todos com `region: both` e mapa de
+  profundidade lado a lado.
+
+### Como usar
+
+1. Baixar os pesos YOLO26-seg desejados em
+   `~/dev/ultralytics/_testbed/weights/` (release `v8.4.0` de
+   `ultralytics/assets`); os do RF-DETR Seg vem sozinhos.
+2. No servidor: `uv run --extra infer python -m det_depth_distance --config configs/rfdetr_seg_da3.yaml`.
+3. Para comparar erosoes: `--set distance.mask_erode=0` (ou 2).
+
+### Detalhes tecnicos
+
+- Reamostragem da mascara (vizinho mais proximo no centro de cada pixel do
+  mapa, escalas x/y separadas e deslocamento de crop) e erosao 3x3 em numpy
+  puro (`distance.py`), sem OpenCV nem scipy; a estatistica e o mesmo nucleo
+  da caixa (`_region_stats`).
+- A janela da mascara e a caixa sem encolhimento; pixels da mascara fora
+  da caixa sao ignorados.
+- Mascara toda vazia equivale a "sem mascara": um detector com mascara e
+  outro sem podem rodar juntos (`concat`), e a fusao ja escolhe a mascara do
+  melhor membro que tem mascara.
+
+### Observacoes importantes
+
+- Objeto pequeno cuja mascara tem menos de `min_valid_px` pixels do mapa
+  fica "n/a" pela mascara; com `both`, a distancia pela caixa fica no CSV.
+- O vocabulario dos pesos `yolo26*-objv1-seg.pt` (esperado Objects365) e a
+  validacao no servidor GPU (testes `-m gpu`, regressao da task_0002 e as
+  execucoes caixa x mascara) ficaram pendentes: o servidor estava fora do
+  ar durante a implementacao.
+
+### O que nao muda
+
+- Detectores so de caixas produzem as mesmas deteccoes, distancias e
+  painel do video de antes, com qualquer politica; as colunas novas do CSV
+  ficam no fim (vazias, `used_mask = 0`).
+- Mascaras nao sao gravadas em disco.
+- Nenhuma dependencia nova.
+
+---
+
 ## [2026-10-13] Harmonizacao de rotulos e fusao entre detectores
 
 Com varios detectores no mesmo passo, o mesmo carro aparecia duas vezes e

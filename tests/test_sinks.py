@@ -20,7 +20,11 @@ from det_depth_distance.core.types import (
     PairAgreement,
     Provenance,
 )
-from det_depth_distance.distance import DistanceConfig, box_depth_stats
+from det_depth_distance.distance import (
+    DistanceConfig,
+    box_depth_stats,
+    instance_depth_stats,
+)
 from det_depth_distance.io.sinks import (
     CSV_FIELDS,
     CsvSink,
@@ -28,6 +32,7 @@ from det_depth_distance.io.sinks import (
     NpzSink,
     RunContext,
     VideoSink,
+    _region_comparison,
     latency_stats,
     make_run_dir,
 )
@@ -75,6 +80,10 @@ def test_csv_fields_order():
         "sources",
         "source_scores",
         "raw_labels",
+        "used_mask",
+        "mask_px",
+        "mask_erode",
+        "box_distance_m",
     )
 
 
@@ -128,7 +137,12 @@ def ctx(tmp_path):
             },
             "aggregator": {"type": "concat", "options": {}},
         },
-        "pipeline": {"exclude_sky": True},
+        "pipeline": {
+            "exclude_sky": True,
+            "agreement": None,
+            "region": "mask",
+            "mask_erode": 1,
+        },
     }
     source = SimpleNamespace(describe=lambda: {"path": "clip.mov", "width": 100})
     setup = SetupInfo(CameraIntrinsics.centered(90.0, 100, 100), 90.0, "spy")
@@ -159,6 +173,9 @@ def test_csv_sink(ctx, result):
         assert row["source_scores"] == row["confidence"]
     assert float(rows[0]["distance_m"]) == pytest.approx(12.0)
     assert rows[1]["distance_m"] == ""  # 25 px < min_valid_px
+    # Box rows: the task_0004 columns are empty, used_mask is 0.
+    for row in rows:
+        assert [row[k] for k in CSV_FIELDS[-4:]] == ["0", "", "", ""]
 
 
 @pytest.fixture
@@ -233,7 +250,7 @@ def test_metrics_sink(ctx, result):
     metrics = json.loads((ctx.run_dir / "metrics.json").read_text())
     assert not {"detector", "args", "depth"} & set(metrics)
     assert metrics["components"]["depth"]["kind"] == "metric_focal"
-    assert metrics["pipeline"] == {"exclude_sky": True}
+    assert metrics["pipeline"] == ctx.pipeline["pipeline"]
     assert metrics["config"]["distance"]["exclude_sky"] is True
     assert set(metrics["timings_ms"]) == {
         "det",
@@ -251,6 +268,8 @@ def test_metrics_sink(ctx, result):
     assert metrics["detections_by_n_sources"] == {"1": 2}
     assert metrics["detections_total"] == {"car": 1, "suv": 1}
     assert (metrics["boxes_total"], metrics["boxes_without_distance"]) == (2, 1)
+    assert metrics["distance_regions"] == {"mask": 0, "box": 2}
+    assert "region_comparison" not in metrics  # region "mask"
     assert metrics["distance"]["k"] == 1.5
     assert "ultralytics" in metrics["versions"] and metrics["versions"]["gpu"] == "fake"
     assert math.isfinite(metrics["wall_time_s"])
@@ -312,6 +331,9 @@ def test_video_sink_single_detector_concat_is_unchanged(ctx, result, tmp_path):
     assert [b.label for b in boxes] == ["car 91% · 12.0 m", "suv 50% · n/a"]
     assert len(hud) == 4  # no fusion or agreement line
     assert hud[1].endswith("conf ≥ 0.40")
+    # No instance used a mask: the distance line is task_0002's.
+    assert hud[2] == "median · iqr · shrink 0.1 · z"
+    assert [b.mask for b in boxes] == [None, None]
 
 
 @pytest.mark.skipif(shutil.which("ffmpeg") is None, reason="needs ffmpeg/ffprobe")
@@ -374,3 +396,119 @@ def test_video_sink_fused_labels_colours_and_hud(ctx, fused_result, tmp_path):
         "wbf · IoU ≥ 0.55",
         "agree 3 · only rfdetr-large 1 · only yolo26l-objv1-150 2",
     ]
+
+
+@pytest.fixture
+def both_result(result):
+    """`result` measured with region "both": the first instance has a mask over
+    a thin 4 m strip of the 12 m map (mask 4 m; in the box the strip is an
+    outlier, 12 m), the second has none."""
+    depth = result.depth.depth_m.copy()
+    depth[:, 5:8] = 4.0
+    masks = np.zeros((2, 100, 100), dtype=bool)
+    masks[0, :80, 10:16] = True  # frame columns 10..16 -> map columns 5..8
+    instances = replace(result.instances, masks=masks)
+    cfg = DistanceConfig(min_valid_px=30)
+    pairs = [
+        instance_depth_stats(
+            depth, box, GEOMETRY, cfg, region="both", instance_mask=masks[i]
+        )
+        for i, box in enumerate(instances.xyxy)
+    ]
+    return replace(
+        result,
+        instances=instances,
+        stats=tuple(p for p, _ in pairs),
+        depth=replace(result.depth, depth_m=depth),
+        box_stats=tuple(b for _, b in pairs),
+    )
+
+
+def test_csv_sink_both_row(ctx, both_result):
+    sink = CsvSink()
+    sink.open(ctx)
+    sink.write(both_result)
+    sink.close()
+    with open(ctx.run_dir / "detections.csv", newline="") as fh:
+        rows = list(csv.DictReader(fh))
+    first, second = rows
+    stats = both_result.stats[0]
+    assert first["used_mask"] == "1" and float(first["distance_m"]) == pytest.approx(
+        4.0
+    )
+    # 3 map columns: one erosion would leave 18 px < min_valid_px, so none is applied.
+    assert first["mask_px"] == str(stats.mask_px) == "60" and first["mask_erode"] == "0"
+    assert float(first["box_distance_m"]) == pytest.approx(12.0)
+    assert [second[k] for k in CSV_FIELDS[-4:]] == ["0", "", "", ""]
+
+
+def test_region_comparison_by_hand():
+    assert _region_comparison([]) == {"n": 0}
+    out = _region_comparison(
+        [("person", 8.0, 10.0), ("person", 9.0, 9.5), ("car", 12.0, 12.0)]
+    )
+    # differences -2, -0.5, 0; relative -0.2, -0.0526, 0
+    assert out["n"] == 3
+    assert out["median_signed_m"] == pytest.approx(-0.5)
+    assert out["median_abs_m"] == pytest.approx(0.5)
+    assert out["p90_abs_m"] == pytest.approx(1.7)
+    assert out["median_rel"] == pytest.approx(-0.5 / 9.5)
+    person = out["by_label"]["person"]
+    assert person["n"] == 2 and person["median_signed_m"] == pytest.approx(-1.25)
+    assert person["p90_abs_m"] == pytest.approx(1.85)
+    assert person["median_rel"] == pytest.approx((-0.2 - 0.5 / 9.5) / 2)
+    assert out["by_label"]["car"]["median_abs_m"] == 0.0
+    json.dumps(out)
+
+
+def test_metrics_sink_region_comparison(ctx, both_result):
+    cfg = replace(ctx.config, region="both")
+    ctx = replace(ctx, config=cfg)
+    monitor = SimpleNamespace(
+        summary=lambda: dict.fromkeys(
+            [
+                "peak_vram_torch_allocated_gb",
+                "device_mem_used_delta_gb_approx",
+                "torch",
+                "cuda",
+                "gpu",
+            ]
+        )
+    )
+    sink = MetricsSink(monitor, dict)
+    sink.open(ctx)
+    sink.write(both_result)
+    sink.close()
+    metrics = json.loads((ctx.run_dir / "metrics.json").read_text())
+    assert metrics["distance_regions"] == {"mask": 1, "box": 1}
+    comparison = metrics["region_comparison"]
+    assert comparison["n"] == 1  # the second instance has no box/mask pair
+    assert comparison["median_signed_m"] == pytest.approx(4.0 - 12.0)
+    assert set(comparison["by_label"]) == {"car"}
+    assert metrics["distance"]["region"] == "both"
+
+
+@pytest.mark.skipif(shutil.which("ffmpeg") is None, reason="needs ffmpeg/ffprobe")
+@pytest.mark.parametrize("mask_alpha", [0.35, 0.0])
+def test_video_sink_masks_and_region_hud(ctx, both_result, tmp_path, mask_alpha):
+    clip = tmp_path / "clip.mp4"
+    with VideoWriter(clip, 100, 100, "10/1") as writer:
+        writer.write(np.zeros((100, 100, 3), np.uint8))
+    ctx = replace(ctx, source=VideoSource(SourceConfig(video=clip)))
+    sink = VideoSink(RenderConfig(mask_alpha=mask_alpha), DistanceConfig())
+    sink.open(ctx)
+    drawn = []
+    sink._renderer.render = lambda rgb, boxes, hud, depth: (
+        drawn.append((boxes, hud)) or rgb
+    )
+    sink.write(both_result)
+    sink.close()
+    (boxes, hud) = drawn[0]
+    if mask_alpha:
+        np.testing.assert_array_equal(boxes[0].mask, both_result.instances.masks[0])
+        assert boxes[1].mask is not None and not boxes[1].mask.any()
+    else:
+        assert [b.mask for b in boxes] == [None, None]
+    # One instance used its mask: the distance line names the policy.
+    assert hud[2] == "median · iqr · shrink 0.1 · z · region mask · erode 1"
+    assert len(hud) == 4

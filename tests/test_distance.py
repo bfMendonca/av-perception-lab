@@ -1,18 +1,25 @@
 import math
 
+import cv2
 import numpy as np
 import pytest
 
+from det_depth_distance.core.types import Instances
 from det_depth_distance.distance import (
+    MASK_ROW_FIELDS,
     STATS_ROW_FIELDS,
     CameraIntrinsics,
     DistanceConfig,
     MapGeometry,
     box_depth_stats,
     box_to_map_pixels,
+    erode_mask,
     inlier_mask,
+    instance_depth_stats,
+    mask_depth_stats,
     parse_stat,
     ray_factors,
+    resample_mask,
     robust_distance,
 )
 
@@ -168,3 +175,313 @@ class TestEdgeCases:
             DistanceConfig(box_shrink=0.5)
         assert DistanceConfig(outlier="mad").k == 3.5
         assert DistanceConfig(outlier="mad", outlier_k=2.0).k == 2.0
+
+
+FULL_MAP = (0, 0, 504, 280)
+
+
+def frame_mask(*slices: tuple[slice, slice], shape=(1080, 1920)) -> np.ndarray:
+    """Boolean frame-resolution mask, True on the union of (rows, cols) slices."""
+    mask = np.zeros(shape, dtype=bool)
+    for rows, cols in slices:
+        mask[rows, cols] = True
+    return mask
+
+
+def window_indicator(geom: MapGeometry, box) -> np.ndarray:
+    """(map_h, map_w) bool: the pixels of box_to_map_pixels(box, geom, 0.0)."""
+    c0, r0, c1, r1 = box_to_map_pixels(box, geom, 0.0)
+    out = np.zeros((geom.map_h, geom.map_w), dtype=bool)
+    out[r0:r1, c0:c1] = True
+    return out
+
+
+def _has_tie(edges: np.ndarray, scale: float, offset: float) -> bool:
+    mapped = edges * scale + offset
+    return bool(np.any(np.abs(mapped - np.floor(mapped) - 0.5) < 1e-6))
+
+
+class TestMaskResample:
+    @pytest.mark.parametrize("geom", [RESIZE, CROP], ids=["resize", "crop"])
+    def test_rectangle_reproduces_box_window(self, geom):
+        rng = np.random.default_rng(0)
+        checked = 0
+        while checked < 50:
+            x0, x1 = np.sort(rng.integers(0, 1921, 2))
+            y0, y1 = np.sort(rng.integers(0, 1081, 2))
+            xs, ys = np.array([x0, x1]), np.array([y0, y1])
+            if _has_tie(xs, geom.sx, geom.ox) or _has_tie(ys, geom.sy, geom.oy):
+                continue  # ties follow the half-open rule (next test)
+            mask = frame_mask((slice(y0, y1), slice(x0, x1)))
+            box = (float(x0), float(y0), float(x1), float(y1))
+            got = resample_mask(mask, geom, FULL_MAP)
+            np.testing.assert_array_equal(got, window_indicator(geom, box))
+            checked += 1
+
+    def test_tie_is_half_open(self):
+        # x1 = 600 -> 600 * 0.2625 = 157.5, the centre of map column 157: the box
+        # window includes the column, the resampled mask does not.
+        box = (400.0, 400.0, 600.0, 600.0)
+        assert box_to_map_pixels(box, RESIZE, 0.0)[2] == 158
+        got = resample_mask(
+            frame_mask((slice(400, 600), slice(400, 600))), RESIZE, FULL_MAP
+        )
+        assert np.flatnonzero(got.any(axis=0))[-1] == 156
+
+    def test_anisotropic_square(self):
+        # 100 * 0.2625 = 26.25 columns, 100 * 0.2593 = 25.9 rows -> 26 x 26 centres
+        square = frame_mask((slice(400, 500), slice(800, 900)))
+        got = resample_mask(square, RESIZE, FULL_MAP)
+        assert got.sum(axis=0).max() == 26 and got.sum(axis=1).max() == 26
+        assert got.sum() == 26 * 26
+
+    def test_crop_shifts_rows(self):
+        uncropped = MapGeometry(1920, 1080, 504, 284, CROP.sx, CROP.sy)
+        mask = frame_mask((slice(300, 700), slice(500, 900)))
+        cropped = resample_mask(mask, CROP, FULL_MAP)
+        full = resample_mask(mask, uncropped, (0, 0, 504, 284))
+        np.testing.assert_array_equal(cropped, full[2:282])
+
+    def test_empty_window(self):
+        mask = frame_mask((slice(0, 10), slice(0, 10)))
+        assert resample_mask(mask, RESIZE, (10, 5, 10, 9)).shape == (4, 0)
+        assert resample_mask(mask, RESIZE, (5, 5, 9, 5)).shape == (0, 4)
+
+    def test_border_is_clipped(self):
+        # The last map column centre maps past the frame (x = 105): it reads column 99.
+        geom = MapGeometry(100, 100, 10, 10, 0.1, 0.1, -1.0, 0.0)
+        mask = frame_mask((slice(0, 100), slice(99, 100)), shape=(100, 100))
+        got = resample_mask(mask, geom, (0, 0, 10, 10))
+        assert got[:, -1].all() and not got[:, :-1].any()
+
+    def test_any_dtype_is_preserved(self):
+        labels = np.arange(100 * 100, dtype=np.int32).reshape(100, 100)
+        got = resample_mask(labels, IDENTITY, (10, 20, 30, 25))
+        assert got.dtype == np.int32
+        np.testing.assert_array_equal(got, labels[20:25, 10:30])
+
+
+class TestErode:
+    @pytest.mark.parametrize("k", [1, 2, 3])
+    def test_matches_cv2_erode_with_zero_border(self, k):
+        mask = np.random.default_rng(k).random((40, 60)) < 0.7
+        expected = cv2.erode(
+            mask.astype(np.uint8),
+            np.ones((3, 3), np.uint8),
+            iterations=k,
+            borderType=cv2.BORDER_CONSTANT,
+            borderValue=0,
+        )
+        np.testing.assert_array_equal(erode_mask(mask, k), expected.astype(bool))
+
+    def test_zero_iterations_is_a_copy(self):
+        mask = np.random.default_rng(0).random((10, 10)) < 0.5
+        out = erode_mask(mask, 0)
+        np.testing.assert_array_equal(out, mask)
+        assert out is not mask
+
+    def test_window_edge_erodes(self):
+        out = erode_mask(np.ones((5, 5), dtype=bool), 1)
+        assert out.sum() == 9 and out[1:4, 1:4].all()
+
+
+def diagonal_pole(width_px: float = 24.0) -> np.ndarray:
+    """Frame mask of a pole from (800, 200) to (1000, 900), `width_px` thick."""
+    ys, xs = np.mgrid[0:1080, 0:1920] + 0.5
+    (ax, ay), (bx, by) = (800.0, 200.0), (1000.0, 900.0)
+    dist = np.abs((by - ay) * xs - (bx - ax) * ys + bx * ay - by * ax) / math.hypot(
+        bx - ax, by - ay
+    )
+    return (dist <= width_px / 2) & (ys >= ay) & (ys <= by)
+
+
+class TestMaskStats:
+    def test_mask_is_right_where_the_box_is_wrong(self):
+        # A thin diagonal pole at 8 m fills ~12 % of its box over a 30 m background.
+        pole = diagonal_pole()
+        box = (800.0, 200.0, 1000.0, 900.0)
+        depth = np.where(resample_mask(pole, RESIZE, FULL_MAP), 8.0, 30.0)
+        depth = depth.astype(np.float32)
+        cfg = DistanceConfig()
+        by_box = box_depth_stats(depth, box, RESIZE, cfg)
+        by_mask = mask_depth_stats(depth, box, pole, RESIZE, cfg)
+        assert by_box.distance == pytest.approx(30.0)
+        assert by_mask.distance == pytest.approx(8.0)
+        assert by_mask.used_mask and by_mask.mask_erode == 1
+
+    def test_l_shaped_object(self):
+        # L of 1900 px (19 % of the box) at 5 m over a 40 m background.
+        depth = np.full((100, 100), 40.0, dtype=np.float32)
+        shape = frame_mask(
+            (slice(0, 100), slice(0, 10)),
+            (slice(90, 100), slice(0, 100)),
+            shape=(100, 100),
+        )
+        depth[shape] = 5.0
+        cfg = DistanceConfig(box_shrink=0.0)
+        box = (0, 0, 100, 100)
+        assert box_depth_stats(depth, box, IDENTITY, cfg).distance == pytest.approx(
+            40.0
+        )
+        stats = mask_depth_stats(depth, box, shape, IDENTITY, cfg)
+        assert stats.distance == pytest.approx(5.0)
+
+    def test_mask_pixels_outside_the_box_are_ignored(self):
+        depth = np.full((100, 100), 20.0, dtype=np.float32)
+        depth[:, 60:] = 3.0
+        mask = frame_mask((slice(0, 100), slice(0, 100)), shape=(100, 100))
+        cfg = DistanceConfig(mask_erode=0)
+        stats = mask_depth_stats(depth, (0, 0, 50, 100), mask, IDENTITY, cfg)
+        assert stats.distance == pytest.approx(20.0)
+        assert stats.map_box == (0, 0, 50, 100) and stats.n_box_px == 5000
+        assert stats.mask_px == 5000
+
+    def test_eligibility_mask_is_combined(self):
+        depth = np.full((100, 100), 10.0, dtype=np.float32)
+        instance = frame_mask((slice(0, 100), slice(20, 40)), shape=(100, 100))
+        not_sky = np.ones((100, 100), dtype=bool)
+        not_sky[:50] = False  # top half of the object is sky
+        cfg = DistanceConfig(mask_erode=0)
+        box = (0, 0, 100, 100)
+        stats = mask_depth_stats(depth, box, instance, IDENTITY, cfg)
+        assert stats.n_valid == 2000
+        stats = mask_depth_stats(depth, box, instance, IDENTITY, cfg, mask=not_sky)
+        assert stats.n_valid == 1000 and stats.mask_px == 2000
+
+    def test_euclidean_uses_the_window_ray_factors(self):
+        depth = np.full((100, 100), 10.0, dtype=np.float32)
+        k = CameraIntrinsics(fx=50.0, fy=50.0, cx=50.0, cy=50.0)
+        instance = frame_mask((slice(5, 15), slice(5, 15)), shape=(100, 100))
+        cfg = DistanceConfig(distance_type="euclidean", outlier="none", mask_erode=0)
+        box = (0, 0, 40, 40)
+        stats = mask_depth_stats(depth, box, instance, IDENTITY, cfg, intrinsics=k)
+        expected = np.median(10.0 * ray_factors((0, 0, 40, 40), k)[5:15, 5:15])
+        assert stats.distance == pytest.approx(expected)
+        with pytest.raises(ValueError):
+            mask_depth_stats(depth, box, instance, IDENTITY, cfg)
+
+    def test_empty_mask_gives_none(self):
+        depth = object_on_background()
+        empty = np.zeros((100, 100), dtype=bool)
+        assert (
+            mask_depth_stats(depth, (0, 0, 50, 50), empty, IDENTITY, DistanceConfig())
+            is None
+        )
+        outside = frame_mask((slice(60, 70), slice(60, 70)), shape=(100, 100))
+        assert (
+            mask_depth_stats(depth, (0, 0, 50, 50), outside, IDENTITY, DistanceConfig())
+            is None
+        )
+
+    def test_instance_mask_must_be_frame_sized(self):
+        with pytest.raises(ValueError, match="instance mask shape"):
+            mask_depth_stats(
+                object_on_background(),
+                (0, 0, 50, 50),
+                np.ones((50, 50), dtype=bool),
+                IDENTITY,
+                DistanceConfig(),
+            )
+
+    @pytest.mark.parametrize(
+        ("width", "erode", "applied", "mask_px"),
+        [
+            (2, 1, 0, 200),  # a 2 px pole erodes to nothing: no erosion
+            (10, 2, 2, 6 * 96),  # wide enough: full erosion (borders erode too)
+            (5, 3, 2, 1 * 96),  # 3 would empty it: back off to 2
+        ],
+    )
+    def test_erosion_backs_off_for_thin_objects(self, width, erode, applied, mask_px):
+        depth = np.full((100, 100), 10.0, dtype=np.float32)
+        pole = frame_mask((slice(0, 100), slice(50, 50 + width)), shape=(100, 100))
+        cfg = DistanceConfig(mask_erode=erode, min_valid_px=20)
+        stats = mask_depth_stats(depth, (40, 0, 60, 100), pole, IDENTITY, cfg)
+        assert (stats.mask_erode, stats.mask_px) == (applied, mask_px)
+        assert stats.n_box_px == 20 * 100
+
+    def test_mask_row_and_config(self):
+        depth = object_on_background()
+        box_stats = box_depth_stats(depth, (0, 0, 50, 50), IDENTITY, DistanceConfig())
+        assert not box_stats.used_mask
+        assert box_stats.mask_row() == {
+            "used_mask": 0,
+            "mask_px": None,
+            "mask_erode": None,
+        }
+        assert tuple(box_stats.mask_row()) == MASK_ROW_FIELDS
+        assert tuple(box_stats.to_row()) == STATS_ROW_FIELDS  # unchanged
+        mask = frame_mask((slice(0, 50), slice(20, 50)), shape=(100, 100))
+        stats = mask_depth_stats(
+            depth, (0, 0, 50, 50), mask, IDENTITY, DistanceConfig()
+        )
+        assert stats.mask_row() == {"used_mask": 1, "mask_px": 48 * 28, "mask_erode": 1}
+        assert DistanceConfig().mask_erode == 1
+        with pytest.raises(ValueError, match="mask_erode"):
+            DistanceConfig(mask_erode=-1)
+
+
+class TestRegionPolicy:
+    BOX = (0, 0, 100, 100)
+
+    @pytest.mark.parametrize("region", ["mask", "box", "both"])
+    def test_without_mask_equals_box_stats(self, region):
+        depth = object_on_background()
+        cfg = DistanceConfig()
+        expected = box_depth_stats(depth, self.BOX, IDENTITY, cfg)
+        for instance_mask in (None, np.zeros((100, 100), dtype=bool)):
+            primary, alt = instance_depth_stats(
+                depth,
+                self.BOX,
+                IDENTITY,
+                cfg,
+                region=region,
+                instance_mask=instance_mask,
+            )
+            assert primary == expected and alt is None
+            assert not primary.used_mask
+
+    def test_policies_with_a_mask(self):
+        depth = object_on_background()
+        cfg = DistanceConfig()
+        background = frame_mask((slice(0, 100), slice(85, 100)), shape=(100, 100))
+        by_box = box_depth_stats(depth, self.BOX, IDENTITY, cfg)
+        args = (depth, self.BOX, IDENTITY, cfg)
+        primary, alt = instance_depth_stats(
+            *args, region="box", instance_mask=background
+        )
+        assert primary == by_box and alt is None
+        primary, alt = instance_depth_stats(
+            *args, region="mask", instance_mask=background
+        )
+        assert primary.used_mask and primary.distance == pytest.approx(40.0)
+        assert alt is None
+        primary, alt = instance_depth_stats(
+            *args, region="both", instance_mask=background
+        )
+        assert primary.distance == pytest.approx(40.0) and alt == by_box
+
+    def test_mask_missing_every_map_pixel_centre_falls_back_to_the_box(self):
+        # Frame columns/rows 2..3 lie between the centres of map pixels 0 and 1
+        # (x = 1.9 and 5.7, y = 1.9 and 5.8) at 504x280: has_mask() is True (the
+        # pixels are inside the box) but the resampled mask is empty.
+        masks = frame_mask((slice(2, 4), slice(2, 4)))[None]
+        inst = Instances(
+            np.array([[0, 0, 20, 20]], np.float32),
+            np.array([0.9], np.float32),
+            np.array([0], np.int64),
+            ("pole",),
+            ("pole",),
+            ("det",),
+            masks,
+        )
+        assert inst.has_mask().tolist() == [True]
+        depth = np.full((280, 504), 10.0, dtype=np.float32)
+        primary, alt = instance_depth_stats(
+            depth,
+            inst.xyxy[0],
+            RESIZE,
+            DistanceConfig(),
+            region="both",
+            instance_mask=masks[0],
+        )
+        assert not primary.used_mask and alt is None

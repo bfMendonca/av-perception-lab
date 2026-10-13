@@ -412,3 +412,6 @@ class FrameResult:
     # "det", "det.<name>", "agree" (when computed), "aggregate", "depth", "dist"
     timings_ms: dict[str, float]
     agreement: FrameAgreement | None = None  # None with one detector or disabled
+    # Box statistics aligned with instances, only with region "both": set where
+    # `stats` came from the instance mask, None elsewhere.
+    box_stats: "tuple[BoxDepthStats | None, ...] | None" = None

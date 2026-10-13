@@ -40,6 +40,17 @@ def test_build_validates_options():
         registry.build("detector", {"type": "rfdetr", "variant": "base"}, path="d")
 
 
+def test_rfdetr_seg_variants():
+    det = registry.build(
+        "detector", {"type": "rfdetr", "variant": "seg-large"}, path="d"
+    )
+    assert det.name == "rfdetr-seg-large" and not det.is_loaded
+    with pytest.raises(
+        ConfigError, match=r"^d\.variant: 'seg-huge' is not one of .*'seg-2xlarge'"
+    ):
+        registry.build("detector", {"type": "rfdetr", "variant": "seg-huge"}, path="d")
+
+
 def test_name_only_for_components():
     det = registry.build("detector", {"type": "rfdetr", "name": "main"}, path="d")
     assert det.name == "main"

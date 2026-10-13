@@ -11,13 +11,17 @@ from det_depth_distance.adapters.depth.da3 import (
 from det_depth_distance.core.types import (
     CameraIntrinsics,
     ContractError,
+    DepthResult,
     Frame,
+    FrameResult,
     Instances,
+    MapGeometry,
     Provenance,
     best_per_source,
     check_array,
     per_instance,
 )
+from det_depth_distance.distance import DistanceConfig, box_depth_stats
 
 
 def test_select_by_mask_and_indices(make_instances):
@@ -188,3 +192,35 @@ def test_best_per_source():
 def test_validate_rejects_bad_sources(make_instances, sources):
     with pytest.raises(ContractError, match="sources"):
         _fused(make_instances([[0, 0, 1, 1]]), sources).validate(10, 10)
+
+
+def test_segmenter_masks_travel_with_select(make_instances):
+    # A Seg adapter's output: one mask per instance, frame resolution.
+    masks = np.zeros((3, 20, 30), dtype=bool)
+    for i in range(3):
+        masks[i, i : i + 2, i : i + 2] = True
+    inst = make_instances([[0, 0, 10, 10]] * 3, masks=masks)
+    inst.validate(30, 20)
+    kept = inst.select(np.array([True, False, True]))
+    kept.validate(30, 20)
+    np.testing.assert_array_equal(kept.masks, masks[[0, 2]])
+
+
+def test_frame_result_box_stats_is_optional(make_instances):
+    geometry = MapGeometry(10, 10, 10, 10, 1.0, 1.0)
+    depth = DepthResult(
+        np.full((10, 10), 5.0, np.float32),
+        CameraIntrinsics.centered(10.0, 10, 10),
+        None,
+        geometry,
+    )
+    inst = make_instances([[0, 0, 10, 10], [0, 0, 5, 5]])
+    stats = tuple(
+        box_depth_stats(depth.depth_m, box, geometry, DistanceConfig())
+        for box in inst.xyxy
+    )
+    frame = Frame(0, 0.0, np.zeros((10, 10, 3), np.uint8))
+    plain = FrameResult(frame, inst, stats, depth, {})
+    assert plain.box_stats is None and plain.agreement is None
+    both = FrameResult(frame, inst, stats, depth, {}, box_stats=(stats[0], None))
+    assert both.box_stats == (stats[0], None)

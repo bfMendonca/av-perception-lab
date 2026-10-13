@@ -8,8 +8,8 @@ file up to date in the same commit as any structural change (see
 
 A research prototype that combines one or more object detectors (Roboflow
 RF-DETR, Ultralytics YOLO26) and a monocular metric depth estimator (ByteDance Depth Anything 3, "DA3") on
-the same video frames. For every detected bounding box, the depth pixels
-inside the box are aggregated with robust statistics (mean, median,
+the same video frames. For every detected object, the depth pixels inside
+its instance mask (when the model segments) or its box are aggregated with robust statistics (mean, median,
 variance, percentiles, outlier rejection) to estimate the object's distance
 to the camera. The intended output is an annotated video (boxes plus
 distance) and a per-detection CSV. Accuracy matters more than speed: all
@@ -23,7 +23,9 @@ adapters per framework (RF-DETR, YOLO26, DA3), several detectors per frame
 (concatenated, tagged by source) and a YAML run configuration. task_0003
 added per-detector label maps (raw -> canonical labels), cross-detector
 fusion (NMS, WBF) that keeps every merged detection, and cross-detector
-agreement metrics. The CLI writes an annotated video, a per-box CSV and a
+agreement metrics. task_0004 added instance segmentation (RF-DETR Seg,
+YOLO26-seg) and mask-based distance with a `region` policy (mask, box or
+both for comparison). The CLI writes an annotated video, a per-box CSV and a
 metrics JSON.
 
 ## 2. Technology Stack
@@ -83,12 +85,12 @@ dataclass (`core/types.py`), never a framework object:
 - `Instances`: xyxy (N,4) float32 frame pixels (continuous edges), score, class_id, `label` (canonical), `raw_label` (model vocabulary), `source` (component name), optional `masks` (N,H,W) bool, optional `sources` (per instance, a tuple of `Provenance(source, raw_label, score)` members; set only by fusion aggregators, `provenance()` synthesises one member per unfused instance). Each per-instance field declares its validator and concat fill in its metadata (`per_instance`), so `select`/`concat`/`validate` handle future fields unchanged; an all-False mask means "no mask".
 - `DepthResult`: depth_m (map_h, map_w) float32 metres, `CameraIntrinsics` at map resolution, optional sky mask, and the frame -> map `MapGeometry`.
 - `CameraIntrinsics` uses continuous pixel coordinates (principal point of a centred camera at (W/2, H/2)); `MapGeometry.scale_intrinsics` maps frame K to map K.
-- `FrameResult`: frame, instances, per-instance `BoxDepthStats`, depth, timings, optional `FrameAgreement` (per detector `instances`/`duplicates` after in-detector NMS, and one `PairAgreement(a, b, matched, only_a, only_b, iou_sum)` per detector pair).
+- `FrameResult`: frame, instances, per-instance `BoxDepthStats`, depth, timings, optional `box_stats` (only with region "both": box statistics where `stats` came from the mask, None elsewhere), optional `FrameAgreement` (per detector `instances`/`duplicates` after in-detector NMS, and one `PairAgreement(a, b, matched, only_a, only_b, iou_sum)` per detector pair).
 - `LabelMap` (core/labels.py): name, raw -> canonical `mapping`, `unmapped` policy (`keep`/`drop`), optional declared `vocabulary`; loaded from `configs/labels/*.yaml`, checked against the model's class names and identified vocabulary at load.
-- `DistanceConfig` / `BoxDepthStats` (distance.py): parameters and per-box statistics.
+- `DistanceConfig` / `BoxDepthStats` (distance.py): parameters (incl. `mask_erode`, depth-map pixels) and per-region statistics; `mask_px` / `mask_erode` are set (and `used_mask` true) when the region was the instance mask. `Instances.masks` are filled by the Seg adapters: RF-DETR Seg (`rfdetr` `variant: seg-*`, COCO) and YOLO26-seg (`*-seg.pt`, COCO; `*-objv1-seg.pt`, expected Objects365 — not yet verified on the GPU host).
 - `RunConfig` (config.py): the YAML run (source, detectors, depth, camera, aggregation, agreement, distance, render, output, device).
 
-Per run: `video.mp4`, `detections.csv` (one row per box; task_0001 columns then `source`, `raw_label`, `n_sources`, `sources`, `source_scores`, `raw_labels` — the last three `|`-joined, best member per detector), `metrics.json` (`components`, `pipeline` incl. `agreement` policy, focal, timings incl. `det.<name>`, `agree` and `aggregate`, `detections_by_source`, `detections_by_n_sources`, `agreement` summary with >= 2 detectors, resolved `config`), optional `depth.npz`.
+Per run: `video.mp4`, `detections.csv` (one row per box; task_0001 columns then `source`, `raw_label`, `n_sources`, `sources`, `source_scores`, `raw_labels` — the last three `|`-joined, best member per detector — then `used_mask`, `mask_px`, `mask_erode`, `box_distance_m`), `metrics.json` (`components`, `pipeline` incl. `agreement`, `region` and `mask_erode` policy, focal, timings incl. `det.<name>`, `agree` and `aggregate`, `detections_by_source`, `detections_by_n_sources`, `distance_regions`, `region_comparison` (mask minus box, with region "both"), `agreement` summary with >= 2 detectors, resolved `config`), optional `depth.npz`.
 
 ## 5. Architecture Patterns
 
@@ -109,9 +111,14 @@ Per run: `video.mp4`, `detections.csv` (one row per box; task_0001 columns then 
 - Pipeline: resolves camera intrinsics first (only if the depth model needs
   them; the focal-estimation DA3 model is loaded, used and released), then
   loads detectors and depth; per frame runs every detector, the agreement
-  metrics (>= 2 detectors), the aggregator, depth and `box_depth_stats`,
-  timing each stage. Distances are computed on the aggregated (possibly
-  fused) boxes.
+  metrics (>= 2 detectors), the aggregator, depth and
+  `instance_depth_stats` (region policy `mask`/`box`/`both`), timing each
+  stage. Distances are computed on the aggregated (possibly fused)
+  instances. Mask distance: the frame-resolution mask is resampled by
+  nearest neighbour at the depth-map pixel centres of the unshrunk box
+  window (pixels outside the box ignored), eroded in map pixels with a
+  back-off for thin objects, then the box statistics core (`_region_stats`)
+  runs on it; box-only detectors keep the task_0002 result bit for bit.
 - Label harmonisation: `Detector._map_labels` applies the detector's
   `LabelMap` after the class filter (by raw label) and before validation.
 - Fusion: `FusionAggregator` is a template method (concat -> per-detector
@@ -162,6 +169,10 @@ README; the task_0001 flags were replaced without aliases.
   to metres; either calibrated or estimated by an any-view DA3 model.
 - **Box shrink / outlier rejection**: techniques to suppress background
   pixels inside a non-tight bounding box.
+- **Instance mask / region policy**: per-instance pixel mask from a
+  segmentation model; `distance.region` chooses mask (default when the
+  instance has one), box, or both (records the box distance too). An
+  all-False mask means "no mask" and falls back to the box.
 - **Canonical label**: detector-independent class name (e.g. `vehicle`)
   that label maps assign to raw names of each vocabulary, so instances of
   different models can be compared and fused.
@@ -177,6 +188,7 @@ user's existing token cache on the GPU host, outside this repository.
 
 - Local: `uv sync`, `uv run pytest` (GPU tests deselected), `uv run ruff check . && uv run ruff format --check .`
 - GPU tests (adapter contracts + 60-frame regression against task_0001): `uv run --extra infer pytest -m gpu -v` on `gpu-host`.
+- Weights live outside the repo on the GPU host: RF-DETR (incl. Seg, ~135–155 MB each, downloaded and MD5-checked by `rfdetr` on first construction) in `~/.roboflow/models`; YOLO26 (`yolo26*.pt`, `*-objv1-150.pt`, `*-seg.pt`, `*-objv1-seg.pt`, from the `ultralytics/assets` v8.4.0 release, fetched manually — the adapter never downloads) in `~/dev/ultralytics/_testbed/weights`. GPU tests skip when a weight is missing.
 - GPU host: `utils/sync_gpu_host.sh push`, then on `gpu-host`
   `~/.local/bin/uv sync --extra infer`; outputs fetched with
   `utils/sync_gpu_host.sh pull`.
@@ -202,7 +214,7 @@ implementation. See `AGENTS.md` for the mandatory rules.
 ## 13. What This Project Does NOT Have
 
 - No TensorRT/ONNX path, no batching, no real-time optimisation.
-- No segmentation masks (the `Instances.masks` contract exists, but no adapter fills it and distance uses boxes only), no object tracking or temporal smoothing.
+- No mask refiners for box-only detectors (SAM family, task_0005), no semantic segmentation, no fusion of masks across models (a fused instance keeps one member's mask), no object tracking or temporal smoothing. Masks are never saved to disk.
 - No score calibration across detectors (fusion weights are fixed per detector); no new dependency for fusion (no `ensemble-boxes`, `torchvision.ops` or `scipy` in the core).
 - No ground-truth distance evaluation.
 - No CI, no Docker, no git remote, no web UI or API.

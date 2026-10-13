@@ -95,6 +95,18 @@ fonte, sinks); `cli.py` é só a raiz de composição.
   (`labels`, `source.video`) partem do diretório de execução (raiz do repo).
 - `Instances.sources` não tem `concat_fill`: concatenar instâncias fundidas
   com não fundidas zera o campo; consumidores leem `provenance()`.
+- YOLO-seg sem `retina_masks=True` devolve máscaras na resolução do
+  **letterbox** de entrada, não do quadro; o adaptador sempre passa
+  `retina_masks=True` com pesos `segment`. Para `.pt`, o ultralytics ignora o
+  argumento `task=` (a tarefa vem do checkpoint).
+- Máscaras do YOLO são recortadas à caixa (`crop_mask`) e predições com
+  máscara vazia são descartadas; as do RF-DETR Seg **não** são recortadas
+  (a distância ignora pixels fora da caixa). RF-DETR Seg roda em quadrado
+  312–768 px (estiramento anisotrópico) com máscara nativa em
+  `resolution/4`, interpolada bilinear para o quadro.
+- Máscara toda `False` = instância sem máscara (cai para a caixa). A erosão
+  `distance.mask_erode` é em **pixels do mapa** de profundidade (1 px do mapa
+  ≈ 3,8 px do quadro a 504×280), não do quadro.
 - No `gpu-host`: sem sudo, `uv` em `~/.local/bin` (fora do PATH), disco quase
   cheio (preferir `/dev/shm` para temporários grandes), e `nvidia-smi` pode
   falhar por driver mismatch — usar `torch.cuda.mem_get_info()`.

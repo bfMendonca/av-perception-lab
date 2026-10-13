@@ -5,7 +5,8 @@ the local `uv run pytest` (addopts "-m 'not gpu'") deselects them without a
 marker on each test. torch is checked inside an autouse fixture, not at
 import: a module-level skip would prevent the hook from registering. Weights
 and caches come from environment variables, with gpu-host's paths as defaults;
-missing assets skip the test that needs them (nothing is downloaded).
+missing assets skip the test that needs them (nothing is downloaded; RF-DETR
+Seg weights are looked up in rfdetr's own cache, RF_HOME or ~/.roboflow/models).
 """
 
 import os
@@ -77,19 +78,43 @@ def _yolo(weights: str) -> dict:
     return {"type": "yolo", "weights": str(YOLO_WEIGHTS / weights), "threshold": 0.25}
 
 
+# Keys are the detectors' default names.
 DETECTOR_SPECS = {
     "rfdetr-nano": ({"type": "rfdetr", "variant": "nano"}, "coco"),
     "yolo26n": (_yolo("yolo26n.pt"), "coco"),
     "yolo26n-objv1-150": (_yolo("yolo26n-objv1-150.pt"), "objects365"),
+    # Instance segmentation (task_0004). The objv1-seg vocabulary is expected to
+    # be Objects365 like objv1-150; this entry is what confirms it.
+    "rfdetr-seg-nano": ({"type": "rfdetr", "variant": "seg-nano"}, "coco"),
+    "yolo26n-seg": (_yolo("yolo26n-seg.pt"), "coco"),
+    "yolo26n-objv1-seg": (_yolo("yolo26n-objv1-seg.pt"), "objects365"),
 }
+SEGMENTERS = frozenset({"rfdetr-seg-nano", "yolo26n-seg", "yolo26n-objv1-seg"})
+# rfdetr cache file names (rfdetr/assets/model_weights.py); RF-DETR detection
+# weights are already cached on gpu-host, so only Seg weights are checked.
+RFDETR_SEG_FILES = {"seg-nano": "rf-detr-seg-nano.pt"}
+
+
+def _missing_weights(spec: dict) -> Path | None:
+    """The weights file a spec needs when it is not on disk, else None."""
+    if "weights" in spec:
+        path = Path(spec["weights"])
+    elif spec.get("variant") in RFDETR_SEG_FILES:
+        from rfdetr.assets.model_weights import get_model_cache_dir
+
+        path = Path(get_model_cache_dir()) / RFDETR_SEG_FILES[spec["variant"]]
+    else:
+        return None
+    return None if path.is_file() else path
 
 
 @pytest.fixture(params=list(DETECTOR_SPECS))
 def detector_spec(request):
     """(detector spec, expected vocabulary) for each adapter/vocabulary pair."""
     spec, vocabulary = DETECTOR_SPECS[request.param]
-    if "weights" in spec and not Path(spec["weights"]).is_file():
-        pytest.skip(f"missing weights {spec['weights']}")
+    missing = _missing_weights(spec)
+    if missing is not None:
+        pytest.skip(f"missing weights {missing}")
     return spec, vocabulary
 
 
@@ -98,6 +123,22 @@ def detector_case(detector_spec):
     """(unloaded detector, expected vocabulary) for each adapter/vocabulary pair."""
     spec, vocabulary = detector_spec
     return registry.build("detector", spec, path="detector"), vocabulary
+
+
+@pytest.fixture(params=sorted(SEGMENTERS))
+def segmenter(request):
+    """Unloaded instance-segmentation detector (RF-DETR Seg, YOLO26-seg)."""
+    spec, _ = DETECTOR_SPECS[request.param]
+    missing = _missing_weights(spec)
+    if missing is not None:
+        pytest.skip(f"missing weights {missing}")
+    return registry.build("detector", spec, path="detector")
+
+
+@pytest.fixture(scope="session")
+def segmenter_names():
+    """Default names of the DETECTOR_SPECS entries that return masks."""
+    return SEGMENTERS
 
 
 @pytest.fixture(scope="session")

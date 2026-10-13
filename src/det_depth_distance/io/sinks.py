@@ -10,6 +10,12 @@ detections.csv also ends with n_sources, sources, source_scores and
 raw_labels: one entry per contributing detector (its best member),
 "|"-separated, in decreasing score; for unfused instances n_sources is 1.
 
+After those, detections.csv ends with used_mask, mask_px (depth-map pixels
+of the eroded mask region), mask_erode (erosion actually applied) and
+box_distance_m (only with region "both" when the mask was used).
+metrics.json adds distance_regions and, with "both", region_comparison
+(mask minus box).
+
 depth.npz holds `depth` (N, map_h, map_w) float16 metres, `frame_index`
 (N,), `intrinsics` (N, 4) fx, fy, cx, cy at map resolution, and `geometry`
 with its `geometry_fields` names (MapGeometry).
@@ -33,7 +39,11 @@ from det_depth_distance.config import RenderConfig, RunConfig
 from det_depth_distance.core.agreement import AgreementStats
 from det_depth_distance.core.pipeline import SetupInfo
 from det_depth_distance.core.types import FrameResult, MapGeometry, best_per_source
-from det_depth_distance.distance import STATS_ROW_FIELDS, DistanceConfig
+from det_depth_distance.distance import (
+    MASK_ROW_FIELDS,
+    STATS_ROW_FIELDS,
+    DistanceConfig,
+)
 from det_depth_distance.io.source import VideoSource
 from det_depth_distance.io.video import VideoWriter
 from det_depth_distance.render import BoxAnnotation, Renderer, format_label
@@ -58,6 +68,8 @@ CSV_FIELDS: tuple[str, ...] = (
     "sources",
     "source_scores",
     "raw_labels",
+    *MASK_ROW_FIELDS,
+    "box_distance_m",
 )
 
 
@@ -128,6 +140,7 @@ class CsvSink(Sink):
             zip(result.stats, inst.provenance(), strict=True)
         ):
             best = best_per_source(members)
+            box = result.box_stats[i] if result.box_stats is not None else None
             x0, y0, x1, y1 = (float(v) for v in inst.xyxy[i])
             self._rows.writerow(
                 {
@@ -148,6 +161,8 @@ class CsvSink(Sink):
                     # same representation as `confidence`
                     "source_scores": "|".join(str(round(m.score, 4)) for m in best),
                     "raw_labels": "|".join(m.raw_label for m in best),
+                    **stats.mask_row(),
+                    "box_distance_m": box.distance if box is not None else None,
                 }
             )
 
@@ -156,11 +171,13 @@ class CsvSink(Sink):
 
 
 class VideoSink(Sink):
-    """video.mp4: boxes, labels with distance, HUD and optional depth panel.
+    """video.mp4: boxes, instance masks, labels with distance, HUD and optional
+    depth panel.
 
     With several detectors, boxes and HUD counts are coloured by `source`,
     unless the instances are fused (then by canonical label); fused labels
-    show the number of agreeing detectors (×N).
+    show the number of agreeing detectors (×N). The distance HUD line names the
+    region policy and erosion only in frames where some instance used its mask.
     """
 
     def __init__(self, cfg: RenderConfig, distance: DistanceConfig) -> None:
@@ -182,7 +199,10 @@ class VideoSink(Sink):
             max_depth=cfg.max_depth,
             cmap=cfg.cmap,
             font_path=cfg.font,
+            mask_alpha=cfg.mask_alpha,
         )
+        policy = ctx.pipeline["pipeline"]
+        self._region = f" · region {policy['region']} · erode {policy['mask_erode']}"
         thresholds = [(d["name"], d["options"]["threshold"]) for d in detectors]
         if self._by_source:
             self._conf = "conf " + ", ".join(f"{n} ≥ {t:.2f}" for n, t in thresholds)
@@ -208,6 +228,7 @@ class VideoSink(Sink):
         t0 = time.perf_counter()
         inst, d, focal = result.instances, self.distance, self.ctx.setup.focal_frame_px
         by_source = self._by_source and inst.sources is None
+        masks = inst.masks if self.cfg.mask_alpha > 0 else None
         annotations = []
         for i, (stats, members) in enumerate(
             zip(result.stats, inst.provenance(), strict=True)
@@ -232,13 +253,15 @@ class VideoSink(Sink):
                     format_label(name, score, stats.distance, spread, n_sources),
                     inner,
                     color_key=inst.source[i] if by_source else None,
+                    mask=None if masks is None else masks[i],
                 )
             )
         ms, n_total = result.timings_ms, self.ctx.source.info.n_frames
         hud = [
             f"det {ms['det']:5.1f} ms  ·  depth {ms['depth']:5.1f} ms",
             f"frame {result.frame.index + 1}/{n_total or '?'}  ·  {self._conf}",
-            f"{d.stat} · {d.outlier} · shrink {d.box_shrink:g} · {d.distance_type}",
+            f"{d.stat} · {d.outlier} · shrink {d.box_shrink:g} · {d.distance_type}"
+            + (self._region if any(s.used_mask for s in result.stats) else ""),
             f"focal {focal:.0f} px" if focal else "focal: model-predicted",
         ]
         if self._fusion:
@@ -313,6 +336,9 @@ class MetricsSink(Sink):
         self._labels: Counter = Counter()
         self._sources: Counter = Counter()
         self._n_sources: Counter = Counter()
+        self._regions: Counter = Counter()
+        # (label, mask distance, box distance) of instances measured both ways
+        self._region_pairs: list[tuple[str, float, float]] = []
         self.n_boxes = self.n_without_distance = 0
 
     def open(self, ctx: RunContext) -> None:
@@ -331,6 +357,15 @@ class MetricsSink(Sink):
         )
         if result.agreement is not None:
             self._agreement.add(result.frame.index, result.agreement)
+        self._regions.update("mask" if s.used_mask else "box" for s in result.stats)
+        if result.box_stats is not None:
+            self._region_pairs += [
+                (label, s.distance, b.distance)
+                for label, s, b in zip(
+                    result.instances.label, result.stats, result.box_stats, strict=True
+                )
+                if b is not None and s.distance is not None and b.distance is not None
+            ]
         self.n_boxes += len(result.instances)
         self.n_without_distance += sum(s.distance is None for s in result.stats)
         self.n_frames += 1
@@ -353,7 +388,11 @@ class MetricsSink(Sink):
             "focal_map_intrinsics": components["depth"].get("fixed_intrinsics"),
             "focal_source": ctx.setup.focal_source,
             "distance": asdict(cfg.distance)
-            | {"k": cfg.distance.k, "exclude_sky": cfg.exclude_sky},
+            | {
+                "k": cfg.distance.k,
+                "exclude_sky": cfg.exclude_sky,
+                "region": cfg.region,
+            },
             "timings_ms": {
                 stage: latency_stats(values) for stage, values in timings.items()
             },
@@ -368,6 +407,10 @@ class MetricsSink(Sink):
             "detections_by_n_sources": dict(sorted(self._n_sources.items())),
             "boxes_total": self.n_boxes,
             "boxes_without_distance": self.n_without_distance,
+            "distance_regions": {
+                "mask": self._regions["mask"],
+                "box": self._regions["box"],
+            },
             "versions": {
                 "python": platform.python_version(),
                 "torch": device["torch"],
@@ -383,6 +426,44 @@ class MetricsSink(Sink):
         }
         if self._agreement:  # some frame had agreement (>= 2 detectors, enabled)
             metrics["agreement"] = self._agreement.summary()
+        if cfg.region == "both":
+            metrics["region_comparison"] = _region_comparison(self._region_pairs)
         (ctx.run_dir / "metrics.json").write_text(
             json.dumps(metrics, indent=2, ensure_ascii=False)
         )
+
+
+def _difference_summary(mask_m: np.ndarray, box_m: np.ndarray) -> dict[str, Any]:
+    diff = mask_m - box_m
+    return {
+        "n": int(diff.size),
+        "median_signed_m": float(np.median(diff)),
+        "median_abs_m": float(np.median(np.abs(diff))),
+        "p90_abs_m": float(np.percentile(np.abs(diff), 90)),
+        "median_rel": float(np.median(diff / box_m)),
+    }
+
+
+def _region_comparison(pairs: Sequence[tuple[str, float, float]]) -> dict[str, Any]:
+    """Mask-minus-box distance differences over all instances and per label.
+
+    Args:
+        pairs: (label, mask distance, box distance) of the instances whose
+            distance exists both ways.
+
+    Returns:
+        {"n", "median_signed_m", "median_abs_m", "p90_abs_m", "median_rel",
+        "by_label": {label: same keys}}; only {"n": 0} without pairs.
+        median_rel is relative to the box distance; a negative median_signed_m
+        means the mask places objects nearer than the box did.
+    """
+    if not pairs:
+        return {"n": 0}
+    labels = np.asarray([p[0] for p in pairs])
+    mask_m = np.asarray([p[1] for p in pairs], dtype=np.float64)
+    box_m = np.asarray([p[2] for p in pairs], dtype=np.float64)
+    by_label = {
+        str(label): _difference_summary(mask_m[labels == label], box_m[labels == label])
+        for label in sorted(set(labels.tolist()))
+    }
+    return {**_difference_summary(mask_m, box_m), "by_label": by_label}

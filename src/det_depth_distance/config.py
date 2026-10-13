@@ -4,8 +4,8 @@ Sections are dataclasses built with `from_mapping` (unknown keys are errors,
 reported with their dotted path); domain rules live in each dataclass's
 __post_init__. Component specs (detectors, depth, aggregation) are validated
 by their adapter's Options when built through the registry. Pipeline-policy
-keys written in the `distance` section (PIPELINE_DISTANCE_KEYS, e.g.
-exclude_sky) are split off into RunConfig fields before DistanceConfig is
+keys written in the `distance` section (PIPELINE_DISTANCE_KEYS: exclude_sky,
+region) are split off into RunConfig fields before DistanceConfig is
 built.
 """
 
@@ -19,7 +19,7 @@ import yaml
 
 from det_depth_distance.adapters.depth.da3 import ProcessResMethod
 from det_depth_distance.core.options import ConfigError, from_mapping
-from det_depth_distance.distance import DistanceConfig
+from det_depth_distance.distance import DistanceConfig, RegionPolicy
 
 
 @dataclass(frozen=True, slots=True)
@@ -82,10 +82,13 @@ class RenderConfig:
     crf: int = 20  # libx264 quality (lower = better)
     hud: bool = True
     font: Path | None = None
+    mask_alpha: float = 0.35  # instance-mask tint opacity, [0, 1]; 0 = no masks
 
     def __post_init__(self) -> None:
         if self.max_depth <= 0:
             raise ValueError("max_depth must be > 0")
+        if not 0.0 <= self.mask_alpha <= 1.0:
+            raise ValueError(f"mask_alpha must be in [0, 1], got {self.mask_alpha}")
         if not hasattr(cv2, f"COLORMAP_{self.cmap.upper()}"):
             raise ValueError(f"unknown OpenCV colormap {self.cmap!r}")
 
@@ -116,7 +119,7 @@ class OutputConfig:
 # Pipeline-policy keys written in the YAML `distance` section that are not
 # DistanceConfig fields; load_config moves them to the RunConfig field of the
 # same name.
-PIPELINE_DISTANCE_KEYS: tuple[str, ...] = ("exclude_sky",)
+PIPELINE_DISTANCE_KEYS: tuple[str, ...] = ("exclude_sky", "region")
 
 
 @dataclass(frozen=True, slots=True)
@@ -132,6 +135,7 @@ class RunConfig:
     agreement: AgreementConfig = field(default_factory=AgreementConfig)
     distance: DistanceConfig = field(default_factory=DistanceConfig)
     exclude_sky: bool = True  # from distance.exclude_sky (PIPELINE_DISTANCE_KEYS)
+    region: RegionPolicy = "mask"  # from distance.region (PIPELINE_DISTANCE_KEYS)
     render: RenderConfig = field(default_factory=RenderConfig)
     output: OutputConfig = field(default_factory=OutputConfig)
     device: str = "cuda:0"

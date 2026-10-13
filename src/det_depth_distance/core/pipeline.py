@@ -4,8 +4,8 @@ depth -> distance.
 Depends only on the abstract components; timings are measured here around
 each stage so components stay stateless per call. `describe()` keeps
 component descriptions ("components") apart from pipeline policy
-("pipeline"). Instance masks are carried but not yet used for distance
-(boxes only).
+("pipeline"). Distance uses each instance's mask or box according to the
+`region` policy (see distance.instance_depth_stats).
 
 Import direction: this module may import configuration dataclasses from
 `config`, `temporal`, `camera` and `io.source`; those modules never import
@@ -18,7 +18,7 @@ from collections import Counter
 from collections.abc import Callable, Sequence
 from dataclasses import asdict, dataclass
 from itertools import combinations
-from typing import Any, Self, TypeVar
+from typing import Any, Self, TypeVar, get_args
 
 from det_depth_distance.camera import IntrinsicsProvider
 from det_depth_distance.config import AgreementConfig
@@ -34,7 +34,12 @@ from det_depth_distance.core.types import (
     FrameResult,
     Instances,
 )
-from det_depth_distance.distance import BoxDepthStats, DistanceConfig, box_depth_stats
+from det_depth_distance.distance import (
+    BoxDepthStats,
+    DistanceConfig,
+    RegionPolicy,
+    instance_depth_stats,
+)
 from det_depth_distance.io.source import FrameSource
 
 T = TypeVar("T")
@@ -72,9 +77,11 @@ class Pipeline:
         intrinsics: IntrinsicsProvider | None = None,
         device: str = "cuda:0",
         agreement: AgreementConfig | None = None,
+        region: RegionPolicy = "mask",
     ) -> None:
-        """Raises ConfigError for no detectors, duplicate detector names or
-        aggregator settings naming unknown detectors (`bind_sources`).
+        """Raises ConfigError for no detectors, duplicate detector names, an
+        unknown `region` policy or aggregator settings naming unknown detectors
+        (`bind_sources`).
 
         `agreement` takes effect only when enabled and with two or more detectors.
         """
@@ -85,10 +92,15 @@ class Pipeline:
             raise ConfigError(
                 f"detectors: duplicate name {duplicates[0]!r}; give each a distinct 'name'"
             )
+        if region not in get_args(RegionPolicy):
+            raise ConfigError(
+                f"distance.region: {region!r} is not one of {list(get_args(RegionPolicy))}"
+            )
         self.detectors = tuple(detectors)
         self.depth = depth
         self.aggregator = aggregator
         self.distance = distance
+        self.region = region
         self.exclude_sky = exclude_sky
         self.intrinsics = intrinsics
         self.device = device
@@ -173,8 +185,10 @@ class Pipeline:
             agreement, timings["agree"] = _timed(self._agreement_of, parts)
         instances, timings["aggregate"] = _timed(self.aggregator, parts)
         depth, timings["depth"] = _timed(self.depth, frame)
-        stats, timings["dist"] = _timed(self._distances, instances, depth)
-        return FrameResult(frame, instances, stats, depth, timings, agreement)
+        (stats, box_stats), timings["dist"] = _timed(self._distances, instances, depth)
+        return FrameResult(
+            frame, instances, stats, depth, timings, agreement, box_stats
+        )
 
     def _agreement_of(self, parts: Sequence[Instances]) -> FrameAgreement:
         return frame_agreement(
@@ -186,20 +200,27 @@ class Pipeline:
 
     def _distances(
         self, instances: Instances, depth: DepthResult
-    ) -> tuple[BoxDepthStats, ...]:
+    ) -> tuple[tuple[BoxDepthStats, ...], tuple[BoxDepthStats | None, ...] | None]:
+        """(stats, box_stats) of every instance; box_stats only with region "both"."""
         # Sky pixels are not eligible when asked and the model has a sky head.
         mask = ~depth.sky if self.exclude_sky and depth.sky is not None else None
-        return tuple(
-            box_depth_stats(
+        masks = instances.masks
+        pairs = [
+            instance_depth_stats(
                 depth.depth_m,
                 box,
                 depth.geometry,
                 self.distance,
+                region=self.region,
+                instance_mask=None if masks is None else masks[i],
                 intrinsics=depth.intrinsics,
                 mask=mask,
             )
-            for box in instances.xyxy
-        )
+            for i, box in enumerate(instances.xyxy)
+        ]
+        stats = tuple(primary for primary, _ in pairs)
+        box_stats = tuple(alt for _, alt in pairs) if self.region == "both" else None
+        return stats, box_stats
 
     def close(self) -> None:
         """Release every model."""
@@ -218,6 +239,8 @@ class Pipeline:
             "pipeline": {
                 "exclude_sky": self.exclude_sky,
                 "agreement": asdict(self.agreement) if self.agreement else None,
+                "region": self.region,
+                "mask_erode": self.distance.mask_erode,
             },
         }
 

@@ -94,3 +94,43 @@ def test_color_key_changes_colour_and_hud_count():
     r._hud = lambda d, lines, c: counts.append(c)
     r.render(frame, [by_source, by_source], ["line"])
     assert counts == [{"yolo26l-objv1-150": 2}]
+
+
+def _masked(mask_alpha: float, layout: str = "overlay"):
+    mask = np.zeros((120, 160), dtype=bool)
+    mask[30:60, 20:40] = True
+    box = BoxAnnotation((10.0, 20.0, 60.0, 70.0), "car", 0.9, "car", mask=mask)
+    plain = BoxAnnotation((10.0, 20.0, 60.0, 70.0), "car", 0.9, "car")
+    r = Renderer(
+        160, 120, title="t", layout=layout, show_hud=False, mask_alpha=mask_alpha
+    )
+    return r, mask, box, plain
+
+
+def test_mask_tints_only_its_pixels():
+    r, mask, box, plain = _masked(0.35)
+    frame = np.full((120, 160, 3), 100, np.uint8)
+    changed = (r.render(frame, [box], []) != r.render(frame, [plain], [])).any(axis=2)
+    assert changed.any() and not (changed & ~mask).any()
+    assert np.array_equal(frame, np.full((120, 160, 3), 100, np.uint8))  # not in place
+
+
+def test_mask_alpha_zero_draws_no_mask():
+    r, _, box, plain = _masked(0.0)
+    frame = np.full((120, 160, 3), 100, np.uint8)
+    assert np.array_equal(r.render(frame, [box], []), r.render(frame, [plain], []))
+
+
+def test_mask_also_tints_the_depth_panel():
+    r, mask, box, plain = _masked(0.35, "side-by-side")
+    frame = np.full((120, 160, 3), 100, np.uint8)
+    depth = np.full((28, 42), 5.0, np.float32)
+    with_mask = r.render(frame, [box], [], depth)
+    without = r.render(frame, [plain], [], depth)
+    panel = (with_mask != without).any(axis=2)[:, 160:320]
+    assert panel.any() and not (panel & ~mask).any()
+
+
+def test_mask_alpha_range():
+    with pytest.raises(ValueError, match="mask_alpha"):
+        Renderer(160, 120, title="x", mask_alpha=1.5)

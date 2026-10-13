@@ -109,6 +109,7 @@ def run(cfg: RunConfig) -> Path:
         intrinsics=build_intrinsics_provider(cfg.camera),
         device=cfg.device,
         agreement=cfg.agreement,
+        region=cfg.region,
     )
     source = VideoSource(cfg.source)
     monitor = DeviceMonitor(cfg.device)

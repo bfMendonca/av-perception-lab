@@ -1,10 +1,10 @@
-"""Annotated-frame rendering: boxes, label pills, HUD and an optional
-side-by-side metric depth panel with a legend in metres.
+"""Annotated-frame rendering: boxes, translucent instance masks, label pills,
+HUD and an optional side-by-side metric depth panel with a legend in metres.
 
 Ported from rf-detr's infer_video.py Renderer and depth-anything-3's
 run_test.py colorize_metric/metric_legend. Everything is RGB; OpenCV
 colormaps (BGR) are converted on output. The depth panel is resized to the
-exact frame size so the same box coordinates apply to both panels.
+exact frame size so the same box and mask coordinates apply to both panels.
 """
 
 import zlib
@@ -174,6 +174,8 @@ class BoxAnnotation:
     inner_xyxy: tuple[float, float, float, float] | None = None
     # colour and HUD-count key (e.g. the detector name); None -> class_name
     color_key: str | None = None
+    # (H, W) bool instance mask at frame resolution, tinted with the box colour
+    mask: np.ndarray | None = None
 
     @property
     def key(self) -> str:
@@ -195,9 +197,12 @@ class Renderer:
         max_depth: float = 30.0,
         cmap: str = "turbo",
         font_path: Path | None = None,
+        mask_alpha: float = 0.35,
     ) -> None:
         if layout not in ("overlay", "side-by-side"):
             raise ValueError(f"unknown layout {layout!r}")
+        if not 0.0 <= mask_alpha <= 1.0:
+            raise ValueError(f"mask_alpha must be in [0, 1], got {mask_alpha}")
         try:
             self._cmap = getattr(cv2, f"COLORMAP_{cmap.upper()}")
         except AttributeError:
@@ -207,6 +212,7 @@ class Renderer:
         self.max_depth = max_depth
         self.title = title
         self.show_hud = show_hud
+        self.mask_alpha = mask_alpha
         scale = frame_h / 1080
         self.box_width = max(2, round(3 * scale))
         self.font = load_font(font_path, max(14, round(22 * scale)))
@@ -251,7 +257,7 @@ class Renderer:
         boxes: Sequence[BoxAnnotation],
         hud_lines: Sequence[str] | None,
     ) -> np.ndarray:
-        base = Image.fromarray(image_rgb).convert("RGBA")
+        base = Image.fromarray(self._blend_masks(image_rgb, boxes)).convert("RGBA")
         overlay = Image.new("RGBA", base.size, (0, 0, 0, 0))
         d = ImageDraw.Draw(overlay)
         # low-confidence boxes first so the strongest end up on top
@@ -285,6 +291,32 @@ class Renderer:
         if hud_lines is not None:
             self._hud(d, hud_lines, Counter(b.key for b in boxes))
         return np.asarray(Image.alpha_composite(base, overlay).convert("RGB"))
+
+    def _blend_masks(
+        self, image_rgb: np.ndarray, boxes: Sequence[BoxAnnotation]
+    ) -> np.ndarray:
+        """Tint every non-empty instance mask with its box colour at `mask_alpha`,
+        weakest first so the strongest instance ends on top. Works on the mask's
+        bounding rectangle only; used for the frame and the depth panel alike."""
+        out = image_rgb
+        if self.mask_alpha == 0:
+            return out
+        for box in sorted(boxes, key=lambda b: b.score):
+            if box.mask is None:
+                continue
+            rows = np.flatnonzero(box.mask.any(axis=1))
+            if not rows.size:
+                continue
+            cols = np.flatnonzero(box.mask.any(axis=0))
+            if out is image_rgb:  # copy once, only when something is drawn
+                out = image_rgb.copy()
+            window = out[rows[0] : rows[-1] + 1, cols[0] : cols[-1] + 1]
+            inside = box.mask[rows[0] : rows[-1] + 1, cols[0] : cols[-1] + 1]
+            tint = self.mask_alpha * np.asarray(color_for(box.key), np.float32)
+            window[inside] = np.rint(
+                (1 - self.mask_alpha) * window[inside] + tint
+            ).astype(np.uint8)
+        return out
 
     def _hud(
         self, d: ImageDraw.ImageDraw, lines: Sequence[str], counts: Counter
