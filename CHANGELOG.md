@@ -4,6 +4,67 @@ Todas as mudancas relevantes do det-depth-distance serao documentadas neste arqu
 
 ---
 
+## [2026-10-14] Smoke test ponta a ponta do pipeline sem GPU
+
+As tasks 0002 a 0007 foram verificadas so com testes unitarios no laptop,
+com o servidor GPU fora do ar, e as execucoes reais ficaram espalhadas em
+seis arquivos de task. A task_0008 cria um smoke test que roda o sistema
+inteiro pelo ponto de entrada real da CLI sem GPU, um smoke com os modelos
+reais para o servidor e um unico script que executa, em ordem, todas as
+pendencias de GPU. Nenhum comportamento da execucao muda; a avaliacao passa
+a recusar duas execucoes com o mesmo nome de pasta.
+
+### Novo: Smoke local (`tests/smoke/`, marcador `smoke`)
+
+- **Cena sintetica:** video 320x180 de 12 quadros em tons de cinza com
+  planos de profundidade conhecida (estrada, ceu, um carro que anda e dois
+  aneis), gerado no `tmp_path`.
+- **Dubles deterministicos:** detector (com e sem mascaras), refinador pela
+  hierarquia `BoxPromptRefiner` e segmentador semantico que "veem" o quadro
+  pela paleta; a profundidade e o adaptador `DA3Depth` real com so a rede
+  trocada. Entram no registro so durante o teste.
+- **Matriz em pares:** 9 execucoes cobrem todo par de niveis de agregacao,
+  regiao, refinador, exclusao semantica, rastreamento e calibracao com
+  correcao de distorcao; cada distancia do CSV e conferida contra o valor
+  analitico da cena.
+- **Invariante:** com tudo desligado as colunas da task_0002 ficam
+  identicas, mesmo com etapas neutras ligadas.
+- **Encadeamento:** calibrar tabuleiros renderizados, processar o video
+  distorcido com a calibracao (com e sem correcao) e avaliar contra
+  referencias derivadas da geometria.
+- Roda por padrao no `uv run pytest` (~8 s; `-m smoke` seleciona so ele).
+
+### Novo: Smoke com os modelos reais (`tests/gpu/test_smoke_gpu.py`)
+
+- Uma execucao de 5 quadros em 9 dos exemplos de `configs/` (cada familia
+  de adaptador real), em processo novo,
+  conferida pela mesma verificacao estrutural do smoke local
+  (`tests/run_outputs.py`); peso ausente pula o caso com a dica de download.
+
+### Novo: Script de pendencias de GPU (`utils/gpu_pending.sh`)
+
+- Roda no `gpu-host` os 19 passos pendentes das tasks 0002 a 0008 na ordem
+  de dependencia, com um log por passo e um `summary.tsv`.
+- **Como usar:** `utils/sync_gpu_host.sh push`, depois
+  `ssh -t gpu-host 'cd ~/dev/det-depth-distance && utils/gpu_pending.sh run'`
+  e `utils/sync_gpu_host.sh pull gpu_pending_<carimbo>` (so os logs).
+- Opcoes `list`, `--dry-run`, `--from`, `--only`, `--skip-long`; downloads
+  so com `--allow-downloads` e confirmacao por item; os da task_0004 (fora
+  do repositorio) so sao impressos.
+
+### Corrigido: Avaliacao com execucoes de mesmo nome
+
+- `det-depth-distance-evaluate` juntava em silencio os resultados de duas
+  execucoes com o mesmo nome de pasta (pastas de `out_root` diferentes
+  criadas no mesmo segundo); agora sai com erro pedindo para renomear uma
+  delas (por exemplo com `output.tag`).
+
+### Observacoes importantes
+
+- A execucao no servidor GPU continua pendente (servidor fora do ar).
+
+---
+
 ## [2026-10-14] Calibracao da camera e avaliacao contra distancias de referencia
 
 A distancia do DA3METRIC e proporcional a focal da camera, e a focal

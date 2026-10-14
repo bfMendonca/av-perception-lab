@@ -19,15 +19,6 @@ needs_ffmpeg = pytest.mark.skipif(
 LENS = "iPhone 14 Pro Max back triple camera 6.86mm f/1.78"
 
 
-@pytest.fixture
-def board_images(synthetic_camera, render_board, tmp_path):
-    folder = tmp_path / "views"
-    folder.mkdir()
-    for i, (rvec, tvec) in enumerate(synthetic_camera.poses(14, seed=5)):
-        cv2.imwrite(str(folder / f"view_{i:02d}.png"), render_board(rvec, tvec))
-    return folder
-
-
 def test_parser():
     args = build_parser().parse_args(["calibrate", "v.mov", "--out", "c.yaml"])
     assert (args.every_s, args.max_views, args.min_views) == (0.5, 60, 12)

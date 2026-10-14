@@ -1,3 +1,4 @@
+import dataclasses
 import json
 import sys
 
@@ -137,6 +138,14 @@ def test_evaluate_checks_the_video_and_undistortion(runs, refs, fake_run_dir):
     )
     with pytest.raises(ConfigError, match="need its undistortion transform"):
         evaluate(refs, [undistorted])
+
+
+def test_evaluate_refuses_runs_with_the_same_name(runs, refs, tmp_path):
+    # Folders of different out_roots can share a name (same second, same parts);
+    # their results would silently merge (task_0008 smoke).
+    twin = dataclasses.replace(runs[1], run_dir=tmp_path / "other" / runs[0].name)
+    with pytest.raises(ConfigError, match=f"two runs are named {runs[0].name}"):
+        evaluate(refs, [runs[0], twin])
 
 
 def test_range_references_without_intrinsics_warn(fake_run_dir, refs):

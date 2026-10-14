@@ -25,6 +25,7 @@
 - [Estrutura do Projeto](#estrutura-do-projeto)
 - [Pré-requisitos](#pré-requisitos)
 - [Início Rápido](#início-rápido)
+- [Testes](#testes)
 - [Uso da CLI](#uso-da-cli)
 - [Configuração YAML](#configuração-yaml)
 - [Refinadores de máscara](#refinadores-de-máscara)
@@ -163,9 +164,12 @@ det-depth-distance/
 │   ├── runtime.py           # memória da GPU, versões, commit
 │   ├── cli.py               # --config/--set/--list-models; raiz de composição
 │   └── __main__.py          # python -m det_depth_distance
-├── tests/                   # pytest sem GPU; tests/gpu/ (marcador gpu) roda no gpu-host
+├── tests/                   # pytest sem GPU; run_outputs.py confere pastas de execução
+│   ├── smoke/               # smoke ponta a ponta (marcador smoke): cena sintética, dublês, matriz em pares, calibrar -> rodar -> avaliar
+│   └── gpu/                 # marcador gpu, roda no gpu-host: contratos, regressão da task_0001, smoke com os modelos reais
 ├── utils/
-│   └── sync_gpu_host.sh      # rsync push/pull com o servidor GPU
+│   ├── sync_gpu_host.sh      # rsync push/pull com o servidor GPU
+│   └── gpu_pending.sh       # roda no gpu-host, em ordem, as pendências de GPU das tasks 0002-0008
 ├── docs/                    # tasks (docs/task_DDDD.md), template e refs/ (diagramas e protocolo de calibração e referências)
 └── _testbed/                # (ignorado pelo git) vídeos, saídas, logs
 ```
@@ -207,6 +211,70 @@ ssh gpu-host 'cd ~/dev/det-depth-distance && ~/.local/bin/uv run --extra infer p
 
 O `uv run pytest` local nunca roda os testes de `tests/gpu/`
 (`addopts = "-m 'not gpu'"`).
+
+---
+
+## Testes
+
+Três níveis, todos com `pytest` (tempos medidos no laptop em 2026-10-14):
+
+| Nível | O que prova | Comando | Onde | Tempo |
+|---|---|---|---|---|
+| Unitário | cada módulo isolado (dublês fixos, sem torch) | `uv run pytest -m "not gpu and not smoke"` | laptop | ~10 s |
+| Smoke (`smoke`) | o sistema inteiro pelo ponto de entrada real: CLI, YAML e `--set`, registro, `Pipeline` com todas as etapas, sinks e arquivos de saída, mais o encadeamento calibrar → rodar → avaliar | `uv run pytest -m smoke` | laptop | ~8 s |
+| GPU (`gpu`) | contratos dos adaptadores reais, regressão da `task_0001` e smoke com os modelos reais (5 quadros em 9 exemplos de `configs/`, um por família de adaptador) | `uv run --extra infer pytest -m gpu -v` | `gpu-host` | minutos |
+
+O `uv run pytest` padrão roda unitários **e** smoke (~18 s no total); o
+`gpu` fica de fora.
+
+**Smoke local** (`tests/smoke/`): um vídeo sintético 320×180 de 12
+quadros, gerado no `tmp_path` com o próprio `VideoWriter` (`crf=0`), mostra
+planos frontais de profundidade conhecida em tons de cinza (estrada, céu, um
+carro que anda e dois anéis cujo furo mostra a estrada ou o céu). Dublês
+determinísticos que "veem" o quadro pela paleta — detector (com e sem
+máscaras), refinador (pela hierarquia `BoxPromptRefiner`) e segmentador
+semântico — entram no registro só durante o teste (`monkeypatch.setitem`);
+a profundidade é o adaptador `DA3Depth` **real** com só a rede trocada, que
+devolve a profundidade no formato do DA3METRIC. Nove execuções cobrem todo
+par de níveis de agregação × região × refinador × exclusão semântica ×
+rastreamento+suavização × calibração+`undistort`; cada distância do CSV é
+conferida contra o valor analítico da cena (tolerância 1e-4). Um teste fixa
+o invariante "tudo desligado = `task_0002`" e outro calibra tabuleiros
+renderizados, processa o vídeo distorcido com a calibração e avalia contra
+referências derivadas da geometria. `tests/run_outputs.py` confere a
+estrutura de qualquer pasta de execução (arquivos, 45 colunas do CSV, chaves
+do `metrics.json`, `ffprobe` do vídeo) e é usado também pelo smoke de GPU.
+
+### Pendências de GPU
+
+`utils/gpu_pending.sh` roda **no `gpu-host`**, na raiz do repo, todas as
+execuções de GPU pendentes das tasks 0002–0008 na ordem de dependência
+(sync, regressão antes de qualquer download, `-m gpu`, execuções de
+validação), com um log por passo e um `summary.tsv` em
+`_testbed/outputs/gpu_pending_<carimbo>/`:
+
+```bash
+utils/sync_gpu_host.sh push
+ssh -t gpu-host 'cd ~/dev/det-depth-distance && utils/gpu_pending.sh run'   # use tmux: há execuções longas
+utils/sync_gpu_host.sh pull gpu_pending_<carimbo>                            # só os logs
+```
+
+| Opção | Efeito |
+|---|---|
+| `list` | lista os 19 passos (id, task de origem, tipo) |
+| `run --dry-run` | imprime os comandos sem executar nem criar nada |
+| `--from ID` / `--only ID` | retoma a partir de um passo / roda só um (id completo ou número) |
+| `--skip-long` | pula o rastreamento nos vídeos completos (`10-track`) |
+| `--allow-downloads` | permite os downloads da `task_0005` em `weights/hf`, com confirmação `[s/N]` por item (sem TTY, nada é baixado) |
+| `--sam-hq base\|huge` | qual SAM-HQ baixar (decisão do usuário; sem a opção, nenhum) e usar nas validações E do `18-refiner-runs` (sem a opção, o que já estiver em `weights/hf`; nenhum → `sam_hq` pulado) |
+| `--with-optional` | também os opcionais (`sam-vit-base`; `sam3` só com `HF_TOKEN`; MobileSAM só impresso) |
+
+Os downloads da `task_0004` (pesos fora do repositório) nunca são
+executados: o passo `12-dl-0004` só imprime os comandos (MANUAL). Execuções
+que dependem desses pesos (caixa × máscara, validação B e comparações com
+o YOLO-seg) são puladas enquanto eles faltarem — o `rfdetr` baixaria os
+pesos Seg sozinho. Cada comando que falha é registrado e o passo segue;
+o passo termina FAIL se algum falhou.
 
 ---
 
@@ -684,3 +752,4 @@ Variáveis opcionais: `SYNC_HOST` (padrão `gpu-host`) e `SYNC_DEST` (padrão
 - [x] **Refinadores de máscara e segmentação semântica** (`task_0005`) — família SAM (SAM2, EdgeTAM, SAM-HQ, SAM, SAM3) e MobileSAM via hierarquia `BoxPromptRefiner`; vários segmentadores semânticos nomeados (SegFormer, TwinLiteNet+) com exclusão de classes por `<nome>.<classe>`. Validação no servidor GPU pendente (testes `-m gpu`, pesos e execuções A–E).
 - [x] **Rastreamento e suavização temporal** (`task_0006`) — rastreador IoU com velocidade constante (`track_id`), suavização por trilha (Kalman 1D, EMA, mediana), velocidade relativa e resumo por trilha no `metrics.json`. Validação no servidor GPU pendente (regressão `-m gpu` e execuções nos vídeos reais).
 - [x] **Calibração e avaliação** (`task_0007`) — calibração por tabuleiro/ChArUco, `camera.calibration` (K reescalada, conferência da lente, correção de distorção, comparação com a focal estimada), protocolo de verdade de campo e relatório de erro contra referências. Pendentes: calibração real do iPhone 14 Pro Max, coleta de referências de campo e validação no servidor GPU.
+- [x] **Smoke test ponta a ponta** (`task_0008`) — smoke local sem GPU (cena sintética, dublês, matriz de configurações em pares, calibrar → rodar → avaliar), smoke `gpu` com os modelos reais e `utils/gpu_pending.sh` com todas as pendências de GPU em ordem. Execução no servidor GPU pendente.

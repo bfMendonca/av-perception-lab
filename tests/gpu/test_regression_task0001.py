@@ -12,8 +12,6 @@ import csv
 import json
 import math
 import os
-import subprocess
-import sys
 from pathlib import Path
 
 import pytest
@@ -36,7 +34,7 @@ INTEGERS = ("map_c0", "map_r0", "map_c1", "map_r1", "n_box_px", "n_valid", "n_in
 FLOATS = tuple(f for f in STATS_ROW_FIELDS if f not in INTEGERS)
 
 
-def _run(out_root: Path) -> None:
+def _run(out_root: Path, run_cli_subprocess) -> None:
     argv = [
         "--config",
         "configs/rfdetr_da3.yaml",
@@ -47,21 +45,8 @@ def _run(out_root: Path) -> None:
         "--set",
         "render.layout=overlay",
     ]
-    code = (
-        "import sys\n"
-        "from det_depth_distance.cli import main\n"
-        f"code = main({argv!r})\n"
-        "assert 'ultralytics' not in sys.modules, 'ultralytics imported by an RF-DETR run'\n"
-        "sys.exit(code)\n"
-    )
-    out = subprocess.run(
-        [sys.executable, "-c", code],
-        cwd=REPO,
-        check=False,
-        capture_output=True,
-        text=True,
-    )
-    assert out.returncode == 0, out.stderr[-3000:]
+    # An RF-DETR run must not import ultralytics.
+    run_cli_subprocess(argv, cwd=REPO, forbidden_modules=("ultralytics",))
 
 
 def _read(path: Path) -> list[dict[str, str]]:
@@ -80,10 +65,10 @@ def _close(a: str, b: str, rel: float) -> bool:
     return math.isclose(x, y, rel_tol=rel, abs_tol=0.0)
 
 
-def test_regression_against_task_0001(tmp_path, video):
+def test_regression_against_task_0001(tmp_path, video, run_cli_subprocess):
     if not REF_CSV.is_file() or not REF_METRICS.is_file():
         pytest.skip(f"missing regression reference {REF_CSV} (task_0002 Passo 0)")
-    _run(tmp_path)
+    _run(tmp_path, run_cli_subprocess)
     (run_dir,) = tmp_path.iterdir()
     ref, new = _read(REF_CSV), _read(run_dir / "detections.csv")
 

@@ -69,9 +69,15 @@ uv sync --extra eval   # laptop, só para --plot (matplotlib); `uv sync` volta a
 ## Comandos de Teste
 
 ```bash
-uv run pytest                      # local: unitários, sem GPU (pula -m gpu)
-# gpu-host: contratos dos adaptadores + regressão (precisa de --extra infer e pesos)
+uv run pytest                      # local: unitários + smoke, sem GPU (pula -m gpu; ~18 s)
+uv run pytest -m smoke             # só o smoke ponta a ponta (tests/smoke/, ~8 s)
+uv run pytest -m "not gpu and not smoke"   # ciclo rápido: só os unitários (~10 s; um -m substitui o do addopts)
+# gpu-host: contratos dos adaptadores + regressão + smoke gpu (precisa de --extra infer e pesos)
 ssh gpu-host 'cd ~/dev/det-depth-distance && ~/.local/bin/uv run --extra infer pytest -m gpu -v'
+# gpu-host: todas as pendências de GPU das tasks 0002-0008, em ordem, com logs
+utils/gpu_pending.sh list                           # passos (local ou no gpu-host)
+utils/gpu_pending.sh run --dry-run                  # só imprime os comandos
+ssh -t gpu-host 'cd ~/dev/det-depth-distance && utils/gpu_pending.sh run'   # em tmux
 ```
 
 Marcador `gpu` (`[tool.pytest.ini_options]`: `addopts = "-m 'not gpu'"`):
@@ -80,6 +86,13 @@ todo teste sob `tests/gpu/` é marcado automaticamente pelo
 GPU; `-m gpu` (a última opção `-m` vence) os seleciona no servidor. A
 regressão compara 60 quadros de IMG_4021 com a referência da `task_0001`
 congelada em `_testbed/regression/` (ou `$DDD_REGRESSION_REF`).
+
+Marcador `smoke`: todo teste sob `tests/smoke/` é marcado pelo
+`tests/smoke/conftest.py` e roda por padrão (o smoke cabe no limite de 10 s
+da `task_0008`; se passar dele, vai para `addopts` e passa a ser obrigatório
+rodar `-m smoke` antes de cada commit). O `gpu_pending.sh` nunca baixa pesos
+sem `--allow-downloads` **e** confirmação por item; os downloads da
+`task_0004` (fora do repo) só são impressos.
 
 ## Lint & Formatação
 
@@ -135,8 +148,17 @@ uv run ruff format .
   fixture-fábrica `make_instances` (`tests/conftest.py`); calibração e
   avaliação usam as fixtures `synthetic_camera`, `render_board` (tabuleiro
   renderizado com distorção conhecida) e `fake_run_dir` (fábrica de pasta de
-  execução fictícia). Testes que precisam
-  de GPU/pesos ficam em `tests/gpu/` (marcador `gpu`).
+  execução fictícia), `distort_image` (imagem ideal vista pela lente
+  distorcida) e `board_images` (pasta de tabuleiros renderizados). Testes que precisam
+  de GPU/pesos ficam em `tests/gpu/` (marcador `gpu`); o smoke ponta a ponta
+  fica em `tests/smoke/` (marcador `smoke`). Dublês de adaptadores entram no
+  registro **só** por `monkeypatch.setitem(registry._REGISTRY[kind], tipo,
+  cls)` depois de `registry.load_adapters()` (nunca `@register`, que muda o
+  processo para sempre); toda pasta de execução é conferida por
+  `tests/run_outputs.check_run_outputs`; cada execução da CLI num teste usa
+  um `output.out_root` próprio (o nome da pasta tem resolução de segundos).
+  Execuções reais da CLI nos testes `gpu` vão por subprocesso (fixture
+  `run_cli_subprocess`).
 
 ---
 

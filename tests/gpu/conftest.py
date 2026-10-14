@@ -13,10 +13,19 @@ Mask refiners and semantic segmenters (task_0005) read the project's HF cache
 huggingface_hub.try_to_load_from_cache, so a missing checkpoint skips with the
 download command. REFINER_CASES lists every registered refiner type: a new
 box-prompted model adds its case here to run the shared contract test.
+
+End-to-end runs (the task_0001 regression, the task_0008 GPU smoke) go
+through the `run_cli_subprocess` fixture, a fresh interpreter per run, so frameworks
+imported by other tests of the session cannot influence them;
+`require_assets` skips a run whose weights are missing, with the hint.
 """
 
 import os
+import subprocess
+import sys
+from collections.abc import Callable, Mapping, Sequence
 from pathlib import Path
+from typing import Any
 
 import pytest
 
@@ -283,3 +292,71 @@ def twinlitenet():
         "variant": "large",
     }
     return registry.build("semantic", spec, path="semantic[0]")
+
+
+def _run_cli_subprocess(
+    argv: Sequence[str], *, cwd: Path, forbidden_modules: Sequence[str] = ()
+) -> subprocess.CompletedProcess[str]:
+    """Run `python -c main(argv)` in a fresh interpreter in `cwd`; assert exit
+    code 0 (stderr tail in the message) and that none of `forbidden_modules`
+    was imported."""
+    guards = "".join(
+        f"assert {m!r} not in sys.modules, '{m} imported by this run'\n"
+        for m in forbidden_modules
+    )
+    code = (
+        "import sys\n"
+        "from det_depth_distance.cli import main\n"
+        f"code = main({list(argv)!r})\n"
+        f"{guards}"
+        "sys.exit(code)\n"
+    )
+    out = subprocess.run(
+        [sys.executable, "-c", code],
+        cwd=cwd,
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    assert out.returncode == 0, out.stderr[-3000:]
+    return out
+
+
+@pytest.fixture(scope="session")
+def run_cli_subprocess() -> Callable[..., subprocess.CompletedProcess[str]]:
+    """Factory: run_cli_subprocess(argv, *, cwd, forbidden_modules=()) (see
+    `_run_cli_subprocess`). A fixture rather than an import: test modules
+    cannot import a conftest reliably (several conftest.py share the name)."""
+    return _run_cli_subprocess
+
+
+@pytest.fixture
+def require_assets() -> Callable[[Mapping[str, Any]], None]:
+    """Factory that skips the test when an asset is missing: a detector spec
+    (_missing_weights), a refiner type (_available_spec), an HF file
+    (_hf_cached) or a local path; the skip reason carries the download hint.
+
+    Usage: require_assets({"detector": spec} | {"refiner": "sam2"} |
+    {"hf": (repo, filename)} | {"path": path}).
+    """
+    from det_depth_distance.adapters._hf_hub import download_command
+
+    def require(asset: Mapping[str, Any]) -> None:
+        if "detector" in asset:
+            missing = _missing_weights(asset["detector"])
+            if missing is not None:
+                pytest.skip(f"missing weights {missing}")
+        elif "refiner" in asset:
+            _available_spec(asset["refiner"])
+        elif "hf" in asset:
+            repo, filename = asset["hf"]
+            if not _hf_cached(repo, filename):
+                pytest.skip(download_command(repo, WEIGHTS_HF, filename))
+        elif "path" in asset:
+            path = Path(asset["path"]).expanduser()
+            if not path.exists():
+                pytest.skip(f"missing {path}")
+        else:
+            raise ValueError(f"unknown asset kind: {dict(asset)}")
+
+    return require

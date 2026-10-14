@@ -25,13 +25,15 @@ completas de processo: veja o `AGENTS.md`.
 
 ```bash
 uv sync                                   # ambiente leve local
-uv run pytest                             # testes unitários (sem GPU; pula -m gpu)
+uv run pytest                             # unitários + smoke (sem GPU; pula -m gpu)
+uv run pytest -m smoke                    # só o smoke ponta a ponta (tests/smoke/)
 uv run ruff check --fix . && uv run ruff format .
 utils/sync_gpu_host.sh push                # código -> gpu-host:~/dev/det-depth-distance
 ssh gpu-host 'cd ~/dev/det-depth-distance && ~/.local/bin/uv sync --extra infer'
 ssh gpu-host 'cd ~/dev/det-depth-distance && ~/.local/bin/uv run --extra infer pytest -m gpu -v'
 ssh gpu-host 'cd ~/dev/det-depth-distance && ~/.local/bin/uv run --extra infer python -m det_depth_distance --config configs/rfdetr_da3.yaml'
 utils/sync_gpu_host.sh pull [RUN_DIR]      # saídas <- gpu-host
+utils/gpu_pending.sh {list,run} [--dry-run] [--from ID] ...   # pendências de GPU (rodar NO gpu-host)
 uv run det-depth-distance-calibrate {calibrate,board,inspect} ...   # calibração (ambiente leve)
 uv run det-depth-distance-evaluate --refs REFS.yaml RUN [RUN ...]   # erro contra referências de campo
 ```
@@ -184,6 +186,17 @@ no ambiente leve; só os gráficos pedem o extra `eval` (matplotlib).
   são anotadas no vídeo original e a avaliação as transforma com a K e a
   distorção gravadas no `metrics.json` (nunca relendo o arquivo de
   calibração, que pode ter sido refeito).
+- `make_run_dir` nomeia a pasta com carimbo de **segundos**: duas execuções
+  com as mesmas partes no mesmo segundo e `out_root` levantam
+  `FileExistsError`; em `out_root` diferentes geram o mesmo nome, e a
+  avaliação recusa (`ConfigError`) runs de mesmo nome — testes usam um
+  `output.out_root` por execução e `output.tag` para distinguir runs.
+- Dublês de adaptadores em testes: só `monkeypatch.setitem(registry._REGISTRY[kind], ...)`
+  após `registry.load_adapters()`; `@register` recusa nome repetido e muda o
+  processo para sempre.
+- A CLI em processo sem torch precisa trocar `cli.DeviceMonitor` (o
+  `start`/`summary` importam torch) e `DA3Depth._close` (importa torch); a
+  rede do DA3 é trocável por `da3._load_da3` (ver `tests/smoke/smoke_fakes.py`).
 - No `gpu-host`: sem sudo, `uv` em `~/.local/bin` (fora do PATH), disco quase
   cheio (preferir `/dev/shm` para temporários grandes), e `nvidia-smi` pode
   falhar por driver mismatch — usar `torch.cuda.mem_get_info()`.

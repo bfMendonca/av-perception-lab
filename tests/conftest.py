@@ -8,6 +8,12 @@ task_0007 adds `synthetic_camera` (a known camera and chessboard with
 poses that keep the board in view), `render_board` (factory: the distorted
 grayscale image of the board at a pose) and `fake_run_dir` (factory: a run
 folder with detections.csv and metrics.json, `fake_run_dir(rows, metrics)`).
+
+task_0008 adds `distort_image` (factory: an ideal pinhole image seen through
+a distorting lens, shared by the boards and the smoke scene) and moves
+`board_images` (a folder of rendered board views) here from
+test_tools_calibrate.py, since the calibrate -> run -> evaluate smoke uses
+it too.
 """
 
 import csv
@@ -141,22 +147,36 @@ def _render(cam: SyntheticCamera, rvec: np.ndarray, tvec: np.ndarray) -> np.ndar
         flags=cv2.INTER_AREA,
         borderValue=255,
     )
-    # Every distorted pixel samples the ideal image where its ray lands.
+    return _distort(ideal, cam.k, cam.dist)
+
+
+def _distort(
+    ideal: np.ndarray,
+    k: np.ndarray,
+    dist: np.ndarray,
+    *,
+    interpolation: int = cv2.INTER_LINEAR,
+    border_value: int = 255,
+) -> np.ndarray:
+    """Apply the lens distortion of (k, dist) (OpenCV convention) to an ideal
+    pinhole image: every output pixel samples the ideal image where its ray
+    lands. INTER_NEAREST keeps label images exact."""
+    h, w = ideal.shape[:2]
     grid = np.stack(np.meshgrid(np.arange(w), np.arange(h)), -1).reshape(-1, 1, 2)
     undist = cv2.undistortPointsIter(
         grid.astype(np.float64),
-        cam.k,
-        cam.dist,
+        k,
+        dist,
         None,
-        cam.k,
+        k,
         (cv2.TERM_CRITERIA_COUNT | cv2.TERM_CRITERIA_EPS, 50, 1e-9),
     ).reshape(h, w, 2)
     return cv2.remap(
         ideal,
         undist[..., 0].astype(np.float32),
         undist[..., 1].astype(np.float32),
-        cv2.INTER_LINEAR,
-        borderValue=255,
+        interpolation,
+        borderValue=border_value,
     )
 
 
@@ -164,6 +184,23 @@ def _render(cam: SyntheticCamera, rvec: np.ndarray, tvec: np.ndarray) -> np.ndar
 def render_board(synthetic_camera):
     """Factory: render_board(rvec, tvec) -> (H, W) uint8 distorted board image."""
     return lambda rvec, tvec: _render(synthetic_camera, rvec, tvec)
+
+
+@pytest.fixture
+def distort_image():
+    """Factory: distort_image(ideal, k, dist, *, interpolation, border_value) ->
+    the image seen through the lens (see `_distort`)."""
+    return _distort
+
+
+@pytest.fixture
+def board_images(synthetic_camera, render_board, tmp_path):
+    """Folder of 14 rendered board views (view_NN.png) of the synthetic camera."""
+    folder = tmp_path / "views"
+    folder.mkdir()
+    for i, (rvec, tvec) in enumerate(synthetic_camera.poses(14, seed=5)):
+        cv2.imwrite(str(folder / f"view_{i:02d}.png"), render_board(rvec, tvec))
+    return folder
 
 
 # metrics.json of a fake run: the keys evaluation.run_data reads, values of a

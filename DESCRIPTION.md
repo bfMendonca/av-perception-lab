@@ -98,7 +98,7 @@ det-depth-distance/
 │   ├── runtime.py           # DeviceMonitor (torch, lazy), package versions, git commit
 │   ├── cli.py               # --config/--set/--list-models; composition root
 │   └── __main__.py          # python -m det_depth_distance
-├── tests/                   # pytest without GPU; tests/gpu/ (auto-marked "gpu") runs on gpu-host
+├── tests/                   # pytest without GPU; tests/smoke/ (auto-marked "smoke", end-to-end); tests/gpu/ (auto-marked "gpu") runs on gpu-host
 ├── utils/sync_gpu_host.sh    # rsync push code / pull outputs with the GPU host
 ├── docs/                    # task files (docs/task_DDDD.md) + template; refs/ (diagrams, calibration and field-reference protocol)
 └── _testbed/                # git-ignored: test videos, outputs, regression reference, ultralytics settings
@@ -305,8 +305,10 @@ gated `facebook/sam3` checkpoint additionally needs approved access and
 
 ## 10. Development & Deployment
 
-- Local: `uv sync`, `uv run pytest` (GPU tests deselected), `uv run ruff check . && uv run ruff format --check .`
-- GPU tests (adapter contracts + 60-frame regression against task_0001): `uv run --extra infer pytest -m gpu -v` on `gpu-host`.
+- Local: `uv sync`, `uv run pytest` (unit + smoke, GPU tests deselected), `uv run ruff check . && uv run ruff format --check .`
+- Three test levels: unit (each module, fixed doubles); smoke (`-m smoke`, `tests/smoke/`, ~8 s): the real CLI entry point in process on a synthetic 320x180 grey-level video of known depth planes, with frame-reading test doubles (detector, box-prompt refiner, semantic segmenter) inserted into the registry by `monkeypatch` and the real `DA3Depth` with a fake network; a pairwise matrix of 9 configurations checks every output and every distance analytically, plus the all-off = task_0002 invariant and a calibrate -> run -> evaluate chain; `tests/run_outputs.py` checks any run folder's structure; gpu (`-m gpu`, on `gpu-host`).
+- GPU tests (adapter contracts + 60-frame regression against task_0001 + a 5-frame smoke of 9 example configs, one per real adapter family): `uv run --extra infer pytest -m gpu -v` on `gpu-host`.
+- `utils/gpu_pending.sh` (run ON `gpu-host`): every pending GPU step of tasks 0002-0008 in dependency order, a log per step and `summary.tsv` in `_testbed/outputs/gpu_pending_<stamp>/`; `list`, `run --dry-run|--from|--only|--skip-long`; downloads only with `--allow-downloads` plus a per-item confirmation (task_0004 downloads only printed).
 - Refiner and SegFormer weights: Hugging Face cache `weights/hf` in the repo (git-ignored and excluded from the rsync push), downloaded explicitly with `snapshot_download(..., allow_patterns=['*.json', 'model.safetensors'])` (SegFormer: `pytorch_model.bin`) — command in the README; MobileSAM `mobile_sam.pt` beside the YOLO weights; TwinLiteNet+ weights in its clone.
 - Weights live outside the repo on the GPU host: RF-DETR (incl. Seg, ~135–155 MB each, downloaded and MD5-checked by `rfdetr` on first construction) in `~/.roboflow/models`; YOLO26 (`yolo26*.pt`, `*-objv1-150.pt`, `*-seg.pt`, `*-objv1-seg.pt`, from the `ultralytics/assets` v8.4.0 release, fetched manually — the adapter never downloads) in `~/dev/ultralytics/_testbed/weights`. GPU tests skip when a weight is missing.
 - GPU host: `utils/sync_gpu_host.sh push`, then on `gpu-host`

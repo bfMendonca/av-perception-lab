@@ -58,8 +58,12 @@ packages = ["src/det_depth_distance"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
-# GPU tests (tests/gpu/, marked automatically by its conftest) run only on gpu-host: pytest -m gpu
-markers = ["gpu: needs CUDA, the infer extra and model weights (gpu-host)"]
+# GPU tests (tests/gpu/, marked automatically by its conftest) run only on gpu-host: pytest -m gpu.
+# Smoke tests (tests/smoke/, marked by theirs) run by default; -m smoke selects only them.
+markers = [
+    "gpu: needs CUDA, the infer extra and model weights (gpu-host)",
+    "smoke: end-to-end CLI runs with fake adapters on a synthetic video (tests/smoke/)",
+]
 addopts = "-m 'not gpu'"
 
 [tool.ruff]

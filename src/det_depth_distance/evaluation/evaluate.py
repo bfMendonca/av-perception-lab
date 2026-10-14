@@ -120,9 +120,17 @@ def evaluate(
     without tracking.
 
     Raises:
-        ConfigError: a run of another video than the references' (unless
+        ConfigError: two runs with the same folder name (every result is keyed
+            by it), a run of another video than the references' (unless
             options.force), or an undistorted run without its transform.
     """
+    names = [run.name for run in runs]
+    repeated = next((n for n in names if names.count(n) > 1), None)
+    if repeated is not None:
+        raise ConfigError(
+            f"two runs are named {repeated}: results are keyed by the run folder "
+            "name, rename one folder (e.g. set output.tag)"
+        )
     options = options or EvalOptions()
     transforms = points_transforms or {}
     warnings: list[str] = []
