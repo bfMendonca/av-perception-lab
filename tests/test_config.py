@@ -13,6 +13,7 @@ from det_depth_distance.core import registry
 from det_depth_distance.core.options import ConfigError
 from det_depth_distance.core.pipeline import Pipeline
 from det_depth_distance.distance import DistanceConfig
+from det_depth_distance.temporal import SmoothingConfig
 
 REPO = Path(__file__).parents[1]
 CONFIGS = sorted((REPO / "configs").glob("*.yaml"))
@@ -38,6 +39,9 @@ def test_defaults(tmp_path):
         "_testbed/outputs"
     )
     assert cfg.device == "cuda:0" and cfg.source.video is None
+    # task_0006: tracking and smoothing are off by default.
+    assert cfg.tracking is None and cfg.smoothing is None
+    assert cfg.render.show_smoothed and cfg.render.show_speed
 
 
 @pytest.mark.parametrize("path", CONFIGS, ids=lambda p: p.name)
@@ -52,6 +56,8 @@ def test_example_configs_build_without_frameworks(path, monkeypatch):
         assert not registry.build("refiner", spec, path=f"refiners[{i}]").is_loaded
     for i, spec in enumerate(cfg.semantic):
         assert not registry.build("semantic", spec, path=f"semantic[{i}]").is_loaded
+    if cfg.tracking is not None:
+        assert not registry.build("tracker", cfg.tracking, path="tracking").is_loaded
     assert cfg.source.video == Path("_testbed/data/IMG_4021.MOV")
 
 
@@ -69,6 +75,7 @@ def test_example_configs_cover_the_planned_runs():
         "yolo_o365_sam2_da3.yaml",
         "rfdetr_semantic_da3.yaml",
         "rfdetr_lanes_scene_da3.yaml",
+        "rfdetr_da3_track.yaml",
     }
     multi = load_config(CONFIGS[0].with_name("multi_detector.yaml"))
     assert [d["type"] for d in multi.detectors] == ["rfdetr", "yolo"]
@@ -458,3 +465,68 @@ def test_two_unnamed_refiners_of_one_checkpoint_clash():
         ConfigError, match=r"^refiners: duplicate name 'sam2\.1-hiera-large'"
     ):
         Pipeline([detector], depth, aggregator, DistanceConfig(), refiners=refiners)
+
+
+TRACK = REPO / "configs" / "rfdetr_da3_track.yaml"
+
+
+def test_track_config_builds_the_tracking_pipeline(monkeypatch):
+    monkeypatch.chdir(REPO)
+    cfg = load_config(TRACK)
+    assert cfg.smoothing == SmoothingConfig()  # the YAML spells out the defaults
+    assert cfg.render.layout == "side-by-side"
+    tracker = registry.build("tracker", cfg.tracking, path="tracking")
+    assert tracker.describe()["options"] == {
+        "iou_thr": 0.3,
+        "max_age_s": 0.5,
+        "motion": "constant_velocity",
+        "velocity_alpha": 0.5,
+        "class_aware": False,
+    }
+    pipeline = Pipeline(
+        [registry.build("detector", cfg.detectors[0], path="detectors[0]")],
+        registry.build("depth", cfg.depth, path="depth"),
+        registry.build("aggregator", cfg.aggregation, path="aggregation"),
+        cfg.distance,
+        tracker=tracker,
+        smoothing=cfg.smoothing,
+    )
+    assert pipeline.describe()["pipeline"]["smoothing"]["filter"] == "kalman"
+    assert cfg.to_dict()["tracking"] == dict(cfg.tracking)
+
+
+def test_tracking_and_smoothing_overrides(tmp_path):
+    cfg = load_config(
+        write(tmp_path, MINIMAL),
+        ["tracking={type: iou, iou_thr: 0.5}", "smoothing.filter=ema"],
+    )
+    assert cfg.tracking == {"type": "iou", "iou_thr": 0.5}
+    assert cfg.smoothing == SmoothingConfig(filter="ema")
+    assert (
+        registry.build("tracker", cfg.tracking, path="tracking").options.iou_thr == 0.5
+    )
+    off = load_config(
+        write(tmp_path, {**MINIMAL, "tracking": {"type": "iou"}}), ["tracking=null"]
+    )
+    assert off.tracking is None
+
+
+@pytest.mark.parametrize(
+    ("overrides", "match"),
+    [
+        (["smoothing.filter=foo"], r"^smoothing\.filter: 'foo' is not one of"),
+        (["smoothing.tau_s=0"], r"^smoothing: tau_s must be > 0"),
+        (["tracking=3"], r"^tracking: expected"),
+    ],
+)
+def test_tracking_and_smoothing_errors(tmp_path, overrides, match):
+    with pytest.raises(ConfigError, match=match):
+        load_config(write(tmp_path, MINIMAL), overrides)
+
+
+def test_tracking_options_are_validated_by_the_registry(tmp_path):
+    cfg = load_config(write(tmp_path, MINIMAL), ["tracking={type: iou, iou: 0.5}"])
+    with pytest.raises(ConfigError, match=r"^tracking\.iou: unknown option"):
+        registry.build("tracker", cfg.tracking, path="tracking")
+    with pytest.raises(ConfigError, match=r"^tracking\.type: unknown tracker 'sort'"):
+        registry.build("tracker", {"type": "sort"}, path="tracking")

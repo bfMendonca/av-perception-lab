@@ -43,9 +43,9 @@ GPU `gpu-host` (RTX PRO 6000 Blackwell, sm_120) instala o extra `infer`
 commit git, `ultralytics==8.4.175`, `transformers` e `timm`). Não há git remote: o código vai por rsync.
 
 Código em camadas: `core/` (contratos `Instances`/`DepthResult`/`SemanticMap`,
-ABCs `Detector`/`DepthEstimator`/`MaskRefiner`/`SemanticSegmenter`, registro,
-`LabelMap`, agregadores `concat`/`nms`/`wbf`, geometria de caixas,
-concordância, `Pipeline`) não importa frameworks; `adapters/` envolve cada
+ABCs `Detector`/`DepthEstimator`/`MaskRefiner`/`SemanticSegmenter`/`Tracker`,
+registro, `LabelMap`, agregadores `concat`/`nms`/`wbf`, geometria de caixas,
+concordância, rastreador IoU, `Pipeline`) não importa frameworks; `adapters/` envolve cada
 framework (refinadores: `MaskRefiner` → `BoxPromptRefiner` → `HFSamRefiner` →
 famílias finas, + `UltralyticsSamRefiner`); `io/` (vídeo, fonte, sinks);
 `cli.py` é só a raiz de composição.
@@ -137,6 +137,21 @@ famílias finas, + `UltralyticsSamRefiner`); `io/` (vídeo, fonte, sinks);
   (o nome de topo `model` fica em `sys.modules`); a escala `int(1/ratio)` do
   demo original só vale para razão inteira (o adaptador interpola para o
   tamanho exato).
+- Rastreamento e suavização (`core/tracking.py`, `temporal.py`): todo
+  parâmetro temporal é em **segundos**, com `dt` de `Frame.t` (já correto com
+  `stride`); nunca contar quadros. A velocidade da caixa é em px/s.
+- O `std` por caixa superestima o ruído quadro a quadro da distância
+  (1,3–3×) e `std/√n_inliers` o subestima 10–30× (pixels vizinhos do DA3 são
+  correlacionados): a incerteza da medida é `max(0.5·std, 1 %·d)`.
+- O ruído do DA3 é correlacionado no tempo (AR(1), ρ ≈ 0,7): a suavização
+  tira *jitter*, não viés; > 30 m a distância oscila ±2–4 m em ~1 s e a
+  velocidade relativa não é confiável.
+- Rastreador do ultralytics (ByteTrack/BoT-SORT) **não** é usado: exige
+  `lap` (fora do lock), importa `torch` e os efeitos globais do ultralytics,
+  conta tempo em chamadas e é AGPL-3.0. O rastreador IoU é numpy puro.
+- O rastreador é agnóstico de classe por padrão (detectores alternam
+  `car`/`truck` no mesmo objeto) e associa por `source` com `concat`
+  (cópias do mesmo objeto por dois detectores mantêm IDs próprios).
 - No `gpu-host`: sem sudo, `uv` em `~/.local/bin` (fora do PATH), disco quase
   cheio (preferir `/dev/shm` para temporários grandes), e `nvidia-smi` pode
   falhar por driver mismatch — usar `torch.cuda.mem_get_info()`.

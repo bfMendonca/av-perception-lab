@@ -3,7 +3,7 @@
 Sections are dataclasses built with `from_mapping` (unknown keys are errors,
 reported with their dotted path); domain rules live in each dataclass's
 __post_init__. Component specs (detectors, depth, aggregation, refiners,
-semantic) are validated by their adapter's Options when built through the
+semantic, tracking) are validated by their adapter's Options when built through the
 registry; RunConfig only checks what crosses sections (semantic segmenter
 names, the namespaces of excluded semantic labels, the drawn maps).
 Pipeline-policy keys written in the `distance` section
@@ -24,6 +24,7 @@ from det_depth_distance.adapters.depth.da3 import ProcessResMethod
 from det_depth_distance.core.labels import SEMANTIC_NAME_PATTERN, group_semantic_labels
 from det_depth_distance.core.options import ConfigError, from_mapping
 from det_depth_distance.distance import DistanceConfig, RegionPolicy
+from det_depth_distance.temporal import SmoothingConfig
 
 
 @dataclass(frozen=True, slots=True)
@@ -92,6 +93,8 @@ class RenderConfig:
     # Names of the semantic maps drawn in the video (None = all), in the order
     # of `semantic`; checked against the segmenter names by RunConfig.
     semantic_overlay: tuple[str, ...] | None = None
+    show_smoothed: bool = True  # label shows the smoothed distance (raw stays in CSV)
+    show_speed: bool = True  # label shows the relative speed (kalman smoothing)
 
     def __post_init__(self) -> None:
         if self.max_depth <= 0:
@@ -151,6 +154,11 @@ class RunConfig:
     # kept separately in FrameResult.semantic under its required, unique name.
     semantic: tuple[Mapping[str, Any], ...] = ()
     agreement: AgreementConfig = field(default_factory=AgreementConfig)
+    # Flat tracker spec {type, name?, **options}, validated by
+    # registry.build("tracker", ...); None = no tracking.
+    tracking: Mapping[str, Any] | None = None
+    # Per-track distance smoothing; needs tracking (checked by the Pipeline).
+    smoothing: SmoothingConfig | None = None
     distance: DistanceConfig = field(default_factory=DistanceConfig)
     exclude_sky: bool = True  # from distance.exclude_sky (PIPELINE_DISTANCE_KEYS)
     region: RegionPolicy = "mask"  # from distance.region (PIPELINE_DISTANCE_KEYS)

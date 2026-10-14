@@ -7,7 +7,8 @@ their framework (colour order, letterbox, units, class names) and return the
 shared contracts of `core.types`; the base classes apply the common policy
 (class filter, label mapping, target selection, contract validation) as
 template methods. Families: detectors, depth models, mask refiners (fill
-instance masks from boxes) and semantic segmenters (per-pixel class maps).
+instance masks from boxes), semantic segmenters (per-pixel class maps) and
+trackers (stable instance ids across frames).
 
 Layered options rule: option dataclasses are `frozen=True, slots=True,
 kw_only=True`; a subclass whose `__post_init__` adds checks calls the base
@@ -56,7 +57,8 @@ class LoadContext:
 class Component(ABC):
     """A configurable model wrapper with an explicit load/close life cycle."""
 
-    kind: ClassVar[str]  # registry family: "detector", "depth", "refiner", "semantic"
+    # registry family: "detector", "depth", "refiner", "semantic", "tracker"
+    kind: ClassVar[str]
     type_name: ClassVar[str]  # set by @register
     Options: ClassVar[type]  # dataclass of the adapter's options
 
@@ -401,3 +403,64 @@ class SemanticSegmenter(Component):
     @abstractmethod
     def _segment(self, rgb: np.ndarray) -> SemanticMap:
         """Labels of an (H, W, 3) uint8 RGB frame at frame resolution."""
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class TrackerOptions:
+    """Options shared by every tracker (none yet; kw_only: adapters add their own).
+
+    It has no `__post_init__`; if it gets one, subclasses call it as
+    `TrackerOptions.__post_init__(self)` (see the layered options rule above).
+    """
+
+
+class Tracker(Component):
+    """Assigns a stable `track_id` to every instance across frames.
+
+    Stateful per run: `load()` resets it, `close()` drops the state, `reset()`
+    starts over (ids restart at 1). Template method: the adapter's `_assign`
+    returns one id per instance and the base checks the contract - same
+    instances in the same order, int64 ids >= 1, unique within the frame.
+    Instances are never dropped; short-lived tracks are filtered in reports,
+    not in the stream. Receives the whole Frame so appearance-based trackers
+    can be added without changing the pipeline.
+    """
+
+    kind = "tracker"
+
+    def reset(self) -> None:
+        """Forget every track; the next id is 1 again."""
+        self._reset()
+
+    def __call__(self, frame: Frame, instances: Instances) -> Instances:
+        """Return `instances` (same length and order) with `track_id` set.
+
+        Frames must come in time order (`frame.t` non-decreasing) within a run.
+
+        Raises:
+            ContractError: not loaded, or the adapter returned ids of the wrong
+                shape or dtype, ids < 1 or an id repeated within the frame.
+        """
+        self._require_loaded()
+        ids = self._assign(frame, instances)
+        out = dataclasses.replace(instances, track_id=ids)
+        out.validate(frame.width, frame.height)
+        if len(np.unique(ids)) != len(ids):
+            raise ContractError(f"{self.name}: repeated track id within a frame")
+        return out
+
+    def _load(self, ctx: LoadContext) -> None:
+        # Nothing to load for geometric trackers; appearance-based ones (ReID)
+        # override this to load their model, and call reset() too.
+        self.reset()
+
+    def _close(self) -> None:
+        self._reset()
+
+    @abstractmethod
+    def _reset(self) -> None:
+        """Drop every track and restart the id counter at 1."""
+
+    @abstractmethod
+    def _assign(self, frame: Frame, instances: Instances) -> np.ndarray:
+        """(N,) int64 track id of every instance, in order."""

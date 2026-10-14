@@ -29,6 +29,7 @@
 - [Configuração YAML](#configuração-yaml)
 - [Refinadores de máscara](#refinadores-de-máscara)
 - [Segmentação semântica](#segmentação-semântica)
+- [Rastreamento e suavização](#rastreamento-e-suavização)
 - [Pesos dos refinadores e do SegFormer](#pesos-dos-refinadores-e-do-segformer)
 - [Saídas](#saídas)
 - [Como a distância é calculada](#como-a-distância-é-calculada)
@@ -49,13 +50,15 @@ distâncias, mais um CSV por detecção.
 
 O pipeline é organizado em **componentes com contratos abstratos**
 (`Detector`, `DepthEstimator`, agregador, `MaskRefiner`,
-`SemanticSegmenter`): cada modelo é um adaptador que trata as
+`SemanticSegmenter`, `Tracker`): cada modelo é um adaptador que trata as
 particularidades do seu framework e entrega sempre os mesmos tipos
 (`Instances`, `DepthResult`, `SemanticMap`), e a execução inteira é descrita
 por um arquivo YAML (`configs/`). Refinadores da família SAM transformam as
 caixas de qualquer detector em máscaras, e segmentadores semânticos (vários
 por execução) tornam inelegíveis para a distância os pixels de classes de
-fundo (estrada, céu, vegetação, faixas).
+fundo (estrada, céu, vegetação, faixas). Um rastreador opcional dá a cada
+objeto um ID estável entre quadros, e a distância de cada trilha pode ser
+suavizada no tempo (com estimativa da velocidade relativa).
 
 O foco é **qualidade da estimativa**, não tempo real: os modelos rodam
 em PyTorch, quadro a quadro. A inferência é feita no servidor GPU `gpu-host`;
@@ -73,9 +76,11 @@ o desenvolvimento e os testes unitários rodam localmente.
 - **Medir a concordância** entre detectores (`agreement`): por par, quantos objetos casam por IoU e quantos são exclusivos de cada um, por quadro e no total do `metrics.json`.
 - **Refinar** máscaras a partir das caixas de qualquer detector (`refiners`): SAM 2.1 (`sam2`, padrão dos exemplos), EdgeTAM, SAM-HQ, SAM, SAM 3 (rastreador; *gated*) via `transformers` e MobileSAM/SAM via Ultralytics (`ultralytics_sam`), todos sobre a mesma base `BoxPromptRefiner` (um *embedding* por quadro, caixas em lote, máscara de maior IoU previsto); por padrão só instâncias sem máscara (`targets: missing`), e uma máscara refinada vazia nunca substitui a existente.
 - **Segmentar semanticamente** cada quadro com um ou mais segmentadores nomeados (`semantic`: SegFormer Cityscapes, TwinLiteNet+ área trafegável/faixas), sem fundir os mapas, e excluir classes do cálculo de distância por `distance.exclude_semantic: [<nome>.<classe>, …]` (união das exclusões).
+- **Rastrear** objetos entre quadros (`tracking: {type: iou}`): associação gulosa por IoU com predição da caixa por velocidade constante (em px/s, tolera `stride` até 5 a 30 fps), agnóstica de classe por padrão (detectores alternam `car`/`truck` no mesmo objeto) e por detector com `concat`; `track_id` no CSV e `#id` no rótulo do vídeo; numpy puro, sem dependência nova.
+- **Suavizar** a distância de cada trilha (`smoothing`): Kalman 1D com velocidade (padrão; estima também a velocidade relativa em m/s e as incertezas), média móvel exponencial ou mediana causal, com parâmetros em segundos; a distância bruta continua no CSV.
 - **Estimar** profundidade métrica com Depth Anything 3 (`da3metric-large` com focal informada ou estimada; modelos NESTED já em metros).
 - **Calcular** a distância de cada objeto com estatísticas robustas sobre a **máscara** da instância (quando o modelo a fornece; reamostrada para o mapa e erodida) ou sobre a caixa: encolhimento da caixa, exclusão de céu, rejeição de outliers (`iqr`, `mad`, `sigma`) e estatística configurável (`median`, `mean`, `trimmed`, `mode`, `pXX`), em profundidade `z` ou distância euclidiana; `distance.region: both` registra as duas distâncias para comparação.
-- **Renderizar** vídeo anotado (rótulo `classe conf · D m ± σ`, camadas semânticas e máscara translúcida por instância, HUD com tempos) e, opcionalmente, o mapa de profundidade lado a lado com legenda em metros.
+- **Renderizar** vídeo anotado (rótulo `[#id] classe conf · D m ± σ [· v m/s]`, camadas semânticas e máscara translúcida por instância, HUD com tempos) e, opcionalmente, o mapa de profundidade lado a lado com legenda em metros.
 - **Registrar** uma linha de CSV por caixa com todas as estatísticas, `metrics.json` com tempos, VRAM, focal e versões, e opcionalmente os mapas em `depth.npz`.
 - **Configurar** a execução inteira por YAML, com ajustes rápidos por `--set chave.pontilhada=valor` e `--list-models` para ver adaptadores e opções.
 - **Validar** a configuração (chaves desconhecidas, tipos, faixas, classes) antes de carregar modelos e reportar erros sem traceback (código de saída 2).
@@ -113,19 +118,20 @@ rodam sem torch.
 det-depth-distance/
 ├── pyproject.toml           # manifesto uv; extra "infer" com a stack GPU
 ├── uv.lock                  # lock versionado
-├── configs/                 # exemplos de YAML: rfdetr_da3, yolo_o365_da3, multi_detector(_fused), rfdetr_seg_da3, yolo_seg_da3, yolo_o365_seg_da3, rfdetr_sam2_da3, yolo_o365_sam2_da3, rfdetr_semantic_da3, rfdetr_lanes_scene_da3
+├── configs/                 # exemplos de YAML: rfdetr_da3, yolo_o365_da3, multi_detector(_fused), rfdetr_seg_da3, yolo_seg_da3, yolo_o365_seg_da3, rfdetr_sam2_da3, yolo_o365_sam2_da3, rfdetr_semantic_da3, rfdetr_lanes_scene_da3, rfdetr_da3_track
 │   └── labels/              # mapas de rótulos por vocabulário: coco_driving, objects365_driving
 ├── src/det_depth_distance/
 │   ├── core/                # contratos e orquestração, sem frameworks
-│   │   ├── types.py         # Frame, Instances, DepthResult, FrameResult, RefinedMasks, SemanticMap, MapGeometry, CameraIntrinsics
+│   │   ├── types.py         # Frame, Instances, DepthResult, FrameResult, RefinedMasks, SemanticMap, TrackEstimate, MapGeometry, CameraIntrinsics
 │   │   ├── options.py       # ConfigError, from_mapping (YAML -> dataclass com caminho nos erros)
-│   │   ├── components.py    # Component, Detector, DepthEstimator, MaskRefiner, SemanticSegmenter (ABCs) e opções base
+│   │   ├── components.py    # Component, Detector, DepthEstimator, MaskRefiner, SemanticSegmenter, Tracker (ABCs) e opções base
 │   │   ├── registry.py      # @register, build, available, load_adapters
 │   │   ├── labels.py        # vocabulários COCO/Objects365, presets de classes, LabelMap, rótulos <nome>.<classe>
 │   │   ├── boxes.py         # IoU, casamento guloso, clusters de NMS e WBF (numpy puro)
 │   │   ├── aggregate.py     # Aggregator, Concat, FusionAggregator, Nms, Wbf
 │   │   ├── agreement.py     # concordância entre detectores por quadro + resumo
-│   │   └── pipeline.py      # Pipeline: detectores -> concordância -> agregação -> refinadores -> profundidade -> semântica -> elegibilidade -> distância
+│   │   ├── tracking.py      # IouTracker (IoU + velocidade constante) e TrackSummary (resumo por trilha)
+│   │   └── pipeline.py      # Pipeline: detectores -> concordância -> agregação -> refinadores -> rastreador -> profundidade -> semântica -> elegibilidade -> distância -> suavização
 │   ├── adapters/
 │   │   ├── detectors/       # rfdetr.py, ultralytics_yolo.py
 │   │   ├── depth/           # da3.py (geometria do mapa, focal, conversão para metros)
@@ -137,6 +143,7 @@ det-depth-distance/
 │   ├── camera.py            # provedores de intrínsecos: focal fixa ou estimada
 │   ├── config.py            # RunConfig, load_config, --set
 │   ├── distance.py          # numpy puro: caixa ou máscara -> pixels do mapa -> estatísticas robustas
+│   ├── temporal.py          # numpy puro: suavização por trilha (Kalman 1D, EMA, mediana) e SmoothingConfig
 │   ├── render.py            # caixas, máscaras, rótulos, HUD, painel de profundidade + legenda
 │   ├── runtime.py           # memória da GPU, versões, commit
 │   ├── cli.py               # --config/--set/--list-models; raiz de composição
@@ -204,7 +211,7 @@ uv run --extra infer python -m det_depth_distance --list-models
 | `--config PATH` | Arquivo YAML com a execução inteira (obrigatório, exceto com `--list-models`) |
 | `VIDEO` (opcional) | Sobrescreve `source.video` |
 | `--set chave=valor` | Repetível; caminho pontilhado com índice de lista (`detectors.0.threshold=0.3`); valor lido como YAML (`null`, `true`, números); um valor-mapa ou lista substitui a seção inteira (`--set 'aggregation={type: concat}'`) |
-| `--list-models` | Lista detectores, modelos de profundidade, agregadores, refinadores de máscara e segmentadores semânticos registrados com suas opções e padrões |
+| `--list-models` | Lista detectores, modelos de profundidade, agregadores, rastreadores, refinadores de máscara e segmentadores semânticos registrados com suas opções e padrões |
 
 Use `--extra infer` também no `uv sync`: sem ele o sync (exato por padrão)
 remove a stack GPU. Erros de configuração terminam com `error: …` e código 2
@@ -230,6 +237,8 @@ rótulos `objects365_driving`). Refinadores e semântica (`task_0005`):
 `rfdetr_sam2_da3.yaml` e `yolo_o365_sam2_da3.yaml` (máscaras SAM 2.1 das
 caixas, `region: both`), `rfdetr_semantic_da3.yaml` (SegFormer `scene`) e
 `rfdetr_lanes_scene_da3.yaml` (TwinLiteNet+ `lanes` + SegFormer `scene`).
+Rastreamento e suavização (`task_0006`): `rfdetr_da3_track.yaml`
+(`rfdetr_da3.yaml` + rastreador IoU + Kalman, `layout: side-by-side`).
 Caminhos aceitam `~` e, quando relativos, são
 resolvidos a partir do diretório de execução (a raiz do repositório); chaves
 desconhecidas são erro (com o caminho, ex.
@@ -245,9 +254,11 @@ desconhecidas são erro (com o caminho, ex.
 | `aggregation` | `type`: `concat` (padrão; mantém todas as caixas, marcadas por `source`), `nms` ou `wbf` (opções abaixo) |
 | `refiners` | Lista (padrão `[]`), aplicada em ordem depois da agregação (cada um vê as máscaras do anterior); item `{type, name?, …}`, ver [Refinadores de máscara](#refinadores-de-máscara) |
 | `semantic` | Lista (padrão `[]`) de segmentadores, rodados em ordem sobre o mesmo quadro; item `{name, type, …}` com `name` **obrigatório** e único (`[a-z0-9][a-z0-9_-]*`), ver [Segmentação semântica](#segmentação-semântica) |
+| `tracking` | `null` (padrão: sem rastreamento) ou `{type: iou, name?, …}`, ver [Rastreamento e suavização](#rastreamento-e-suavização) |
+| `smoothing` | `null` (padrão) ou seção com `filter` (`kalman`) e parâmetros do filtro; exige `tracking` |
 | `agreement` | `enabled` (true; só tem efeito com ≥ 2 detectores); `iou_thr` (0.5, em (0, 1)); `class_aware` (true: só casa rótulos canônicos iguais) |
 | `distance` | `box_shrink` (0.1); `outlier` (`iqr`); `outlier_k` (null = padrão do método); `stat` (`median`, `mean`, `trimmed`, `mode`, `pXX`); `distance_type` (`z` ou `euclidean`); `min_valid_px` (20); `max_range` (0 = sem limite); `mask_erode` (1; erosão da máscara em pixels do mapa, ≥ 0); `exclude_sky` (true); `region` (`mask`: máscara quando a instância tem, senão caixa; `box`: sempre a caixa; `both`: como `mask` e grava também a distância da caixa); `exclude_semantic` (`[]`; rótulos `<nome>.<classe>` — lista YAML ou texto com vírgulas — cujos pixels saem do cálculo, ex. `[scene.road, lanes.lane]`) |
-| `render` | `layout` (`overlay` ou `side-by-side`); `show_stats` (false); `draw_inner_box` (false); `max_depth` (30 m); `cmap` (`turbo`); `crf` (20); `hud` (true); `font` (null); `mask_alpha` (0.35, em [0, 1]; opacidade da máscara; 0 não desenha máscaras); `semantic_alpha` (0.4, em [0, 1]; 0 não desenha camadas semânticas); `semantic_overlay` (null = todos os mapas; lista de nomes de `semantic` a desenhar) |
+| `render` | `layout` (`overlay` ou `side-by-side`); `show_stats` (false); `draw_inner_box` (false); `max_depth` (30 m); `cmap` (`turbo`); `crf` (20); `hud` (true); `font` (null); `mask_alpha` (0.35, em [0, 1]; opacidade da máscara; 0 não desenha máscaras); `semantic_alpha` (0.4, em [0, 1]; 0 não desenha camadas semânticas); `semantic_overlay` (null = todos os mapas; lista de nomes de `semantic` a desenhar); `show_smoothed` (true; rótulo com a distância suavizada quando há estimativa — a bruta segue no CSV); `show_speed` (true; velocidade relativa no rótulo, só com `kalman`) |
 | `output` | `out_root` (`_testbed/outputs`); `tag` (""); `save_depth` (false) |
 
 ### Mapas de rótulos e fusão entre detectores
@@ -382,6 +393,71 @@ Domínios: Cityscapes e BDD100K são cenas de rua; em cena agrícola
 edita um item (`semantic.0` em `rfdetr_semantic_da3.yaml`, `semantic.1` em
 `rfdetr_lanes_scene_da3.yaml`).
 
+### Rastreamento e suavização
+
+`tracking` atribui a cada instância um `track_id` (inteiro ≥ 1, estável
+entre quadros) depois da agregação e dos refinadores; `smoothing` filtra, por
+trilha, a distância já calculada. Os dois vêm desligados (`null`) e, assim,
+as saídas são idênticas às da `task_0005` (colunas novas vazias).
+
+- **Associação** (`iou`): a caixa de cada trilha é prevista no instante do
+  quadro (`motion: constant_velocity`, velocidade em px/s por média móvel;
+  `none` = caixa parada) e casada um-para-um, por IoU decrescente
+  (≥ `iou_thr`), com as instâncias do mesmo **grupo**: o `source` para
+  instâncias não fundidas (com `concat`, as cópias do mesmo objeto vistas
+  por dois detectores mantêm IDs próprios) e um grupo único para instâncias
+  fundidas (`nms`/`wbf`: uma trilha por objeto mesmo quando o representante
+  troca de detector); o rótulo entra no grupo só com `class_aware: true`.
+- **Ciclo de vida**: instância não casada abre trilha (toda instância tem ID
+  desde o quadro em que aparece); trilha sem casamento por mais de
+  `max_age_s` morre, e o objeto que reaparece ganha ID novo. O rótulo da
+  trilha no resumo é a moda dos rótulos.
+- **Tempo em segundos**: `dt` sai de `Frame.t`, então os parâmetros valem com
+  qualquer `source.stride`. Numa reprodução *offline* sobre os
+  `detections.csv` da `task_0001` (não é execução na GPU), a associação se
+  mantém até `stride 5` a 30 fps e fragmenta em `stride 10`.
+- **Filtros** (`smoothing.filter`): `kalman` (estado distância + taxa de
+  variação, aceleração branca `accel_std`; único que estima
+  `rel_speed_mps` — positiva = afastando, negativa = aproximando — e os
+  desvios), `ema` (`α = 1 − exp(−dt/tau_s)`) e `median` (mediana causal das
+  medidas com `t ≥ t_agora − window_s`). Sem distância no quadro (`n/a`) o
+  Kalman só prediz e os demais mantêm o valor; trilha sem medida por mais de
+  `reset_after_s` recomeça o filtro.
+- **Incerteza da medida**: `σ = max(std_scale · std, rel_floor · d)`, com o
+  `std` da caixa/máscara. Nos vídeos da `task_0001` o `std` superestima o
+  ruído quadro a quadro 1,3–3× e `std/√n_inliers` o subestima 10–30×.
+- **Limites**: o ruído do DA3 é correlacionado no tempo (AR(1), ρ ≈ 0,7): o
+  filtro reduz o *jitter* 3,5–4,5× (desvio de `Δd` 0,213 → 0,060 m/quadro e
+  0,568 → 0,127 m/quadro nos dois vídeos da `task_0001`, em reprodução
+  *offline* dos seus `detections.csv`; validação na GPU pendente) mas só ~20 % do erro de nível, e
+  não corrige viés do DA3 ou da focal (`task_0007`). Acima de ~30 m (caixas
+  pequenas) a distância oscila ±2–4 m em ~1 s, indistinguível de movimento
+  real: a velocidade relativa ali não é confiável (ver `rel_speed_std_mps`).
+  O rastreador do ultralytics (ByteTrack/BoT-SORT) não é usado: exige `lap`,
+  importa `torch`, conta tempo em chamadas e é AGPL-3.0.
+
+| `tracking` (`type: iou`) | Padrão | Efeito |
+|---|---|---|
+| `iou_thr` | 0.3 | IoU mínima de um casamento, em (0, 1) |
+| `max_age_s` | 0.5 | segundos sem casamento até a trilha morrer (> 0; limite inclusivo); na reprodução *offline* da `task_0001` a maior lacuna dentro de uma trilha foi 0,5 s (no limite) |
+| `motion` | `constant_velocity` | predição da caixa; `none` = caixa parada |
+| `velocity_alpha` | 0.5 | peso da velocidade mais recente, em (0, 1]; o 1º casamento define a velocidade |
+| `class_aware` | false | true: só casa rótulos iguais (quebra trilhas quando o detector troca `car`/`truck`) |
+
+| `smoothing` | Padrão | Efeito |
+|---|---|---|
+| `filter` | `kalman` | `kalman`, `ema` ou `median` |
+| `accel_std` | 2.0 | `kalman`: desvio da aceleração (m/s², > 0); maior = segue mais rápido, suaviza menos |
+| `std_scale` / `rel_floor` | 0.5 / 0.01 | modelo de incerteza acima (≥ 0, não ambos 0) |
+| `init_speed_std` | 5.0 | `kalman`: desvio inicial da velocidade (m/s) |
+| `tau_s` | 0.1 | `ema`: constante de tempo (s; α 0,28 a 30 fps) |
+| `window_s` | 0.15 | `median`: janela causal (s; 5 quadros a 30 fps) |
+| `reset_after_s` | 1.0 | estado descartado após esse tempo sem medida da trilha |
+
+`--set 'tracking={type: iou, iou_thr: 0.5}'` troca a seção,
+`--set tracking=null` desliga e `--set smoothing.filter=ema` troca o filtro.
+`smoothing` sem `tracking` é erro de configuração.
+
 ### Pesos dos refinadores e do SegFormer
 
 Nada é baixado em tempo de execução (`local_files_only=True`); um peso
@@ -412,9 +488,9 @@ Cada execução cria `<output.out_root>/<AAAAmmdd_HHMMSS>_<vídeo>_<detectores>_
 
 | Arquivo | Conteúdo |
 |---|---|
-| `video.mp4` | Vídeo anotado (H.264); com mais de um detector e `concat`, cor e contagem do HUD por modelo de origem; com fusão, cor pelo rótulo canônico, `×N` no rótulo quando N detectores viram o objeto e linhas de HUD com o agregador e a concordância (`agree <m> · only <a> <x> · only <b> <y>`); máscaras translúcidas na cor da instância, no quadro e no painel de profundidade, e `· region <política> · erode <k>` na linha de distância do HUD nos quadros em que alguma instância usou a máscara; camadas semânticas translúcidas (cor pelo nome da classe, por baixo das máscaras e caixas, só no painel do quadro, na ordem de `semantic`) e linhas de HUD `refine <nome> · <preenchidas>/<alvos>` e `semantic <nome> · excl <classes>`; áudio copiado quando o vídeo inteiro é processado sem `stride` |
-| `detections.csv` | Uma linha por caixa: quadro, tempo, classe, confiança, caixa, região amostrada no mapa, `n_valid`/`n_inliers`/`inlier_frac`, média, mediana, desvio, variância, p10–p90, mín/máx, `distance_m` (vazio = n/a) e, no fim, `source` (detector de origem), `raw_label` (nome no vocabulário do modelo), `n_sources` (nº de detectores que viram o objeto; 1 sem fusão), `sources`, `source_scores` e `raw_labels` (um item por detector, o seu melhor membro, separados por `\|`, em score decrescente), e por fim `used_mask` (1 = estatísticas sobre a máscara), `mask_px` (pixels do mapa da máscara erodida; `mask_px / n_box_px` = ocupação da caixa), `mask_erode` (erosão aplicada) e `box_distance_m` (só com `region: both`, distância pela caixa da instância que usou máscara) e, por último, `mask_source` (componente que produziu a máscara — detector, refinador ou membro da fusão dono da máscara —; vazio = sem máscara) e `mask_score` (qualidade prevista pelo refinador, 4 casas; vazio para máscaras de detector). Com máscara, as colunas de estatística descrevem a máscara e `n_box_px` é a janela da caixa sem encolhimento. A semântica não acrescenta colunas |
-| `metrics.json` | `components` (descrição de cada detector, da profundidade, do agregador, dos `refiners` e dos `semantic`), `pipeline` (política: `exclude_sky`, `agreement`, `region`, `mask_erode`, `exclude_semantic` como `{nome: [classes]}`), tempos por etapa (`det`, `det.<nome>`, `agree`, `aggregate`, `refine`/`refine.<nome>` e `semantic`/`semantic.<nome>` quando existem, `depth`, `dist`, `render`), `mask_sources` (instâncias com máscara por produtor), `refined` (por refinador: `targets` e `filled`), `semantic` (só com segmentador: por mapa `exclude`, `class_frac_mean`, `excluded_frac_mean`; no topo, `excluded_frac_mean` da união das exclusões), VRAM, focal (px do quadro e intrínsecos do mapa) e origem, parâmetros de distância, contagens (`detections_total`, `detections_by_source`, `detections_by_n_sources`), `distance_regions` (`{"mask": n, "box": n}`), `region_comparison` (só com `region: both`: diferença máscara − caixa com `n`, `median_signed_m`, `median_abs_m`, `p90_abs_m`, `median_rel`, total e `by_label`), `agreement` (com ≥ 2 detectores: por detector `instances`/`duplicates`; por par `matched`/`only_a`/`only_b`/`mean_iou`; séries por quadro em `per_frame`), versões (inclui `transformers` e `timm`), commit e `config` (YAML resolvido) |
+| `video.mp4` | Vídeo anotado (H.264); com mais de um detector e `concat`, cor e contagem do HUD por modelo de origem; com fusão, cor pelo rótulo canônico, `×N` no rótulo quando N detectores viram o objeto e linhas de HUD com o agregador e a concordância (`agree <m> · only <a> <x> · only <b> <y>`); máscaras translúcidas na cor da instância, no quadro e no painel de profundidade, e `· region <política> · erode <k>` na linha de distância do HUD nos quadros em que alguma instância usou a máscara; camadas semânticas translúcidas (cor pelo nome da classe, por baixo das máscaras e caixas, só no painel do quadro, na ordem de `semantic`) e linhas de HUD `refine <nome> · <preenchidas>/<alvos>` e `semantic <nome> · excl <classes>`; com rastreamento, rótulo `#<id> classe conf · D m · ±v m/s` (distância suavizada com `show_smoothed`, velocidade com `show_speed`) e última linha de HUD `track iou · IoU ≥ 0.3 · age 0.5 s · kalman q 2 · ids <trilhas abertas>`; áudio copiado quando o vídeo inteiro é processado sem `stride` |
+| `detections.csv` | Uma linha por caixa: quadro, tempo, classe, confiança, caixa, região amostrada no mapa, `n_valid`/`n_inliers`/`inlier_frac`, média, mediana, desvio, variância, p10–p90, mín/máx, `distance_m` (vazio = n/a) e, no fim, `source` (detector de origem), `raw_label` (nome no vocabulário do modelo), `n_sources` (nº de detectores que viram o objeto; 1 sem fusão), `sources`, `source_scores` e `raw_labels` (um item por detector, o seu melhor membro, separados por `\|`, em score decrescente), e por fim `used_mask` (1 = estatísticas sobre a máscara), `mask_px` (pixels do mapa da máscara erodida; `mask_px / n_box_px` = ocupação da caixa), `mask_erode` (erosão aplicada) e `box_distance_m` (só com `region: both`, distância pela caixa da instância que usou máscara) e, por último, `mask_source` (componente que produziu a máscara — detector, refinador ou membro da fusão dono da máscara —; vazio = sem máscara) e `mask_score` (qualidade prevista pelo refinador, 4 casas; vazio para máscaras de detector) e, no fim, `track_id`, `distance_smooth_m`, `distance_smooth_std_m`, `rel_speed_mps` e `rel_speed_std_mps` (vazias sem rastreamento/suavização; desvios e velocidade só com `kalman`; `distance_m` segue sendo a distância bruta). Com máscara, as colunas de estatística descrevem a máscara e `n_box_px` é a janela da caixa sem encolhimento. A semântica não acrescenta colunas |
+| `metrics.json` | `components` (descrição de cada detector, da profundidade, do agregador, dos `refiners` e dos `semantic`), `pipeline` (política: `exclude_sky`, `agreement`, `region`, `mask_erode`, `exclude_semantic` como `{nome: [classes]}`, `smoothing`), `components.tracker` (null sem rastreamento), tempos por etapa (`det`, `det.<nome>`, `agree`, `aggregate`, `refine`/`refine.<nome>`, `track`, `semantic`/`semantic.<nome>` e `smooth` quando existem, `depth`, `dist`, `render`), `tracks` (só com rastreador: `n_tracks`, `short_tracks` — trilhas com menos de `min_duration_s` = 1 s, fora da lista — e `per_track` com `id`, `label` (moda), `labels`, `label_changes`, `sources`, `first_frame`/`last_frame`/`first_t`, `duration_s`, `n_frames`, `coverage`, `gaps`, `max_gap_s`, `distance_m` {min, median, max}, `jitter_raw_m`/`jitter_smooth_m` (desvio da diferença quadro a quadro) e `rel_speed_mps` {p5, median, p95}), `mask_sources` (instâncias com máscara por produtor), `refined` (por refinador: `targets` e `filled`), `semantic` (só com segmentador: por mapa `exclude`, `class_frac_mean`, `excluded_frac_mean`; no topo, `excluded_frac_mean` da união das exclusões), VRAM, focal (px do quadro e intrínsecos do mapa) e origem, parâmetros de distância, contagens (`detections_total`, `detections_by_source`, `detections_by_n_sources`), `distance_regions` (`{"mask": n, "box": n}`), `region_comparison` (só com `region: both`: diferença máscara − caixa com `n`, `median_signed_m`, `median_abs_m`, `p90_abs_m`, `median_rel`, total e `by_label`), `agreement` (com ≥ 2 detectores: por detector `instances`/`duplicates`; por par `matched`/`only_a`/`only_b`/`mean_iou`; séries por quadro em `per_frame`), versões (inclui `transformers` e `timm`), commit e `config` (YAML resolvido) |
 | `depth.npz` | Só com `output.save_depth: true`: mapas em metros (`float16`), índices dos quadros, intrínsecos por quadro (`fx, fy, cx, cy` na resolução do mapa) e geometria (`geometry` + `geometry_fields`); com segmentadores, por nome, `semantic_labels_<nome>` (`(F, map_h, map_w)`, `uint8` até 256 classes, rótulos amostrados na grade do mapa como na elegibilidade) e `semantic_classes_<nome>` |
 
 Prévia leve para trazer ao laptop:
@@ -470,5 +546,5 @@ Variáveis opcionais: `SYNC_HOST` (padrão `gpu-host`) e `SYNC_DEST` (padrão
 - [x] **Fusão entre detectores** (`task_0003`) — harmonização de rótulos, NMS/WBF entre modelos e métricas de concordância.
 - [x] **Segmentação de instâncias** (`task_0004`) — YOLO26-seg e RF-DETR-Seg; distância pela máscara (`distance.region`, `mask_erode`), máscaras no vídeo e colunas de máscara no CSV.
 - [x] **Refinadores de máscara e segmentação semântica** (`task_0005`) — família SAM (SAM2, EdgeTAM, SAM-HQ, SAM, SAM3) e MobileSAM via hierarquia `BoxPromptRefiner`; vários segmentadores semânticos nomeados (SegFormer, TwinLiteNet+) com exclusão de classes por `<nome>.<classe>`. Validação no servidor GPU pendente (testes `-m gpu`, pesos e execuções A–E).
-- [ ] **Rastreamento e suavização temporal** (`task_0006`) — ID por objeto, distância suavizada e velocidade relativa.
+- [x] **Rastreamento e suavização temporal** (`task_0006`) — rastreador IoU com velocidade constante (`track_id`), suavização por trilha (Kalman 1D, EMA, mediana), velocidade relativa e resumo por trilha no `metrics.json`. Validação no servidor GPU pendente (regressão `-m gpu` e execuções nos vídeos reais).
 - [ ] **Calibração e avaliação** (`task_0007`) — focal calibrada, protocolo de verdade de campo e relatório de erro.

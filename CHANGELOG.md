@@ -4,6 +4,96 @@ Todas as mudancas relevantes do det-depth-distance serao documentadas neste arqu
 
 ---
 
+## [2026-10-13] Rastreamento de objetos e suavizacao temporal da distancia
+
+Cada quadro era processado isoladamente: a distancia de um mesmo objeto
+oscilava de um quadro para o outro e nao havia identidade do objeto ao
+longo do video. A task_0006 adiciona um rastreador opcional, que da a cada
+objeto um ID estavel, e a suavizacao da distancia por trilha, que tambem
+estima a velocidade relativa. Tudo vem desligado por padrao; desligado, os
+resultados sao exatamente os de antes.
+
+### Novo: Rastreamento (`tracking`)
+
+- **Rastreador IoU proprio** (`tracking: {type: iou}`), em numpy puro:
+  casa cada trilha com a deteccao de maior sobreposicao, prevendo a caixa
+  por velocidade constante, e mantem a trilha viva por `max_age_s`
+  (0,5 s) sem casamento.
+- **Agnostico de classe** por padrao (os detectores alternam `car`/`truck`
+  no mesmo objeto); com varios detectores em `concat`, cada detector tem
+  as proprias trilhas; com fusao, uma trilha por objeto.
+- **Parametros em segundos**, calculados pelo tempo real de cada quadro:
+  funciona com `source.stride` (ate 5 a 30 fps numa reproducao offline
+  dos `detections.csv` da task_0001; validacao na GPU pendente).
+
+### Novo: Suavizacao por trilha (`smoothing`)
+
+- **Filtros:** `kalman` (padrao; estima distancia, velocidade relativa e
+  as incertezas), `ema` (media movel exponencial) e `median` (mediana
+  movel), todos com janelas em segundos.
+- **Incerteza da medida:** usa o desvio da caixa ja calculado, escalado e
+  com piso relativo de 1 % da distancia.
+- A distancia bruta continua no CSV, ao lado da suavizada.
+
+### Novo: Saidas
+
+- `detections.csv` ganha no fim `track_id`, `distance_smooth_m`,
+  `distance_smooth_std_m`, `rel_speed_mps` e `rel_speed_std_mps` (vazias
+  sem rastreamento/suavizacao).
+- Video: rotulo com `#<id>` antes da classe e a velocidade no fim
+  (distancia suavizada e velocidade configuraveis em
+  `render.show_smoothed`/`render.show_speed`) e uma linha de HUD com o
+  rastreador e o filtro.
+- `metrics.json` ganha `tracks` (resumo por trilha: rotulo, duracao,
+  cobertura, lacunas, faixa de distancia, jitter bruto e suavizado,
+  percentis da velocidade), `components.tracker`, `pipeline.smoothing` e
+  os tempos `track` e `smooth`.
+
+### Novo: Exemplo de configuracao
+
+- `configs/rfdetr_da3_track.yaml`: `rfdetr_da3.yaml` com rastreador IoU e
+  Kalman, lado a lado com a profundidade.
+
+### Como usar
+
+1. `uv run --extra infer python -m det_depth_distance --config configs/rfdetr_da3_track.yaml`.
+2. Trocar o filtro: `--set smoothing.filter=ema`.
+3. Ajustar o rastreador: `--set 'tracking={type: iou, iou_thr: 0.5}'`;
+   desligar com `--set tracking=null --set smoothing=null`.
+
+### Detalhes tecnicos
+
+- Ordem dos estagios: deteccao -> concordancia -> agregacao -> refinadores
+  -> rastreador -> profundidade -> semantica -> elegibilidade -> distancia
+  -> suavizacao.
+- Novo contrato `Tracker` (mesmo ciclo de vida dos demais componentes);
+  outro rastreador e uma subclasse registrada, outro filtro e uma entrada
+  em `FILTERS`.
+- Os rastreadores do Ultralytics (ByteTrack/BoT-SORT) nao foram usados:
+  exigem o pacote `lap`, importam `torch`, contam tempo em chamadas e sao
+  AGPL-3.0. Nenhuma dependencia nova.
+
+### Observacoes importantes
+
+- O ruido de profundidade e correlacionado no tempo: a suavizacao reduz o
+  jitter quadro a quadro em 3,5 a 4,5 vezes (reproducao offline), mas pouco
+  o erro de nivel, e
+  nao corrige vies do modelo ou da focal. Acima de ~30 m a velocidade
+  relativa nao e confiavel.
+- Reproducao offline com as caixas e distancias dos videos da task_0001
+  confirmou os numeros do planejamento (uma unica trilha para o veiculo
+  lider; jitter 0,213 -> 0,060 m e 0,568 -> 0,127 m por quadro). A
+  validacao no servidor GPU (testes `-m gpu` e execucoes nos videos) ficou
+  pendente: o servidor estava fora do ar durante a implementacao.
+
+### O que nao muda
+
+- Sem `tracking` e `smoothing`, deteccoes, distancias e video sao os
+  mesmos; o CSV so ganha as cinco colunas no fim, vazias, e o
+  `metrics.json` so ganha `components.tracker` e `pipeline.smoothing` nulos.
+
+---
+
 ## [2026-10-13] Refinadores de mascara (familia SAM) e segmentacao semantica
 
 Detectores so de caixas (RF-DETR, YOLO26 Objects365) nao tinham como medir

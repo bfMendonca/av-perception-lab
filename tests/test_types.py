@@ -1,5 +1,4 @@
 import dataclasses
-from dataclasses import dataclass, field
 
 import numpy as np
 import pytest
@@ -20,8 +19,6 @@ from det_depth_distance.core.types import (
     RefinedMasks,
     SemanticMap,
     best_per_source,
-    check_array,
-    per_instance,
 )
 from det_depth_distance.distance import DistanceConfig, box_depth_stats
 
@@ -62,18 +59,8 @@ def test_concat_fills_missing_masks_with_zeros(make_instances):
     out.validate(30, 20)
 
 
-@dataclass(frozen=True, slots=True)
-class Tracked(Instances):
-    """Instances plus a later-task style optional field with its own checker."""
-
-    track_id: np.ndarray | None = field(
-        default=None, metadata=per_instance(check_array(np.int64))
-    )
-
-
 def _tracked(inst, track_id=None):
-    fields = ("xyxy", "score", "class_id", "label", "raw_label", "source")
-    return Tracked(*(getattr(inst, f) for f in fields), track_id=track_id)
+    return dataclasses.replace(inst, track_id=track_id)
 
 
 def test_concat_field_without_fill_is_none_when_partly_missing(make_instances):
@@ -125,14 +112,21 @@ def test_validate_rejects_dtype_and_mask_shape(make_instances):
 
 
 def test_new_field_is_validated_by_its_own_checker(make_instances):
-    base = make_instances([[0, 0, 10, 10]])
-    _tracked(base, np.array([3])).validate(100, 50)
+    # task_0006 track_id: added with default=None and its own checker only.
+    base = make_instances([[0, 0, 10, 10], [5, 5, 20, 20]])
+    _tracked(base, np.array([3, 1])).validate(100, 50)
     _tracked(base).validate(100, 50)  # optional field left None
-    with pytest.raises(ContractError, match="track_id"):
-        _tracked(base, np.array([3.0])).validate(100, 50)
-    assert _tracked(base, np.array([3])).select(np.array([True])).track_id.tolist() == [
-        3
-    ]
+    bad = {
+        "float64": np.array([3.0, 1.0]),
+        "int32": np.array([3, 1], np.int32),
+        "shape": np.array([3]),
+        ">= 1": np.array([3, 0]),
+    }
+    for match, ids in bad.items():
+        with pytest.raises(ContractError, match=f"track_id: .*{match}"):
+            _tracked(base, ids).validate(100, 50)
+    picked = _tracked(base, np.array([3, 1])).select(np.array([False, True]))
+    assert picked.track_id.tolist() == [1]
 
 
 def test_frame_size():
@@ -226,6 +220,8 @@ def test_frame_result_box_stats_is_optional(make_instances):
     assert plain.box_stats is None and plain.agreement is None
     both = FrameResult(frame, inst, stats, depth, {}, box_stats=(stats[0], None))
     assert both.box_stats == (stats[0], None)
+    # task_0006: no smoothing -> no temporal estimates.
+    assert plain.temporal is None
 
 
 def _two_with_one_mask(make_instances):

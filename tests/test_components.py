@@ -13,6 +13,8 @@ from det_depth_distance.core.components import (
     MaskRefiner,
     RefinerOptions,
     SemanticSegmenter,
+    Tracker,
+    TrackerOptions,
 )
 from det_depth_distance.core.labels import COCO
 from det_depth_distance.core.options import ConfigError
@@ -374,3 +376,69 @@ def test_semantic_segmenter_contract():
     other.load(CTX)
     with pytest.raises(ContractError, match="class_names differ"):
         other(FRAME)
+
+
+class FakeTracker(Tracker):
+    """Ids 1..N on the first call, then the previous call's next ids (a counter);
+    `ids` overrides the output to break the contract."""
+
+    type_name = "fake-tracker"
+    Options = TrackerOptions
+
+    def __init__(self, *, ids=None, log=None):
+        super().__init__(TrackerOptions(), name="tracker")
+        self.ids, self.log = ids, log
+        self.resets = 0
+
+    def _reset(self):
+        self.resets += 1
+        self.next_id = 1
+
+    def _assign(self, frame, instances):
+        if self.log is not None:
+            self.log.append("track")
+        if self.ids is not None:
+            return self.ids
+        ids = np.arange(self.next_id, self.next_id + len(instances), dtype=np.int64)
+        self.next_id += len(instances)
+        return ids
+
+    def _close(self):
+        super()._close()
+        if self.log is not None:
+            self.log.append("close tracker")
+
+
+def test_tracker_contract(mixed):
+    tracker = FakeTracker()
+    with pytest.raises(ContractError, match="before load"):
+        tracker(FRAME, mixed)
+    tracker.load(CTX)
+    assert tracker.resets == 1  # load() resets
+    out = tracker(FRAME, mixed)
+    assert out.track_id.tolist() == [1, 2, 3]
+    np.testing.assert_array_equal(out.xyxy, mixed.xyxy)  # same instances, same order
+    np.testing.assert_array_equal(out.masks, mixed.masks)
+    assert tracker(FRAME, mixed).track_id.tolist() == [4, 5, 6]
+    tracker.reset()
+    assert tracker(FRAME, mixed).track_id.tolist() == [1, 2, 3]
+    empty = tracker(FRAME, Instances.empty())
+    assert empty.track_id.shape == (0,) and empty.track_id.dtype == np.int64
+    tracker.close()
+    assert tracker.resets == 3 and not tracker.is_loaded  # close() drops the state
+
+
+@pytest.mark.parametrize(
+    ("ids", "match"),
+    [
+        (np.array([1, 2, 2]), "repeated track id"),
+        (np.array([1, 2]), r"track_id: shape"),
+        (np.array([0, 1, 2]), "track_id: track ids must be >= 1"),
+        (np.array([1.0, 2.0, 3.0]), "track_id: expected int64"),
+    ],
+)
+def test_broken_tracker_is_a_contract_error(mixed, ids, match):
+    tracker = FakeTracker(ids=ids)
+    tracker.load(CTX)
+    with pytest.raises(ContractError, match=match):
+        tracker(FRAME, mixed)

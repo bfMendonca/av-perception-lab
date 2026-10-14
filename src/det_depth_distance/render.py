@@ -8,6 +8,7 @@ colormaps (BGR) are converted on output. The depth panel is resized to the
 exact frame size so the same box and mask coordinates apply to both panels.
 """
 
+import math
 import zlib
 from collections import Counter
 from collections.abc import Sequence
@@ -155,15 +156,26 @@ def format_label(
     distance: float | None,
     spread: float | None = None,
     n_sources: int = 1,
+    *,
+    track_id: int | None = None,
+    rel_speed: float | None = None,
 ) -> str:
-    """Box label, e.g. "truck 94% · 12.3 m ± 0.4" (spread optional) or "truck 94% · n/a";
-    with n_sources > 1 the number of agreeing detectors follows the score
-    ("vehicle 91% ×2 · 12.3 m")."""
+    """Box label, e.g. "#12 truck 94% · 12.3 m ± 0.4 · -1.2 m/s": optional track
+    id prefix, agreeing detectors (×N) after the score, spread after the
+    distance and relative speed (negative = approaching) at the end, only when
+    finite. Without a distance: "truck 94% · n/a"."""
     head = f"{class_name} {score:.0%}" + (f" ×{n_sources}" if n_sources > 1 else "")
+    if track_id is not None:
+        head = f"#{track_id} {head}"
     if distance is None:
-        return f"{head} · n/a"
-    text = f"{head} · {distance:.1f} m"
-    return text if spread is None else f"{text} ± {spread:.1f}"
+        text = f"{head} · n/a"
+    else:
+        text = f"{head} · {distance:.1f} m"
+        if spread is not None:
+            text += f" ± {spread:.1f}"
+    if rel_speed is not None and math.isfinite(rel_speed):
+        text += f" · {rel_speed:+.1f} m/s"
+    return text
 
 
 @dataclass(frozen=True, slots=True)

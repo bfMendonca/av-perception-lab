@@ -1,15 +1,17 @@
 """Model-agnostic per-frame pipeline.
 
-Stages: detectors -> (agreement) -> aggregation -> mask refiners -> depth ->
-semantic segmenters (in config order) -> pixel eligibility (not sky, not in
-the union of excluded "<segmenter>.<class>" labels) -> per-instance distance.
+Stages: detectors -> (agreement) -> aggregation -> mask refiners ->
+tracker -> depth -> semantic segmenters (in config order) -> pixel
+eligibility (not sky, not in the union of excluded "<segmenter>.<class>"
+labels) -> per-instance distance -> per-track temporal smoothing.
 
 Depends only on the abstract components; timings are measured here around
 each stage so components stay stateless per call. `describe()` keeps
 component descriptions ("components") apart from pipeline policy
 ("pipeline"). Distance uses each instance's mask or box according to the
-`region` policy (see distance.instance_depth_stats). Without refiners and
-semantic segmenters every output is the one of the detector-only pipeline.
+`region` policy (see distance.instance_depth_stats). Without refiners,
+semantic segmenters, tracker and smoothing every output is the one of the
+detector-only pipeline.
 
 Import direction: this module may import configuration dataclasses from
 `config`, `temporal`, `camera` and `io.source`; those modules never import
@@ -37,6 +39,7 @@ from det_depth_distance.core.components import (
     LoadContext,
     MaskRefiner,
     SemanticSegmenter,
+    Tracker,
 )
 from det_depth_distance.core.labels import SEMANTIC_NAME_PATTERN, group_semantic_labels
 from det_depth_distance.core.options import ConfigError
@@ -57,6 +60,7 @@ from det_depth_distance.distance import (
     map_eligibility,
 )
 from det_depth_distance.io.source import FrameSource
+from det_depth_distance.temporal import SmoothingConfig, TrackSmoother
 
 T = TypeVar("T")
 
@@ -79,9 +83,9 @@ def _timed(fn: Callable[..., T], *args: Any) -> tuple[T, float]:
 
 
 class Pipeline:
-    """Runs N detectors, the aggregator, the mask refiners, the depth model, the
-    semantic segmenters and the distance statistics on each frame;
-    orchestrates, never decodes or writes."""
+    """Runs N detectors, the aggregator, the mask refiners, the tracker, the depth
+    model, the semantic segmenters, the distance statistics and the temporal
+    smoothing on each frame; orchestrates, never decodes or writes."""
 
     def __init__(
         self,
@@ -98,19 +102,25 @@ class Pipeline:
         refiners: Sequence[MaskRefiner] = (),
         semantic: Sequence[SemanticSegmenter] = (),
         exclude_semantic: str | Sequence[str] = (),
+        tracker: Tracker | None = None,
+        smoothing: SmoothingConfig | None = None,
     ) -> None:
         """Raises ConfigError for no detectors, duplicate component names, an
         invalid semantic segmenter name, an unknown `region` policy, aggregator
-        settings naming unknown detectors (`bind_sources`) or an
-        `exclude_semantic` label whose prefix names no semantic segmenter.
+        settings naming unknown detectors (`bind_sources`), an
+        `exclude_semantic` label whose prefix names no semantic segmenter, or
+        `smoothing` without a `tracker` (it filters per track id).
 
         `agreement` takes effect only when enabled and with two or more detectors.
         `refiners` run in order (each sees the previous one's masks);
         `exclude_semantic` holds "<segmenter>.<class>" labels, as a sequence or a
-        comma-separated string (classes are checked by `load`).
+        comma-separated string (classes are checked by `load`). The `tracker`
+        runs after the refiners; `smoothing` filters each track's distance.
         """
         if not detectors:
             raise ConfigError("detectors: at least one detector is required")
+        if smoothing is not None and tracker is None:
+            raise ConfigError("smoothing: needs tracking (set the tracking section)")
         bad = [
             s.name for s in semantic if not re.fullmatch(SEMANTIC_NAME_PATTERN, s.name)
         ]
@@ -137,6 +147,9 @@ class Pipeline:
         self.refiners = tuple(refiners)
         self.semantic = tuple(semantic)
         self.depth = depth
+        self.tracker = tracker
+        self.smoothing = smoothing
+        self._smoother: TrackSmoother | None = None  # created by load()
         self.aggregator = aggregator
         self.distance = distance
         self.region = region
@@ -169,9 +182,10 @@ class Pipeline:
         return SetupInfo(resolved.intrinsics, resolved.intrinsics.fx, resolved.source)
 
     def load(self, source: FrameSource, info: SetupInfo) -> None:
-        """Load every detector, the depth model, the refiners and the semantic
-        segmenters (in that order) for `source`'s frame size, then resolve the
-        excluded semantic classes against each segmenter's class names.
+        """Load every detector, the depth model, the refiners, the semantic
+        segmenters and the tracker (in that order) for `source`'s frame size,
+        start a fresh track smoother, then resolve the excluded semantic
+        classes against each segmenter's class names.
 
         Raises:
             ConfigError: an excluded class is not a class of its segmenter.
@@ -181,8 +195,11 @@ class Pipeline:
             detector.load(ctx)
         self._warn_disjoint_labels()
         self.depth.load(ctx)
-        for component in (*self.refiners, *self.semantic):
+        for component in (*self.refiners, *self.semantic, *self._trackers):
             component.load(ctx)
+        self._smoother = (
+            TrackSmoother(self.smoothing) if self.smoothing is not None else None
+        )
         self._exclude_ids = {}
         for segmenter in self.semantic:
             classes = self._exclude[segmenter.name]
@@ -236,8 +253,9 @@ class Pipeline:
 
         Timings (ms): "det" (sum), "det.<name>" per detector, "agree" (when
         agreement is computed), "aggregate", "refine" (sum) and "refine.<name>"
-        (only with refiners), "depth", "semantic" (sum) and "semantic.<name>"
-        (only with semantic segmenters), "dist" (eligibility included).
+        (only with refiners), "track" (only with a tracker), "depth", "semantic"
+        (sum) and "semantic.<name>" (only with semantic segmenters), "dist"
+        (eligibility included), "smooth" (only with smoothing).
         """
         parts: list[Instances] = []
         det_ms: dict[str, float] = {}
@@ -256,6 +274,8 @@ class Pipeline:
                     refiner, frame, instances
                 )
             timings |= {"refine": sum(refine_ms.values()), **refine_ms}
+        if self.tracker is not None:
+            instances, timings["track"] = _timed(self.tracker, frame, instances)
         depth, timings["depth"] = _timed(self.depth, frame)
         maps: dict[str, SemanticMap] = {}
         if self.semantic:
@@ -267,8 +287,22 @@ class Pipeline:
         (stats, box_stats), timings["dist"] = _timed(
             self._distances, instances, depth, maps
         )
+        temporal = None
+        if self._smoother is not None:
+            # Primary statistics only: with region "both" box_stats stay raw.
+            temporal, timings["smooth"] = _timed(
+                self._smoother.update, frame.t, instances.track_id, stats
+            )
         return FrameResult(
-            frame, instances, stats, depth, timings, agreement, box_stats, maps
+            frame,
+            instances,
+            stats,
+            depth,
+            timings,
+            agreement,
+            box_stats,
+            maps,
+            temporal=temporal,
         )
 
     def _agreement_of(self, parts: Sequence[Instances]) -> FrameAgreement:
@@ -308,9 +342,19 @@ class Pipeline:
         box_stats = tuple(alt for _, alt in pairs) if self.region == "both" else None
         return stats, box_stats
 
+    @property
+    def _trackers(self) -> tuple[Tracker, ...]:
+        return () if self.tracker is None else (self.tracker,)
+
     def close(self) -> None:
-        """Release every model."""
-        for component in (*self.detectors, self.depth, *self.refiners, *self.semantic):
+        """Release every model and the tracker's state."""
+        for component in (
+            *self.detectors,
+            self.depth,
+            *self.refiners,
+            *self.semantic,
+            *self._trackers,
+        ):
             component.close()
 
     def describe(self) -> dict[str, Any]:
@@ -322,6 +366,9 @@ class Pipeline:
                 "aggregator": self.aggregator.describe(),
                 "refiners": [r.describe() for r in self.refiners],
                 "semantic": [s.describe() for s in self.semantic],
+                "tracker": (
+                    self.tracker.describe() if self.tracker is not None else None
+                ),
             },
             "pipeline": {
                 "exclude_sky": self.exclude_sky,
@@ -334,6 +381,9 @@ class Pipeline:
                     for name, classes in self._exclude.items()
                     if classes
                 },
+                "smoothing": (
+                    asdict(self.smoothing) if self.smoothing is not None else None
+                ),
             },
         }
 

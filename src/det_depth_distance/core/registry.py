@@ -21,6 +21,7 @@ T = TypeVar("T")
 
 ADAPTER_MODULES: tuple[str, ...] = (
     "det_depth_distance.core.aggregate",
+    "det_depth_distance.core.tracking",
     "det_depth_distance.adapters.detectors.rfdetr",
     "det_depth_distance.adapters.detectors.ultralytics_yolo",
     "det_depth_distance.adapters.depth.da3",

@@ -20,6 +20,7 @@ from det_depth_distance.core.types import (
     PairAgreement,
     Provenance,
     SemanticMap,
+    TrackEstimate,
 )
 from det_depth_distance.distance import (
     DistanceConfig,
@@ -44,6 +45,13 @@ from det_depth_distance.io.video import VideoWriter, probe
 GEOMETRY = MapGeometry(100, 100, 50, 50, 0.5, 0.5)
 MASK_COLUMNS = ("used_mask", "mask_px", "mask_erode", "box_distance_m")  # task_0004
 K = CameraIntrinsics(25.0, 25.0, 25.0, 25.0)
+TRACK_COLUMNS = (  # task_0006
+    "track_id",
+    "distance_smooth_m",
+    "distance_smooth_std_m",
+    "rel_speed_mps",
+    "rel_speed_std_mps",
+)
 
 
 def test_csv_fields_order():
@@ -89,6 +97,11 @@ def test_csv_fields_order():
         "box_distance_m",
         "mask_source",
         "mask_score",
+        "track_id",
+        "distance_smooth_m",
+        "distance_smooth_std_m",
+        "rel_speed_mps",
+        "rel_speed_std_mps",
     )
 
 
@@ -143,6 +156,7 @@ def ctx(tmp_path):
             "aggregator": {"type": "concat", "options": {}},
             "refiners": [],
             "semantic": [],
+            "tracker": None,
         },
         "pipeline": {
             "exclude_sky": True,
@@ -150,6 +164,7 @@ def ctx(tmp_path):
             "region": "mask",
             "mask_erode": 1,
             "exclude_semantic": {},
+            "smoothing": None,
         },
     }
     source = SimpleNamespace(describe=lambda: {"path": "clip.mov", "width": 100})
@@ -185,6 +200,8 @@ def test_csv_sink(ctx, result):
     for row in rows:
         assert [row[k] for k in MASK_COLUMNS] == ["0", "", "", ""]
         assert (row["mask_source"], row["mask_score"]) == ("", "")
+        # No tracker, no smoothing: the task_0006 columns are empty.
+        assert [row[k] for k in TRACK_COLUMNS] == [""] * 5
 
 
 @pytest.fixture
@@ -726,3 +743,140 @@ def test_refined_targets_follow_the_policy(semantic_ctx, refined_result):
     assert _metrics(ctx, refined_result)["refined"] == {
         SAM: {"targets": 2, "filled": 1}
     }
+
+
+# task_0006: tracking and smoothing outputs.
+TRACKER = {
+    "type": "iou",
+    "name": "iou",
+    "options": {"iou_thr": 0.3, "max_age_s": 0.5},
+}
+SMOOTHING = {"filter": "kalman", "accel_std": 2.0}
+
+
+def tracked(result, *estimates):
+    """`result` with track ids 4 and 9 and the given estimates (None = no smoothing)."""
+    instances = replace(result.instances, track_id=np.array([4, 9], np.int64))
+    return replace(
+        result, instances=instances, temporal=estimates if estimates else None
+    )
+
+
+@pytest.fixture
+def track_ctx(ctx):
+    components = {**ctx.pipeline["components"], "tracker": TRACKER}
+    policy = {**ctx.pipeline["pipeline"], "smoothing": SMOOTHING}
+    return replace(ctx, pipeline={"components": components, "pipeline": policy})
+
+
+def _csv_rows(ctx, *results):
+    sink = CsvSink()
+    sink.open(ctx)
+    for r in results:
+        sink.write(r)
+    sink.close()
+    with open(ctx.run_dir / "detections.csv", newline="") as fh:
+        return list(csv.DictReader(fh))
+
+
+def test_csv_sink_track_columns(track_ctx, result):
+    kalman = tracked(result, TrackEstimate(11.98765, 0.12345, -1.23456, 0.3, 5), None)
+    ema = tracked(result, TrackEstimate(12.5, math.nan, math.nan, math.nan, 2), None)
+    only_ids = tracked(result)
+    rows = _csv_rows(track_ctx, kalman, ema, only_ids)
+    assert [rows[0][k] for k in TRACK_COLUMNS] == [
+        "4",
+        "11.9877",
+        "0.1235",
+        "-1.2346",
+        "0.3",
+    ]
+    assert float(rows[0]["distance_m"]) == pytest.approx(12.0)  # raw stays
+    # The second instance has no distance yet: id only.
+    assert [rows[1][k] for k in TRACK_COLUMNS] == ["9", "", "", "", ""]
+    # ema / median: no std, no speed.
+    assert [rows[2][k] for k in TRACK_COLUMNS] == ["4", "12.5", "", "", ""]
+    # Tracking without smoothing.
+    assert [rows[4][k] for k in TRACK_COLUMNS] == ["4", "", "", "", ""]
+
+
+def _metrics(ctx, *results):
+    monitor = SimpleNamespace(
+        summary=lambda: dict.fromkeys(
+            [
+                "peak_vram_torch_allocated_gb",
+                "device_mem_used_delta_gb_approx",
+                "torch",
+                "cuda",
+                "gpu",
+            ]
+        )
+    )
+    sink = MetricsSink(monitor, dict)
+    sink.open(ctx)
+    for r in results:
+        sink.write(r)
+    sink.close()
+    return json.loads((ctx.run_dir / "metrics.json").read_text())
+
+
+def test_metrics_sink_tracks(track_ctx, result):
+    frames = []
+    for k in range(12):  # 1.1 s at 10 fps: track 4 is long, track 9 too
+        est = TrackEstimate(12.0 + 0.1 * k, 0.1, 1.0, 0.1, k + 1)
+        r = tracked(result, est, None)
+        frames.append(replace(r, frame=replace(r.frame, index=k, t=k / 10)))
+    metrics = _metrics(track_ctx, *frames)
+    tracks = metrics["tracks"]
+    assert (tracks["n_tracks"], tracks["short_tracks"]) == (2, 0)
+    first = tracks["per_track"][0]
+    assert (first["id"], first["label"], first["n_frames"]) == (4, "car", 12)
+    assert first["rel_speed_mps"] == {"p5": 1.0, "median": 1.0, "p95": 1.0}
+    assert tracks["per_track"][1]["distance_m"] is None  # 25 px < min_valid_px
+    assert metrics["pipeline"]["smoothing"] == SMOOTHING
+    assert metrics["components"]["tracker"] == TRACKER
+
+
+def test_metrics_sink_without_tracker_has_no_tracks(ctx, result):
+    assert "tracks" not in _metrics(ctx, result)
+
+
+def _video_labels_and_hud(ctx, render, results, tmp_path):
+    clip = tmp_path / "clip.mp4"
+    with VideoWriter(clip, 100, 100, "10/1") as writer:
+        writer.write(np.zeros((100, 100, 3), np.uint8))
+    ctx = replace(ctx, source=VideoSource(SourceConfig(video=clip)))
+    sink = VideoSink(render, DistanceConfig())
+    sink.open(ctx)
+    drawn = []
+    sink._renderer.render = lambda rgb, boxes, hud, depth, **kw: (
+        drawn.append(([b.label for b in boxes], hud)) or rgb
+    )
+    for r in results:
+        sink.write(r)
+    sink.close()
+    return drawn
+
+
+@pytest.mark.skipif(shutil.which("ffmpeg") is None, reason="needs ffmpeg/ffprobe")
+@pytest.mark.parametrize(
+    ("render", "first"),
+    [
+        (RenderConfig(), "#4 car 91% · 11.5 m · -1.2 m/s"),
+        (RenderConfig(show_smoothed=False), "#4 car 91% · 12.0 m · -1.2 m/s"),
+        (RenderConfig(show_speed=False), "#4 car 91% · 11.5 m"),
+    ],
+)
+def test_video_sink_track_labels_and_hud(track_ctx, result, tmp_path, render, first):
+    est = TrackEstimate(11.5, 0.2, -1.25, 0.3, 5)
+    later = replace(
+        tracked(result, est, None),
+        instances=replace(result.instances, track_id=np.array([4, 17], np.int64)),
+    )
+    drawn = _video_labels_and_hud(
+        track_ctx, render, [tracked(result, est, None), later], tmp_path
+    )
+    (labels, hud), (_, later_hud) = drawn
+    assert labels == [first, "#9 suv 50% · n/a"]
+    assert hud[-1] == "track iou · IoU ≥ 0.3 · age 0.5 s · kalman q 2 · ids 9"
+    assert later_hud[-1].endswith("· ids 17")  # tracks opened so far

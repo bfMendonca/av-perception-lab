@@ -124,6 +124,12 @@ class Frame:
         return self.rgb.shape[0]
 
 
+# Tolerance (s) of time limits compared with differences of Frame.t (track
+# age, smoother reset, median window). Frame.t = start + decoded / fps, so a
+# gap of exactly a limit (e.g. 15 frames = 0.5 s at 30 fps) can come out a
+# few ulps above it depending on the frame index; the limit is inclusive.
+FRAME_TIME_EPS_S = 1e-6
+
 # (field name, value, N, frame_w, frame_h) -> None; raises ContractError.
 FieldCheck = Callable[[str, Any, int, int, int], None]
 
@@ -183,6 +189,12 @@ def _check_xyxy(name: str, value: Any, n: int, frame_w: int, frame_h: int) -> No
         raise ContractError(f"{name}: box outside the {frame_w}x{frame_h} frame")
 
 
+def _check_track_id(name: str, value: Any, n: int, frame_w: int, frame_h: int) -> None:
+    check_array(np.int64)(name, value, n, frame_w, frame_h)
+    if (value < 1).any():
+        raise ContractError(f"{name}: track ids must be >= 1")
+
+
 @dataclass(frozen=True, slots=True)
 class Provenance:
     """One detection that contributed to an instance: the detector's name, its
@@ -235,6 +247,7 @@ class Instances:
     detector masks). Fusion aggregators also set them, naming the member whose
     mask a fused instance kept (it may not be the representative).
     `mask_sources()` derives the sources when neither ran.
+    `track_id`, set by the tracker, identifies the same object across frames.
     """
 
     # Open for extension: select/concat/validate iterate the fields carrying
@@ -264,6 +277,11 @@ class Instances:
     # (N,) float32 refiner quality score of each mask; NaN for detector masks.
     mask_score: np.ndarray | None = field(
         default=None, metadata=per_instance(check_array(np.float32))
+    )
+    # (N,) int64 >= 1, stable across frames; None = no tracker. Set by the
+    # tracker, downstream of every concat, hence no concat_fill.
+    track_id: np.ndarray | None = field(
+        default=None, metadata=per_instance(_check_track_id)
     )
 
     def __len__(self) -> int:
@@ -470,6 +488,20 @@ class FrameAgreement:
 
 
 @dataclass(frozen=True, slots=True)
+class TrackEstimate:
+    """Smoothed state of one track at one frame: distance (m) and, for the
+    Kalman filter, its std, the relative speed d(distance)/dt (m/s, negative =
+    approaching) and its std. n_updates counts measurements since the filter
+    (re)started."""
+
+    distance: float  # m, same quantity as BoxDepthStats.distance (z or euclidean)
+    distance_std: float  # m; NaN without a state model (ema, median)
+    rel_speed: float  # m/s; NaN without a state model
+    rel_speed_std: float  # m/s; NaN without a state model
+    n_updates: int
+
+
+@dataclass(frozen=True, slots=True)
 class FrameResult:
     """Everything computed for one frame; input of the sinks."""
 
@@ -478,8 +510,9 @@ class FrameResult:
     stats: "tuple[BoxDepthStats, ...]"  # aligned with instances
     depth: DepthResult
     # "det", "det.<name>", "agree" (when computed), "aggregate", "refine" and
-    # "refine.<name>" (with refiners), "depth", "semantic" and "semantic.<name>"
-    # (with semantic segmenters), "dist"
+    # "refine.<name>" (with refiners), "track" (with a tracker), "depth",
+    # "semantic" and "semantic.<name>" (with semantic segmenters), "dist",
+    # "smooth" (with smoothing)
     timings_ms: dict[str, float]
     agreement: FrameAgreement | None = None  # None with one detector or disabled
     # Box statistics aligned with instances, only with region "both": set where
@@ -488,3 +521,6 @@ class FrameResult:
     # Segmenter name -> its map, in configuration (= drawing) order; {} without
     # semantic segmenters. Maps are never merged: each keeps its own classes.
     semantic: Mapping[str, SemanticMap] = field(default_factory=dict)
+    # Smoothed per-track state aligned with instances, only with smoothing;
+    # None for an instance whose track has no distance yet.
+    temporal: tuple[TrackEstimate | None, ...] | None = None

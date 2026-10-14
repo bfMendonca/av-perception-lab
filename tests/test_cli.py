@@ -55,6 +55,11 @@ def test_list_models(capsys):
         "semantic:",
         "segformer:",
         "twinlitenet:",
+        "tracker:",
+        (
+            "iou: iou_thr=0.3, max_age_s=0.5, motion='constant_velocity', "
+            "velocity_alpha=0.5, class_aware=False"
+        ),
     ):
         assert name in out
 
@@ -88,6 +93,10 @@ def test_configuration_errors_exit_with_code_2(tmp_path, config, capsys, monkeyp
         ("semantic=[{type: segformer}]", "semantic[0].name is required"),
         ("semantic=[{name: s, type: segformer, size: [1, 1]}]", "semantic[0]: size"),
         ("distance.exclude_semantic=[scene.road]", "no semantic segmenter configured"),
+        # task_0006: tracking and smoothing errors, before any load.
+        ("smoothing.filter=kalman", "smoothing: needs tracking"),
+        ("tracking={type: iou, iou_thr: 1.5}", "tracking: iou_thr must be in (0, 1)"),
+        ("smoothing.window_s=0", "smoothing: window_s must be > 0"),
     ]:
         assert main(["--config", str(config), "--set", override]) == 2
         assert message in capsys.readouterr().err

@@ -58,8 +58,8 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument(
         "--list-models",
         action="store_true",
-        help="list the registered detectors, depth models, aggregators, mask refiners "
-        "and semantic segmenters with their options",
+        help="list the registered detectors, depth models, aggregators, trackers, "
+        "mask refiners and semantic segmenters with their options",
     )
     return p
 
@@ -109,6 +109,11 @@ def run(cfg: RunConfig) -> Path:
         registry.build("semantic", spec, path=f"semantic[{i}]")
         for i, spec in enumerate(cfg.semantic)
     ]
+    tracker = (
+        registry.build("tracker", cfg.tracking, path="tracking")
+        if cfg.tracking is not None
+        else None
+    )
     pipeline = Pipeline(
         detectors,
         depth,
@@ -122,6 +127,8 @@ def run(cfg: RunConfig) -> Path:
         refiners=refiners,
         semantic=semantic,
         exclude_semantic=cfg.exclude_semantic,
+        tracker=tracker,
+        smoothing=cfg.smoothing,
     )
     source = VideoSource(cfg.source)
     monitor = DeviceMonitor(cfg.device)

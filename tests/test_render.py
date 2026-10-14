@@ -25,6 +25,17 @@ def test_format_label():
     assert format_label("vehicle", 0.91, None, 0.4, 2) == "vehicle 91% ×2 · n/a"
 
 
+def test_format_label_track_id_and_speed():
+    assert format_label("truck", 0.94, 12.34, track_id=12) == "#12 truck 94% · 12.3 m"
+    assert (
+        format_label("truck", 0.94, 12.34, 0.42, 2, track_id=3, rel_speed=-1.23)
+        == "#3 truck 94% ×2 · 12.3 m ± 0.4 · -1.2 m/s"
+    )
+    assert format_label("car", 0.5, 8.0, rel_speed=0.5) == "car 50% · 8.0 m · +0.5 m/s"
+    assert format_label("car", 0.5, 8.0, rel_speed=float("nan")) == "car 50% · 8.0 m"
+    assert format_label("car", 0.5, None, track_id=1) == "#1 car 50% · n/a"
+
+
 def test_colorize_metric_is_rgb_near_warm():
     depth = np.array([[0.5, 29.0]], dtype=np.float32)
     rgb = colorize_metric(depth, 30.0, cv2.COLORMAP_TURBO)

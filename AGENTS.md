@@ -107,11 +107,11 @@ uv run ruff format .
   de escala do modelo métrico), não o "quê".
 - **Organização**: código em `src/det_depth_distance/`: `core/` (contratos,
   ABCs, registro, rótulos e mapas de rótulos, geometria de caixas,
-  agregação/fusão, concordância, pipeline — sem frameworks),
+  agregação/fusão, concordância, rastreamento, pipeline — sem frameworks),
   `adapters/` (um módulo por framework, registrado com `@register` e listado
   em `ADAPTER_MODULES`), `io/` (vídeo, fontes, sinks), e módulos de topo
-  `camera.py`, `config.py`, `distance.py`, `render.py`, `runtime.py`,
-  `cli.py`. Configurações de exemplo em `configs/` (mapas de rótulos
+  `camera.py`, `config.py`, `distance.py`, `temporal.py`, `render.py`,
+  `runtime.py`, `cli.py`. Configurações de exemplo em `configs/` (mapas de rótulos
   versionados em `configs/labels/`). Scripts utilitários bash em `utils/`.
 - **Testes**: pytest em `tests/`, espelhando os módulos
   (`distance.py` → `tests/test_distance.py`). Testes unitários não dependem
@@ -279,10 +279,10 @@ Commits seguem **Conventional Commits** com assunto em **pt-BR**, no formato:
 
   | Escopo | Cobre |
   |--------|-------|
-  | `core` | `src/det_depth_distance/core/` (contratos, ABCs, registro, rótulos, agregação, pipeline) |
+  | `core` | `src/det_depth_distance/core/` (contratos, ABCs, registro, rótulos, agregação, rastreamento, pipeline) |
   | `adapters` | `src/det_depth_distance/adapters/` (invólucros de framework) |
   | `io` | `src/det_depth_distance/io/` (vídeo, fontes, sinks) |
-  | `distance` | `src/det_depth_distance/distance.py` (núcleo numpy de distância) |
+  | `distance` | `src/det_depth_distance/distance.py` (núcleo numpy de distância) e `temporal.py` (suavização temporal por trilha) |
   | `camera` | `src/det_depth_distance/camera.py` (intrínsecos) |
   | `render` | `src/det_depth_distance/render.py` |
   | `cli` | `src/det_depth_distance/cli.py`, `__main__.py`, `__init__.py`, `config.py`, `runtime.py` (composição, configuração, ambiente) |

@@ -1,8 +1,9 @@
+import dataclasses
 from dataclasses import dataclass
 
 import numpy as np
 import pytest
-from test_components import FakeRefiner, FakeSemantic
+from test_components import FakeRefiner, FakeSemantic, FakeTracker
 
 from det_depth_distance.camera import IntrinsicsProvider, IntrinsicsResult
 from det_depth_distance.config import AgreementConfig
@@ -14,6 +15,7 @@ from det_depth_distance.core.components import (
 )
 from det_depth_distance.core.options import ConfigError
 from det_depth_distance.core.pipeline import Pipeline
+from det_depth_distance.core.tracking import IouTracker
 from det_depth_distance.core.types import (
     CameraIntrinsics,
     DepthResult,
@@ -28,6 +30,7 @@ from det_depth_distance.distance import (
     map_eligibility,
 )
 from det_depth_distance.io.source import FrameSource
+from det_depth_distance.temporal import SmoothingConfig
 
 FRAME = Frame(0, 0.0, np.zeros((100, 100, 3), np.uint8))
 GEOMETRY = MapGeometry(100, 100, 100, 100, 1.0, 1.0)
@@ -156,7 +159,7 @@ def make_pipeline(
         device="cpu",
         agreement=agreement,
         region=region,
-        **stages,  # refiners, semantic, exclude_semantic (task_0005)
+        **stages,  # refiners, semantic, exclude_semantic (0005); tracker, smoothing (0006)
     )
 
 
@@ -269,8 +272,12 @@ def test_single_detector_concat_without_labels_is_unchanged(scene):
         "region": "mask",
         "mask_erode": 1,
         "exclude_semantic": {},
+        "smoothing": None,
     }
     assert (desc["components"]["refiners"], desc["components"]["semantic"]) == ([], [])
+    # task_0006: no tracker nor smoothing -> no track ids, no temporal estimates.
+    assert desc["components"]["tracker"] is None
+    assert inst.track_id is None and result.temporal is None
     # task_0005: no refiner nor segmenter -> no mask fields, no semantic map.
     assert inst.mask_source is None and inst.mask_score is None
     assert result.semantic == {}
@@ -292,6 +299,7 @@ def test_describe_separates_components_and_policy(scene):
         "aggregator",
         "refiners",
         "semantic",
+        "tracker",
     }
     assert desc["components"]["detectors"][0]["name"] == "det"
     assert desc["pipeline"] == {
@@ -300,6 +308,7 @@ def test_describe_separates_components_and_policy(scene):
         "region": "mask",
         "mask_erode": 1,
         "exclude_semantic": {},
+        "smoothing": None,
     }
 
 
@@ -796,3 +805,126 @@ def test_fused_mask_source_end_to_end(make_instances):
     pipeline.setup(Source())
     inst = pipeline.process(FRAME).instances
     assert inst.source == ("box",) and inst.mask_sources() == ("seg",)
+
+
+# task_0006: tracker and per-track smoothing.
+
+
+def test_tracker_runs_after_refiners_and_before_depth(scene):
+    log, det = scene
+    tracker = FakeTracker(log=log)
+    pipeline = make_pipeline(
+        [det],
+        LoggingDepth(log, needs_intrinsics=False),
+        aggregator=LoggingConcat(log),
+        refiners=[LoggingRefiner(log)],
+        tracker=tracker,
+        smoothing=SmoothingConfig(),
+    )
+    pipeline.setup(Source())
+    assert tracker.is_loaded and tracker.resets == 1
+    log.clear()
+    result = pipeline.process(FRAME)
+    assert log == ["aggregate", "refine sam", "track", "depth"]
+    assert list(result.timings_ms) == [
+        "det",
+        "det.det",
+        "aggregate",
+        "refine",
+        "refine.sam",
+        "track",
+        "depth",
+        "dist",
+        "smooth",
+    ]
+    assert result.instances.track_id.tolist() == [1, 2]
+    pipeline.close()
+    assert log[-1] == "close tracker" and not tracker.is_loaded
+
+
+def test_tracker_without_smoothing(scene):
+    log, det = scene
+    pipeline = make_pipeline(
+        [det], FakeDepth(log, needs_intrinsics=False), tracker=FakeTracker()
+    )
+    pipeline.setup(Source())
+    result = pipeline.process(FRAME)
+    assert result.instances.track_id.tolist() == [1, 2]
+    assert result.temporal is None and "smooth" not in result.timings_ms
+    assert pipeline.describe()["pipeline"]["smoothing"] is None
+
+
+def test_smoothing_needs_a_tracker(scene):
+    log, det = scene
+    with pytest.raises(ConfigError, match=r"^smoothing: needs tracking"):
+        make_pipeline([det], FakeDepth(log), smoothing=SmoothingConfig())
+
+
+class RecedingDepth(FakeDepth):
+    """FakeDepth whose 10 m object moves 0.1 m away on every call."""
+
+    def _load(self, ctx):
+        super()._load(ctx)
+        self.offset = 0.0
+
+    def _predict(self, rgb):
+        result = super()._predict(rgb)
+        depth = result.depth_m.copy()
+        depth[:, 20:80] += self.offset
+        self.offset += 0.1
+        return DepthResult(depth, result.intrinsics, result.sky, result.geometry)
+
+
+def test_smoothing_follows_each_track(scene):
+    # 0.1 m per frame at 30 fps = moving away at 3 m/s; the person box is all
+    # sky (no distance), so its track never gets an estimate.
+    log, det = scene
+    pipeline = make_pipeline(
+        [det],
+        RecedingDepth(log, needs_intrinsics=False),
+        tracker=IouTracker(IouTracker.Options()),
+        smoothing=SmoothingConfig(),
+    )
+    pipeline.setup(Source())
+    results = [pipeline.process(Frame(k, k / 30, FRAME.rgb)) for k in range(60)]
+    assert {tuple(r.instances.track_id.tolist()) for r in results} == {(1, 2)}
+    last = results[-1]
+    car, person = last.temporal
+    assert person is None and last.stats[1].distance is None
+    assert last.stats[0].distance == pytest.approx(10.0 + 5.9)
+    assert car.distance == pytest.approx(last.stats[0].distance, abs=0.05)
+    assert car.rel_speed == pytest.approx(3.0, abs=0.1)  # > 0: moving away
+    assert car.n_updates == 60
+    desc = pipeline.describe()
+    assert desc["components"]["tracker"]["type"] == "iou"
+    assert desc["pipeline"]["smoothing"] == {
+        "filter": "kalman",
+        "accel_std": 2.0,
+        "std_scale": 0.5,
+        "rel_floor": 0.01,
+        "init_speed_std": 5.0,
+        "tau_s": 0.1,
+        "window_s": 0.15,
+        "reset_after_s": 1.0,
+    }
+    # A new run (load after close) starts with fresh tracks and filters.
+    pipeline.close()
+    pipeline.setup(Source())
+    again = pipeline.process(Frame(0, 0.0, FRAME.rgb))
+    assert again.instances.track_id.tolist() == [1, 2]
+    assert again.temporal[0].n_updates == 1
+
+
+def test_without_tracker_and_smoothing_the_result_is_unchanged(scene):
+    # Regression invariant: the task_0005 FrameResult field by field.
+    log, det = scene
+    pipeline = make_pipeline([det], FakeDepth(log, needs_intrinsics=False))
+    pipeline.setup(Source())
+    result = pipeline.process(FRAME)
+    inst, raw = result.instances, det.instances
+    for f in dataclasses.fields(Instances):
+        a, b = getattr(inst, f.name), getattr(raw, f.name)
+        assert (a is None and b is None) or np.array_equal(a, b), f.name
+    assert result.instances.track_id is None and result.temporal is None
+    assert list(result.timings_ms) == ["det", "det.det", "aggregate", "depth", "dist"]
+    assert result.stats == _expected_stats(result, pipeline, ~result.depth.sky)

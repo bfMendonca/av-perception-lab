@@ -13,6 +13,7 @@ from det_depth_distance.adapters.semantic.twinlitenet import TwinLiteNetSegmente
 from det_depth_distance.core import registry
 from det_depth_distance.core.aggregate import Concat, Nms, Wbf
 from det_depth_distance.core.options import ConfigError
+from det_depth_distance.core.tracking import IouTracker
 
 
 def test_available_lists_every_family():
@@ -20,6 +21,7 @@ def test_available_lists_every_family():
     assert found["detector"] == {"rfdetr": RFDETRDetector, "yolo": YoloDetector}
     assert found["depth"] == {"da3": DA3Depth}
     assert found["aggregator"] == {"concat": Concat, "nms": Nms, "wbf": Wbf}
+    assert found["tracker"] == {"iou": IouTracker}
     assert registry.available("depth") == {"depth": {"da3": DA3Depth}}
 
 
@@ -58,6 +60,8 @@ def test_rfdetr_seg_variants():
 def test_name_only_for_components():
     det = registry.build("detector", {"type": "rfdetr", "name": "main"}, path="d")
     assert det.name == "main"
+    tracker = registry.build("tracker", {"type": "iou", "name": "t"}, path="tracking")
+    assert tracker.name == "t" and not tracker.is_loaded
     depth = registry.build("depth", {"type": "da3", "name": "z"}, path="depth")
     assert depth.name == "z"
     with pytest.raises(
@@ -85,7 +89,7 @@ def test_load_adapters_imports_no_framework():
         "import sys; from det_depth_distance.core import registry; "
         "registry.load_adapters(); "
         "print(sorted({'torch', 'ultralytics', 'rfdetr', 'depth_anything_3', "
-        "'transformers', 'timm', 'model'} & set(sys.modules)))"
+        "'transformers', 'timm', 'model', 'lap', 'scipy'} & set(sys.modules)))"
     )
     out = subprocess.run(
         [sys.executable, "-c", code], check=False, capture_output=True, text=True

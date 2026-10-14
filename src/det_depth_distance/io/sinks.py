@@ -28,10 +28,16 @@ classes, mean class fractions, excluded fraction; plus the excluded
 fraction of the union of all maps). No semantic CSV column. With
 save_depth, depth.npz adds semantic_labels_<name> (labels sampled on the
 depth-map grid) and semantic_classes_<name> per segmenter.
+
+detections.csv ends with track_id, distance_smooth_m, distance_smooth_std_m,
+rel_speed_mps and rel_speed_std_mps (empty without tracking/smoothing; std
+and speed only with the kalman filter); distance_m stays the raw per-frame
+value. metrics.json adds "tracks" (per-track summary) with a tracker.
 """
 
 import csv
 import json
+import math
 import platform
 import time
 from abc import ABC, abstractmethod
@@ -47,10 +53,12 @@ import numpy as np
 from det_depth_distance.config import RenderConfig, RunConfig
 from det_depth_distance.core.agreement import AgreementStats
 from det_depth_distance.core.pipeline import SetupInfo
+from det_depth_distance.core.tracking import TrackSummary
 from det_depth_distance.core.types import (
     FrameResult,
     Instances,
     MapGeometry,
+    TrackEstimate,
     best_per_source,
 )
 from det_depth_distance.distance import (
@@ -64,6 +72,14 @@ from det_depth_distance.io.video import VideoWriter
 from det_depth_distance.render import BoxAnnotation, Renderer, format_label
 from det_depth_distance.runtime import DeviceMonitor, git_commit, package_version
 
+# Smoothing columns of a row, from TrackEstimate (distance, distance_std,
+# rel_speed, rel_speed_std).
+ESTIMATE_FIELDS: tuple[str, ...] = (
+    "distance_smooth_m",
+    "distance_smooth_std_m",
+    "rel_speed_mps",
+    "rel_speed_std_mps",
+)
 # Columns of task_0001 in the same order, then the new ones at the end so
 # readers that index by position keep working.
 CSV_FIELDS: tuple[str, ...] = (
@@ -87,6 +103,8 @@ CSV_FIELDS: tuple[str, ...] = (
     "box_distance_m",
     "mask_source",
     "mask_score",
+    "track_id",
+    *ESTIMATE_FIELDS,
 )
 
 
@@ -170,6 +188,11 @@ def latency_stats(values: Sequence[float]) -> dict[str, float]:
     }
 
 
+def _csv_float(value: float | None) -> float | None:
+    """4-decimal CSV value; None (empty cell) for None and NaN."""
+    return None if value is None or not math.isfinite(value) else round(value, 4)
+
+
 class CsvSink(Sink):
     """detections.csv: one row per instance with all BoxDepthStats fields."""
 
@@ -183,8 +206,10 @@ class CsvSink(Sink):
     def write(self, result: FrameResult) -> None:
         frame, inst = result.frame, result.instances
         mask_sources, mask_scores = inst.mask_sources(), inst.mask_score
-        for i, (stats, members) in enumerate(
-            zip(result.stats, inst.provenance(), strict=True)
+        track_ids = inst.track_id
+        temporal = result.temporal or (None,) * len(inst)
+        for i, (stats, members, est) in enumerate(
+            zip(result.stats, inst.provenance(), temporal, strict=True)
         ):
             best = best_per_source(members)
             box = result.box_stats[i] if result.box_stats is not None else None
@@ -216,11 +241,25 @@ class CsvSink(Sink):
                         if mask_scores is None or np.isnan(mask_scores[i])
                         else round(float(mask_scores[i]), 4)
                     ),
+                    "track_id": None if track_ids is None else int(track_ids[i]),
+                    **_estimate_row(est),
                 }
             )
 
     def close(self) -> None:
         self._fh.close()
+
+
+def _estimate_row(est: TrackEstimate | None) -> dict[str, float | None]:
+    """ESTIMATE_FIELDS of one CSV row (all empty without an estimate)."""
+    values = (
+        (None,) * len(ESTIMATE_FIELDS)
+        if est is None
+        else (est.distance, est.distance_std, est.rel_speed, est.rel_speed_std)
+    )
+    return {
+        name: _csv_float(v) for name, v in zip(ESTIMATE_FIELDS, values, strict=True)
+    }
 
 
 class VideoSink(Sink):
@@ -234,6 +273,10 @@ class VideoSink(Sink):
     Refiners add a HUD line each ("refine <name> · filled/targets"), semantic
     segmenters one each ("semantic <name> · excl <classes>"); the maps named
     by `render.semantic_overlay` (all when None) are drawn in config order.
+    With a tracker, labels start with "#<track id>" and the last HUD line
+    describes tracking (ids = tracks opened so far) and smoothing; with
+    smoothing, labels show the smoothed distance (`render.show_smoothed`) and
+    the relative speed (`render.show_speed`, kalman only).
     """
 
     def __init__(self, cfg: RenderConfig, distance: DistanceConfig) -> None:
@@ -266,6 +309,10 @@ class VideoSink(Sink):
         ]
         policy = ctx.pipeline["pipeline"]
         self._region = f" · region {policy['region']} · erode {policy['mask_erode']}"
+        self._track_hud = _track_hud(
+            ctx.pipeline["components"]["tracker"], policy["smoothing"]
+        )
+        self._max_track_id = 0
         thresholds = [(d["name"], d["options"]["threshold"]) for d in detectors]
         if self._by_source:
             self._conf = "conf " + ", ".join(f"{n} ≥ {t:.2f}" for n, t in thresholds)
@@ -292,9 +339,10 @@ class VideoSink(Sink):
         inst, d, focal = result.instances, self.distance, self.ctx.setup.focal_frame_px
         by_source = self._by_source and inst.sources is None
         masks = inst.masks if self.cfg.mask_alpha > 0 else None
+        temporal = result.temporal or (None,) * len(inst)
         annotations = []
-        for i, (stats, members) in enumerate(
-            zip(result.stats, inst.provenance(), strict=True)
+        for i, (stats, members, est) in enumerate(
+            zip(result.stats, inst.provenance(), temporal, strict=True)
         ):
             name, score = inst.label[i], float(inst.score[i])
             n_sources = len(best_per_source(members))
@@ -308,12 +356,28 @@ class VideoSink(Sink):
                 if self.cfg.draw_inner_box
                 else None
             )
+            distance = (
+                est.distance
+                if est is not None and self.cfg.show_smoothed
+                else stats.distance
+            )
+            label = format_label(
+                name,
+                score,
+                distance,
+                spread,
+                n_sources,
+                track_id=None if inst.track_id is None else int(inst.track_id[i]),
+                rel_speed=(
+                    est.rel_speed if est is not None and self.cfg.show_speed else None
+                ),
+            )
             annotations.append(
                 BoxAnnotation(
                     tuple(float(v) for v in inst.xyxy[i]),
                     name,
                     score,
-                    format_label(name, score, stats.distance, spread, n_sources),
+                    label,
                     inner,
                     color_key=inst.source[i] if by_source else None,
                     mask=None if masks is None else masks[i],
@@ -339,6 +403,10 @@ class VideoSink(Sink):
             for name, (targets, filled) in refine_counts(inst, self._refiners).items()
         ]
         hud += self._semantic_hud
+        if self._track_hud is not None:
+            if inst.track_id is not None and len(inst):
+                self._max_track_id = max(self._max_track_id, int(inst.track_id.max()))
+            hud.append(f"{self._track_hud} · ids {self._max_track_id}")
         overlay = self.cfg.semantic_overlay
         layers = (
             [
@@ -363,6 +431,26 @@ class VideoSink(Sink):
 
     def close(self) -> None:
         self._writer.close()
+
+
+def _track_hud(
+    tracker: dict[str, Any] | None, smoothing: dict[str, Any] | None
+) -> str | None:
+    """Static part of the tracking HUD line, e.g. "track iou · IoU ≥ 0.3 · age
+    0.5 s · kalman q 2"; None without a tracker."""
+    if tracker is None:
+        return None
+    options = tracker["options"]
+    text = f"track {tracker['type']}"
+    if "iou_thr" in options:
+        text += f" · IoU ≥ {options['iou_thr']:g}"
+    if "max_age_s" in options:
+        text += f" · age {options['max_age_s']:g} s"
+    if smoothing is not None:
+        text += f" · {smoothing['filter']}"
+        if smoothing["filter"] == "kalman":
+            text += f" q {smoothing['accel_std']:g}"
+    return text
 
 
 class NpzSink(Sink):
@@ -413,7 +501,8 @@ class MetricsSink(Sink):
     """metrics.json: run summary, written at close.
 
     `extra_timings` returns per-frame timing series measured outside the
-    pipeline (e.g. {"render": VideoSink.render_ms}).
+    pipeline (e.g. {"render": VideoSink.render_ms}). With a tracker it adds
+    "tracks" (core.tracking.TrackSummary).
     """
 
     def __init__(
@@ -445,6 +534,8 @@ class MetricsSink(Sink):
         super().open(ctx)
         agreement = ctx.config.agreement
         self._agreement = AgreementStats(agreement.iou_thr, agreement.class_aware)
+        has_tracker = ctx.pipeline["components"]["tracker"] is not None
+        self._tracks = TrackSummary() if has_tracker else None
         self._t_start = time.perf_counter()
 
     def write(self, result: FrameResult) -> None:
@@ -466,6 +557,8 @@ class MetricsSink(Sink):
             self._refined[name].update(targets=targets, filled=filled)
         if result.semantic:
             self._add_semantic(result)
+        if self._tracks is not None:
+            self._tracks.add(result)
         if result.box_stats is not None:
             self._region_pairs += [
                 (label, s.distance, b.distance)
@@ -581,6 +674,8 @@ class MetricsSink(Sink):
             metrics["region_comparison"] = _region_comparison(self._region_pairs)
         if self._class_fracs:
             metrics["semantic"] = self._semantic_summary()
+        if self._tracks is not None:
+            metrics["tracks"] = self._tracks.summary()
         (ctx.run_dir / "metrics.json").write_text(
             json.dumps(metrics, indent=2, ensure_ascii=False)
         )
