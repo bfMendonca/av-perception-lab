@@ -1,8 +1,9 @@
 """Command-line entry point: det-depth-distance --config run.yaml [VIDEO] [--set k=v]...
 
 Composition root: builds every component from the YAML (no model loaded
-yet, so configuration errors exit with code 2 in seconds), then runs
-source -> pipeline -> sinks. `--list-models` prints the registered adapters
+yet, so configuration errors exit with code 2 in seconds), probes the video,
+composes the camera (calibration, lens check, undistortion: camera.build_camera),
+then runs source -> pipeline -> sinks. `--list-models` prints the registered adapters
 and their options. torch is imported only through runtime.DeviceMonitor.
 
 Writes <output.out_root>/<timestamp>_<video>_<detectors>_<depth>[_tag]/ with
@@ -18,7 +19,7 @@ from collections.abc import Sequence
 from contextlib import ExitStack
 from pathlib import Path
 
-from det_depth_distance.camera import build_intrinsics_provider
+from det_depth_distance.camera import build_camera
 from det_depth_distance.config import RunConfig, load_config
 from det_depth_distance.core import registry
 from det_depth_distance.core.options import ConfigError
@@ -91,10 +92,12 @@ def run(cfg: RunConfig) -> Path:
     """Process the configured video and return the run folder.
 
     Raises:
-        ConfigError: invalid component specs, missing intrinsics, or no frames.
+        ConfigError: invalid component specs, unusable calibration, missing
+            intrinsics, or no frames.
     """
     # Every component is built (options validated) before the video is probed
-    # and before any model is loaded.
+    # and before any model is loaded; the camera (calibration file, lens check)
+    # needs the probed video, so it comes next, still before any model.
     detectors = [
         registry.build("detector", spec, path=f"detectors[{i}]")
         for i, spec in enumerate(cfg.detectors)
@@ -114,13 +117,15 @@ def run(cfg: RunConfig) -> Path:
         if cfg.tracking is not None
         else None
     )
+    camera = build_camera(cfg.camera, VideoSource(cfg.source))
+    source = camera.source
     pipeline = Pipeline(
         detectors,
         depth,
         aggregator,
         cfg.distance,
         exclude_sky=cfg.exclude_sky,
-        intrinsics=build_intrinsics_provider(cfg.camera),
+        intrinsics=camera.intrinsics,
         device=cfg.device,
         agreement=cfg.agreement,
         region=cfg.region,
@@ -130,7 +135,6 @@ def run(cfg: RunConfig) -> Path:
         tracker=tracker,
         smoothing=cfg.smoothing,
     )
-    source = VideoSource(cfg.source)
     monitor = DeviceMonitor(cfg.device)
     with pipeline, ExitStack() as sinks_stack:
         info = pipeline.resolve_intrinsics(source)
@@ -156,7 +160,9 @@ def run(cfg: RunConfig) -> Path:
         metrics = MetricsSink(monitor, lambda: {"render": video.render_ms})
         sinks = [CsvSink(), video, *([NpzSink()] if cfg.output.save_depth else [])]
         sinks.append(metrics)
-        ctx = RunContext(run_dir, source, info, pipeline.describe(), cfg)
+        ctx = RunContext(
+            run_dir, source, info, pipeline.describe(), cfg, camera.details
+        )
         for sink in sinks:
             sink.open(ctx)
             sinks_stack.callback(sink.close)

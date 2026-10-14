@@ -33,6 +33,11 @@ detections.csv ends with track_id, distance_smooth_m, distance_smooth_std_m,
 rel_speed_mps and rel_speed_std_mps (empty without tracking/smoothing; std
 and speed only with the kalman filter); distance_m stays the raw per-frame
 value. metrics.json adds "tracks" (per-track summary) with a tracker.
+
+metrics.json also holds frame_intrinsics (the frame-resolution K given to the
+depth model, null when it predicts K per frame) and camera (calibration file,
+rescaling, lens check, undistortion and the focal cross-check; {} without
+camera.calibration). With undistortion every box is in undistorted pixels.
 """
 
 import csv
@@ -42,8 +47,8 @@ import platform
 import time
 from abc import ABC, abstractmethod
 from collections import Counter, defaultdict
-from collections.abc import Callable, Sequence
-from dataclasses import asdict, dataclass
+from collections.abc import Callable, Mapping, Sequence
+from dataclasses import asdict, dataclass, field
 from datetime import datetime
 from pathlib import Path
 from typing import Any
@@ -118,6 +123,7 @@ class RunContext:
     # Pipeline.describe(): {"components": ..., "pipeline": ...}
     pipeline: dict[str, Any]
     config: RunConfig
+    camera: Mapping[str, Any] = field(default_factory=dict)  # CameraSetup.details
 
     @property
     def detector_names(self) -> list[str]:
@@ -625,6 +631,12 @@ class MetricsSink(Sink):
             "focal_frame_px": ctx.setup.focal_frame_px,
             "focal_map_intrinsics": components["depth"].get("fixed_intrinsics"),
             "focal_source": ctx.setup.focal_source,
+            "frame_intrinsics": (
+                asdict(ctx.setup.frame_intrinsics)
+                if ctx.setup.frame_intrinsics is not None
+                else None
+            ),
+            "camera": {**ctx.camera, **ctx.setup.intrinsics_details},
             "distance": asdict(cfg.distance)
             | {
                 "k": cfg.distance.k,

@@ -6,6 +6,8 @@ import yaml
 
 from det_depth_distance import cli
 from det_depth_distance.cli import build_parser, main
+from det_depth_distance.io import source as source_module
+from det_depth_distance.io.video import VideoInfo
 
 
 @pytest.fixture
@@ -76,6 +78,13 @@ def test_configuration_errors_exit_with_code_2(tmp_path, config, capsys, monkeyp
 
     monkeypatch.setattr(cli.Pipeline, "setup", no_models)
     monkeypatch.setattr(cli.Pipeline, "load", no_models)
+    # The camera is composed from the probed video before the Pipeline is built;
+    # the touched clip.mov is not a video, so the probe is faked.
+    monkeypatch.setattr(
+        source_module,
+        "probe",
+        lambda path: VideoInfo(path, 64, 48, 10.0, "10/1", 10, False, 0),
+    )
     assert main(["--config", str(tmp_path / "nope.yaml")]) == 2
     assert main(["--config", str(config), str(tmp_path / "missing.mov")]) == 2
     assert "video not found" in capsys.readouterr().err
@@ -97,6 +106,12 @@ def test_configuration_errors_exit_with_code_2(tmp_path, config, capsys, monkeyp
         ("smoothing.filter=kalman", "smoothing: needs tracking"),
         ("tracking={type: iou, iou_thr: 1.5}", "tracking: iou_thr must be in (0, 1)"),
         ("smoothing.window_s=0", "smoothing: window_s must be > 0"),
+        # task_0007: calibration errors, before any load.
+        ("camera.calibration={path: nope.yaml}", "calibration file not found"),
+        (
+            "camera.calibration={path: c.yaml, alpha: 2}",
+            "camera.calibration: alpha must be in [0, 1]",
+        ),
     ]:
         assert main(["--config", str(config), "--set", override]) == 2
         assert message in capsys.readouterr().err

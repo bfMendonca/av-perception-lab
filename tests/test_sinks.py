@@ -306,6 +306,54 @@ def test_metrics_sink(ctx, result):
     assert math.isfinite(metrics["wall_time_s"])
 
 
+def _monitor():
+    keys = (
+        "peak_vram_torch_allocated_gb",
+        "device_mem_used_delta_gb_approx",
+        "torch",
+        "cuda",
+        "gpu",
+    )
+    return SimpleNamespace(summary=lambda: dict.fromkeys(keys))
+
+
+def _metrics(ctx, result):
+    sink = MetricsSink(_monitor(), dict)
+    sink.open(ctx)
+    sink.write(result)
+    sink.close()
+    return json.loads((ctx.run_dir / "metrics.json").read_text())
+
+
+def test_metrics_sink_camera_without_calibration(ctx, result):
+    # task_0007 keys; without camera.calibration the camera section is empty.
+    metrics = _metrics(ctx, result)
+    assert metrics["frame_intrinsics"] == {
+        "fx": 90.0,
+        "fy": 90.0,
+        "cx": 50.0,
+        "cy": 50.0,
+    }
+    assert metrics["camera"] == {}
+
+
+def test_metrics_sink_camera_with_calibration(ctx, result):
+    k = CameraIntrinsics(91.0, 92.0, 49.5, 51.0)
+    setup = SetupInfo(k, 91.0, "calibration c.yaml", {"estimated_focal_frame_px": 95.0})
+    camera = {"calibration": {"path": "c.yaml"}, "undistort": None}
+    metrics = _metrics(replace(ctx, setup=setup, camera=camera), result)
+    assert metrics["frame_intrinsics"] == {
+        "fx": 91.0,
+        "fy": 92.0,
+        "cx": 49.5,
+        "cy": 51.0,
+    }
+    assert metrics["camera"] == {**camera, "estimated_focal_frame_px": 95.0}
+    assert metrics["focal_source"] == "calibration c.yaml"
+    no_k = SetupInfo(None, None, "predicted per frame by the depth model")
+    assert _metrics(replace(ctx, setup=no_k), result)["frame_intrinsics"] is None
+
+
 def test_metrics_sink_agreement(ctx, result, fused_result):
     monitor = SimpleNamespace(
         summary=lambda: dict.fromkeys(

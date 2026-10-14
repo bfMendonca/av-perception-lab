@@ -205,6 +205,24 @@ def test_intrinsics_resolved_before_any_load(scene):
     assert det.ctx.frame_size == (100, 100) and det.ctx.device == "cpu"
 
 
+class DetailedProvider(SpyProvider):
+    def resolve(self, source, *, device):
+        result = super().resolve(source, device=device)
+        return dataclasses.replace(result, details={"estimated_focal_frame_px": 75.0})
+
+
+def test_intrinsics_details_reach_setup_info(scene):
+    log, det = scene
+    info = make_pipeline([det], FakeDepth(log), provider=SpyProvider(log)).setup(
+        Source()
+    )
+    assert info.intrinsics_details == {}  # providers without details (task_0006 path)
+    detailed = make_pipeline([det], FakeDepth(log), provider=DetailedProvider(log))
+    assert detailed.resolve_intrinsics(Source()).intrinsics_details == {
+        "estimated_focal_frame_px": 75.0
+    }
+
+
 def test_depth_without_intrinsics_need_skips_the_provider(scene):
     log, det = scene
     info = make_pipeline(
@@ -217,7 +235,9 @@ def test_depth_without_intrinsics_need_skips_the_provider(scene):
 
 def test_missing_provider_is_a_config_error(scene):
     log, det = scene
-    with pytest.raises(ConfigError, match="set camera.focal_px or camera.estimate"):
+    with pytest.raises(
+        ConfigError, match="set camera.calibration, camera.focal_px or camera.estimate"
+    ):
         make_pipeline([det], FakeDepth(log)).setup(Source())
     assert log == []  # nothing loaded
 

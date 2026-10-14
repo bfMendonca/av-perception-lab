@@ -24,9 +24,15 @@ infer = [
     "transformers>=5.1,<6", # SAM-family refiners and SegFormer
     "timm>=1.0.17", # EdgeTAM backbone (transformers TimmWrapper)
 ]
+# Evaluation plots only (det-depth-distance-evaluate --plot): uv sync --extra eval
+eval = [
+    "matplotlib>=3.8",
+]
 
 [project.scripts]
 det-depth-distance = "det_depth_distance.cli:main"
+det-depth-distance-calibrate = "det_depth_distance.tools.calibrate:main"
+det-depth-distance-evaluate = "det_depth_distance.tools.evaluate:main"
 
 [dependency-groups]
 dev = ["pytest>=8", "ruff>=0.6"]

@@ -58,6 +58,19 @@ def test_to_metres():
         to_metres(raw, "relative", k)
 
 
+def test_calibrated_intrinsics_on_the_map():
+    # What DA3Depth._load does with a calibrated K (not centred, fx != fy):
+    # fixed_intrinsics = geometry.scale_intrinsics(K); metres use (fx + fy) / 2.
+    g = da3_map_geometry(1920, 1080, 504, "upper_bound_crop")
+    k = CameraIntrinsics(fx=1452.3, fy=1453.0, cx=958.6, cy=541.7)
+    m = g.scale_intrinsics(k)
+    assert (m.fx, m.fy) == pytest.approx((1452.3 * g.sx, 1453.0 * g.sy))
+    assert (m.cx, m.cy) == pytest.approx((958.6 * g.sx + g.ox, 541.7 * g.sy + g.oy))
+    raw = np.full((2, 2), 3.0, dtype=np.float32)
+    expected = 3.0 * (1452.3 * g.sx + 1453.0 * g.sy) / 2 / 300
+    assert to_metres(raw, "metric_focal", m) == pytest.approx(np.full((2, 2), expected))
+
+
 @pytest.mark.parametrize(
     ("name", "kind"),
     [

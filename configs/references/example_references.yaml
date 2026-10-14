@@ -1,0 +1,46 @@
+# FICTITIOUS example of a field reference file (format of
+# det_depth_distance.evaluation.references; protocol in
+# docs/refs/protocolo_calibracao_e_referencias.md). Copy it next to your
+# measurements, one file per video, and replace every value.
+# Evaluate: det-depth-distance-evaluate --refs <this file> <run folder> [<run folder>...]
+version: 1
+video: IMG_4100.MOV  # file name of the recorded video; checked against metrics.json
+
+# Instruments: per-measurement uncertainty = hypot(uncertainty_m, uncertainty_rel * distance)
+instruments:
+  laser: {description: "laser rangefinder (model, serial number)", uncertainty_m: 0.003, uncertainty_rel: 0.001}
+  marks: {description: "ground marks measured with a tape", uncertainty_m: 0.05}
+  rtk: {description: "GNSS RTK (base + rover)", uncertainty_m: 0.03}
+
+references:
+  # A parked car, measured with the laser from the lens centre to its rear face.
+  # Boxes and points are in pixels of the ORIGINAL video (1920x1080, origin top
+  # left, continuous edges), even when the run undistorts its frames.
+  - id: r01
+    frames: [120, 300]  # inclusive source frame indices (or t: [start_s, end_s])
+    select: {box: [812, 430, 1104, 655], label: car}  # or {point: [x, y]} or {track_id: 7}
+    distance_m: 12.40
+    instrument: laser
+    quantity: range  # range (straight line from the lens) | z (along the optical axis)
+    target: rear_face  # informative: the measured face
+    notes: "parked car; laser on the lens centre"
+
+  # A person standing on a ground mark; the point selects the smallest box containing it.
+  - id: r02
+    t: [20.0, 26.5]
+    select: {point: [1500, 610], label: person}
+    distance_m: 7.5
+    instrument: marks
+    quantity: z
+    target: front
+
+  # A moving vehicle tracked by RTK: distance series in video time [t_s, d_m],
+  # linearly interpolated; the series must cover the t range.
+  - id: r03
+    t: [40.0, 44.0]
+    select: {track_id: 3}  # ids belong to one run: prefer box/point across runs
+    series: [[40.0, 25.1], [42.0, 21.3], [44.0, 17.8]]
+    instrument: rtk
+    quantity: range
+    target: rear_face
+    uncertainty_m: 0.05  # overrides the instrument

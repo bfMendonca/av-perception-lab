@@ -6,6 +6,7 @@ import yaml
 from det_depth_distance.config import (
     PIPELINE_DISTANCE_KEYS,
     AgreementConfig,
+    CalibrationConfig,
     apply_overrides,
     load_config,
 )
@@ -41,6 +42,8 @@ def test_defaults(tmp_path):
     assert cfg.device == "cuda:0" and cfg.source.video is None
     # task_0006: tracking and smoothing are off by default.
     assert cfg.tracking is None and cfg.smoothing is None
+    # task_0007: no calibration by default (focal_px / estimate as before).
+    assert cfg.camera.calibration is None
     assert cfg.render.show_smoothed and cfg.render.show_speed
 
 
@@ -76,6 +79,7 @@ def test_example_configs_cover_the_planned_runs():
         "rfdetr_semantic_da3.yaml",
         "rfdetr_lanes_scene_da3.yaml",
         "rfdetr_da3_track.yaml",
+        "rfdetr_da3_calibrated.yaml",
     }
     multi = load_config(CONFIGS[0].with_name("multi_detector.yaml"))
     assert [d["type"] for d in multi.detectors] == ["rfdetr", "yolo"]
@@ -530,3 +534,60 @@ def test_tracking_options_are_validated_by_the_registry(tmp_path):
         registry.build("tracker", cfg.tracking, path="tracking")
     with pytest.raises(ConfigError, match=r"^tracking\.type: unknown tracker 'sort'"):
         registry.build("tracker", {"type": "sort"}, path="tracking")
+
+
+CALIBRATED = REPO / "configs" / "rfdetr_da3_calibrated.yaml"
+
+
+def test_calibrated_config():
+    cfg = load_config(
+        CALIBRATED
+    )  # the calibration file itself is checked by build_camera
+    assert cfg.camera.calibration == CalibrationConfig(
+        path=Path("configs/calibration/iphone14promax_main_1080p30.yaml"),
+        cross_check=True,
+    )
+    assert cfg.camera.focal_px is None and cfg.camera.estimate is not None
+    assert cfg.to_dict()["camera"]["calibration"]["check_lens"] == "error"
+    over = load_config(CALIBRATED, ["camera.calibration.undistort=true"])
+    assert over.camera.calibration.undistort
+
+
+def test_calibration_overrides(tmp_path):
+    cfg = load_config(
+        write(tmp_path, MINIMAL), ["camera.calibration={path: c.yaml, alpha: 1}"]
+    )
+    assert cfg.camera.calibration == CalibrationConfig(path=Path("c.yaml"), alpha=1.0)
+
+
+@pytest.mark.parametrize(
+    ("overrides", "match"),
+    [
+        (
+            ["camera.calibration={path: c.yaml, alpha: 1.5}"],
+            r"^camera\.calibration: alpha must be in \[0, 1\]",
+        ),
+        (
+            ["camera.calibration={path: c.yaml, check_lens: strict}"],
+            r"^camera\.calibration\.check_lens: 'strict' is not one of",
+        ),
+        (
+            ["camera.calibration={undistort: true}"],
+            r"calibration\.path: missing required",
+        ),
+        (
+            ["camera.calibration={path: c.yaml}", "camera.focal_px=1400"],
+            r"^camera: calibration and focal_px are exclusive",
+        ),
+        (
+            [
+                "camera.calibration={path: c.yaml, cross_check: true}",
+                "camera.estimate=null",
+            ],
+            r"^camera: calibration\.cross_check needs the estimate section",
+        ),
+    ],
+)
+def test_calibration_config_errors(tmp_path, overrides, match):
+    with pytest.raises(ConfigError, match=match):
+        load_config(write(tmp_path, MINIMAL), overrides)

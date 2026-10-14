@@ -30,6 +30,8 @@
 - [Refinadores de máscara](#refinadores-de-máscara)
 - [Segmentação semântica](#segmentação-semântica)
 - [Rastreamento e suavização](#rastreamento-e-suavização)
+- [Calibração da câmera](#calibração-da-câmera)
+- [Avaliação contra referências](#avaliação-contra-referências)
 - [Pesos dos refinadores e do SegFormer](#pesos-dos-refinadores-e-do-segformer)
 - [Saídas](#saídas)
 - [Como a distância é calculada](#como-a-distância-é-calculada)
@@ -58,7 +60,9 @@ caixas de qualquer detector em máscaras, e segmentadores semânticos (vários
 por execução) tornam inelegíveis para a distância os pixels de classes de
 fundo (estrada, céu, vegetação, faixas). Um rastreador opcional dá a cada
 objeto um ID estável entre quadros, e a distância de cada trilha pode ser
-suavizada no tempo (com estimativa da velocidade relativa).
+suavizada no tempo (com estimativa da velocidade relativa). A focal pode vir
+de uma calibração da câmera (tabuleiro ou ChArUco), e as distâncias podem ser
+avaliadas contra medidas de campo (trena laser, marcos, RTK).
 
 O foco é **qualidade da estimativa**, não tempo real: os modelos rodam
 em PyTorch, quadro a quadro. A inferência é feita no servidor GPU `gpu-host`;
@@ -78,6 +82,8 @@ o desenvolvimento e os testes unitários rodam localmente.
 - **Segmentar semanticamente** cada quadro com um ou mais segmentadores nomeados (`semantic`: SegFormer Cityscapes, TwinLiteNet+ área trafegável/faixas), sem fundir os mapas, e excluir classes do cálculo de distância por `distance.exclude_semantic: [<nome>.<classe>, …]` (união das exclusões).
 - **Rastrear** objetos entre quadros (`tracking: {type: iou}`): associação gulosa por IoU com predição da caixa por velocidade constante (em px/s, tolera `stride` até 5 a 30 fps), agnóstica de classe por padrão (detectores alternam `car`/`truck` no mesmo objeto) e por detector com `concat`; `track_id` no CSV e `#id` no rótulo do vídeo; numpy puro, sem dependência nova.
 - **Suavizar** a distância de cada trilha (`smoothing`): Kalman 1D com velocidade (padrão; estima também a velocidade relativa em m/s e as incertezas), média móvel exponencial ou mediana causal, com parâmetros em segundos; a distância bruta continua no CSV.
+- **Calibrar** a câmera com tabuleiro ou ChArUco (`det-depth-distance-calibrate`): vídeo decodificado como nas execuções (ou imagens), rejeição de vistas atípicas, cobertura do quadro, arquivo OpenCV (`FileStorage` YAML/JSON) com K, distorção, desvios e os metadados QuickTime da gravação (lente, 35 mm-eq.); na execução (`camera.calibration`), K reescalada para o vídeo, conferência da lente contra o vídeo, correção de distorção opcional dos quadros e comparação opcional com a focal estimada.
+- **Avaliar** as distâncias contra referências de campo (`det-depth-distance-evaluate`): referências por caixa, ponto ou `track_id` num intervalo de quadros/tempo, distância constante ou série (RTK), conversão alcance ↔ z, erros absolutos e relativos (média, mediana, p90, RMSE, viés, `within_2u`) por execução, detector, estimador, faixa de distância, classe, região e produtor da máscara, cobertura, trocas de ID e focal implícita; `eval.json`, `eval.md` e gráficos opcionais.
 - **Estimar** profundidade métrica com Depth Anything 3 (`da3metric-large` com focal informada ou estimada; modelos NESTED já em metros).
 - **Calcular** a distância de cada objeto com estatísticas robustas sobre a **máscara** da instância (quando o modelo a fornece; reamostrada para o mapa e erodida) ou sobre a caixa: encolhimento da caixa, exclusão de céu, rejeição de outliers (`iqr`, `mad`, `sigma`) e estatística configurável (`median`, `mean`, `trimmed`, `mode`, `pXX`), em profundidade `z` ou distância euclidiana; `distance.region: both` registra as duas distâncias para comparação.
 - **Renderizar** vídeo anotado (rótulo `[#id] classe conf · D m ± σ [· v m/s]`, camadas semânticas e máscara translúcida por instância, HUD com tempos) e, opcionalmente, o mapa de profundidade lado a lado com legenda em metros.
@@ -103,10 +109,15 @@ o desenvolvimento e os testes unitários rodam localmente.
 | Atenção eficiente (DA3) | xformers | 0.0.32.post2 |
 | Vídeo | ffmpeg (sistema), OpenCV, Pillow | — |
 | Configuração | PyYAML | ≥ 6 (ambiente leve) |
+| Calibração (tabuleiro, ChArUco, correção de distorção) | OpenCV (`cv2.aruco` incluso; sem `opencv-contrib`) | ambiente leve |
+| Gráficos da avaliação | matplotlib (extra opcional `eval`) | `>=3.8` (lock: 3.11.2) |
 
 As dependências pesadas ficam no extra `infer`, instalado apenas no host de
 inferência; localmente basta o ambiente leve (numpy, OpenCV, Pillow, PyYAML,
-pytest, ruff). Os frameworks são importados só dentro do `_load` de cada
+pytest, ruff). Calibração e avaliação rodam no ambiente leve; só os gráficos
+da avaliação pedem o extra `eval` (`uv sync --extra eval`, matplotlib; no servidor
+não use `--extra eval` sozinho — removeria a stack GPU —, o `--extra infer` já
+traz o matplotlib). Os frameworks são importados só dentro do `_load` de cada
 adaptador, então `--help`, `--list-models` e a validação da configuração
 rodam sem torch.
 
@@ -116,10 +127,11 @@ rodam sem torch.
 
 ```
 det-depth-distance/
-├── pyproject.toml           # manifesto uv; extra "infer" com a stack GPU
+├── pyproject.toml           # manifesto uv; extra "infer" com a stack GPU, extra "eval" (matplotlib)
 ├── uv.lock                  # lock versionado
-├── configs/                 # exemplos de YAML: rfdetr_da3, yolo_o365_da3, multi_detector(_fused), rfdetr_seg_da3, yolo_seg_da3, yolo_o365_seg_da3, rfdetr_sam2_da3, yolo_o365_sam2_da3, rfdetr_semantic_da3, rfdetr_lanes_scene_da3, rfdetr_da3_track
-│   └── labels/              # mapas de rótulos por vocabulário: coco_driving, objects365_driving
+├── configs/                 # exemplos de YAML: rfdetr_da3, yolo_o365_da3, multi_detector(_fused), rfdetr_seg_da3, yolo_seg_da3, yolo_o365_seg_da3, rfdetr_sam2_da3, yolo_o365_sam2_da3, rfdetr_semantic_da3, rfdetr_lanes_scene_da3, rfdetr_da3_track, rfdetr_da3_calibrated
+│   ├── labels/              # mapas de rótulos por vocabulário: coco_driving, objects365_driving
+│   └── references/          # example_references.yaml (modelo fictício do formato de referências de campo)
 ├── src/det_depth_distance/
 │   ├── core/                # contratos e orquestração, sem frameworks
 │   │   ├── types.py         # Frame, Instances, DepthResult, FrameResult, RefinedMasks, SemanticMap, TrackEstimate, MapGeometry, CameraIntrinsics
@@ -139,8 +151,11 @@ det-depth-distance/
 │   │   ├── semantic/        # segformer.py, twinlitenet.py
 │   │   ├── _hf_hub.py       # carga offline de checkpoints HF + comando de download
 │   │   └── _ultralytics_env.py  # política de ambiente do ultralytics (offline, sem auto-instalação)
-│   ├── io/                  # video.py (ffmpeg), source.py (VideoSource), sinks.py (CSV, vídeo, npz, métricas)
-│   ├── camera.py            # provedores de intrínsecos: focal fixa ou estimada
+│   ├── io/                  # video.py (ffmpeg), source.py (VideoSource, FrameTransform), sinks.py (CSV, vídeo, npz, métricas), quicktime.py (metadados de câmera do MOV)
+│   ├── evaluation/          # references, run_data, matching, stats, evaluate, report: erro contra referências de campo
+│   ├── tools/               # CLIs auxiliares: calibrate.py, evaluate.py
+│   ├── camera.py            # provedores de intrínsecos (fixa, estimada, calibrada), Calibration, Undistorter, build_camera
+│   ├── calibration.py       # alvos (tabuleiro, ChArUco), detecção de vistas, ajuste com rejeição de vistas atípicas
 │   ├── config.py            # RunConfig, load_config, --set
 │   ├── distance.py          # numpy puro: caixa ou máscara -> pixels do mapa -> estatísticas robustas
 │   ├── temporal.py          # numpy puro: suavização por trilha (Kalman 1D, EMA, mediana) e SmoothingConfig
@@ -151,7 +166,7 @@ det-depth-distance/
 ├── tests/                   # pytest sem GPU; tests/gpu/ (marcador gpu) roda no gpu-host
 ├── utils/
 │   └── sync_gpu_host.sh      # rsync push/pull com o servidor GPU
-├── docs/                    # tasks (docs/task_DDDD.md), template e refs/ (diagramas de arquitetura e do fluxo por quadro)
+├── docs/                    # tasks (docs/task_DDDD.md), template e refs/ (diagramas e protocolo de calibração e referências)
 └── _testbed/                # (ignorado pelo git) vídeos, saídas, logs
 ```
 
@@ -213,6 +228,17 @@ uv run --extra infer python -m det_depth_distance --list-models
 | `--set chave=valor` | Repetível; caminho pontilhado com índice de lista (`detectors.0.threshold=0.3`); valor lido como YAML (`null`, `true`, números); um valor-mapa ou lista substitui a seção inteira (`--set 'aggregation={type: concat}'`) |
 | `--list-models` | Lista detectores, modelos de profundidade, agregadores, rastreadores, refinadores de máscara e segmentadores semânticos registrados com suas opções e padrões |
 
+Ferramentas auxiliares (ambiente leve, sem GPU; ver
+[Calibração da câmera](#calibração-da-câmera) e
+[Avaliação contra referências](#avaliação-contra-referências)):
+
+| Comando | Efeito |
+|---|---|
+| `det-depth-distance-calibrate calibrate VIDEO\|--images GLOB --out ARQ` | Calibra a câmera e grava o arquivo de calibração |
+| `det-depth-distance-calibrate board --out PNG` | Gera o alvo (tabuleiro ou ChArUco) para impressão |
+| `det-depth-distance-calibrate inspect VIDEO [--calibration ARQ]` | Metadados da câmera do vídeo, focal pelo 35 mm-eq. e conferência com uma calibração (código 1 se a câmera não confere) |
+| `det-depth-distance-evaluate --refs REFS.yaml RUN [RUN ...]` | Relatório de erro de uma ou mais execuções contra as referências |
+
 Use `--extra infer` também no `uv sync`: sem ele o sync (exato por padrão)
 remove a stack GPU. Erros de configuração terminam com `error: …` e código 2
 antes de carregar qualquer modelo.
@@ -239,6 +265,9 @@ caixas, `region: both`), `rfdetr_semantic_da3.yaml` (SegFormer `scene`) e
 `rfdetr_lanes_scene_da3.yaml` (TwinLiteNet+ `lanes` + SegFormer `scene`).
 Rastreamento e suavização (`task_0006`): `rfdetr_da3_track.yaml`
 (`rfdetr_da3.yaml` + rastreador IoU + Kalman, `layout: side-by-side`).
+Calibração (`task_0007`): `rfdetr_da3_calibrated.yaml` (`rfdetr_da3.yaml` +
+`camera.calibration` com `cross_check`; o arquivo de calibração é criado
+pelo usuário, ver [Calibração da câmera](#calibração-da-câmera)).
 Caminhos aceitam `~` e, quando relativos, são
 resolvidos a partir do diretório de execução (a raiz do repositório); chaves
 desconhecidas são erro (com o caminho, ex.
@@ -250,7 +279,7 @@ desconhecidas são erro (com o caminho, ex.
 | `source` | `video` (obrigatório aqui ou como `VIDEO`); `start` (0 s); `duration` (0 = até o fim); `max_frames` (0 = todos); `stride` (1) |
 | `detectors` | Lista (≥ 1); cada item tem `type`, `name` opcional (padrão: `rfdetr-<variant>`, `rfdetr-<arquivo de pesos>` ou, no YOLO, o nome do arquivo de pesos) e as opções do adaptador. Comuns: `threshold` (0.5, em (0, 1]), `classes` (`driving`, `all`, lista ou nomes separados por vírgula), `labels` (null; YAML de mapa de rótulos, ver abaixo). `rfdetr`: `variant` (`large`; detecção `nano`/`small`/`medium`/`large`, segmentação `seg-nano`/`seg-small`/`seg-medium`/`seg-large`/`seg-xlarge`/`seg-2xlarge`), `weights` (checkpoint próprio), `optimize` (TorchScript + FP16). `yolo`: `weights` (obrigatório, `.pt` de detecção ou de segmentação `*-seg.pt`), `imgsz` (640, múltiplo de 32), `half` (FP16) |
 | `depth` | `type: da3`; `model` (`da3metric-large`; alias, repo HF ou diretório; modelos relativos são recusados); `process_res` (504, ≥ 14); `process_res_method` (`upper_bound_resize`); `hf_cache` |
-| `camera` | `focal_px` (null; focal em px do vídeo, tem precedência); `estimate` (`model: da3-large-1.1`, `frames: 16`, `process_res`, `process_res_method`, `hf_cache`; `null` desliga a estimativa) |
+| `camera` | Precedência `calibration` > `focal_px` > `estimate`. `calibration` (null; `path`, `undistort` false, `alpha` 0.0, `check_lens` `error`, `cross_check` false — ver [Calibração da câmera](#calibração-da-câmera); exclusivo com `focal_px`); `focal_px` (null; focal em px do vídeo); `estimate` (`model: da3-large-1.1`, `frames: 16`, `process_res`, `process_res_method`, `hf_cache`; `null` desliga a estimativa; usado também por `calibration.cross_check`) |
 | `aggregation` | `type`: `concat` (padrão; mantém todas as caixas, marcadas por `source`), `nms` ou `wbf` (opções abaixo) |
 | `refiners` | Lista (padrão `[]`), aplicada em ordem depois da agregação (cada um vê as máscaras do anterior); item `{type, name?, …}`, ver [Refinadores de máscara](#refinadores-de-máscara) |
 | `semantic` | Lista (padrão `[]`) de segmentadores, rodados em ordem sobre o mesmo quadro; item `{name, type, …}` com `name` **obrigatório** e único (`[a-z0-9][a-z0-9_-]*`), ver [Segmentação semântica](#segmentação-semântica) |
@@ -458,6 +487,110 @@ as saídas são idênticas às da `task_0005` (colunas novas vazias).
 `--set tracking=null` desliga e `--set smoothing.filter=ema` troca o filtro.
 `smoothing` sem `tracking` é erro de configuração.
 
+### Calibração da câmera
+
+A distância do `DA3METRIC-LARGE` é proporcional à focal, e a focal estimada
+variou ~8 % entre IMG_4021 (1390 px) e IMG_4022 (1503 px), gravados com a
+mesma lente segundo os metadados. A calibração mede K e a distorção da
+câmera uma vez, no mesmo modo de gravação. Roteiro completo (gravação do
+alvo, critérios de aceitação, coleta de referências):
+[`docs/refs/protocolo_calibracao_e_referencias.md`](docs/refs/protocolo_calibracao_e_referencias.md).
+
+```bash
+uv run det-depth-distance-calibrate board --out _testbed/board.png --dpi 300   # tabuleiro 9×6 cantos, 25 mm
+uv run det-depth-distance-calibrate calibrate _testbed/data/CALIB_01.MOV --square-mm 24.9 \
+    --note "estabilizacao padrao" --out configs/calibration/iphone14promax_main_1080p30.yaml
+uv run det-depth-distance-calibrate inspect _testbed/data/IMG_4021.MOV \
+    --calibration configs/calibration/iphone14promax_main_1080p30.yaml
+```
+
+- **Alvos**: `chessboard` (`--cols`/`--rows` = cantos internos;
+  `findChessboardCornersSB`, recuo para o detector clássico + `cornerSubPix`)
+  e `charuco` (`--cols`/`--rows` = quadrados, `--marker-mm`,
+  `--dictionary`; aceita o alvo parcialmente visível). O ChArUco usa o
+  `cv2.aruco` do `opencv-python` (`CharucoDetector` + `matchImagePoints` +
+  `calibrateCamera`; o `calibrateCameraCharuco` legado não existe nele).
+- **Ajuste**: um quadro a cada `--every-s` (0,5 s), até `--max-views` (60)
+  vistas uniformes no tempo, mínimo `--min-views` (12); `k3` fixo por padrão
+  (`--no-fix-k3` ajusta); vistas com RMS > max(3 · mediana, 1 px) são
+  descartadas e o ajuste é refeito uma vez; `coverage` = fração de uma grade
+  8×6 com cantos. Os critérios de aceitação do protocolo (RMS < 0,5 px,
+  `coverage` ≥ 0,6, desvio de fx < 0,5 % de fx) são conferidos e impressos
+  (`[accept] ok` ou aviso `[warn] not accepted`). Vistas ChArUco com cantos
+  colineares (uma só fileira visível) são descartadas.
+- **Arquivo** (`cv2.FileStorage`, YAML `%YAML:1.0` ou JSON pela extensão):
+  `image_width`, `image_height`, `camera_matrix` (convenção OpenCV),
+  `distortion_coefficients`, e `rms_px`, `std_intrinsics`, `camera`
+  (metadados QuickTime da gravação), `target`, `recording` (`--note`),
+  `n_views`, `coverage`, `per_view_rms`, `created`, `tool`. Não é YAML válido
+  para `yaml.safe_load` (tags `!!opencv-matrix`).
+- **Metadados da câmera**: `inspect` lê do MOV `make`, `model`, `software`,
+  `lens_model`, `focal_length_35mm` e `lens_f_number` (os da trilha não
+  aparecem no `ffprobe`) e mostra a focal pelo 35 mm-eq. só como
+  diagnóstico (24 mm-eq. → 1222 px em 1920×1080 pela diagonal; não serve
+  como focal do vídeo).
+
+| `camera.calibration` | Padrão | Efeito |
+|---|---|---|
+| `path` | — (obrigatório) | arquivo de calibração; conferido antes de carregar qualquer modelo |
+| `undistort` | false | corrige a distorção de cada quadro (`remap`) antes de todos os componentes; detecções, profundidade, CSV e vídeo ficam em pixels corrigidos, e a K entregue é a da câmera corrigida |
+| `alpha` | 0.0 | `getOptimalNewCameraMatrix`, em [0, 1]: 0 = só pixels válidos (focal um pouco maior), 1 = campo inteiro (bordas pretas); só com `undistort` |
+| `check_lens` | `error` | compara `model`, `lens_model` e `focal_length_35mm` da calibração com os do vídeo: `error` aborta, `warn` avisa, `off` não compara; sem metadados nos dois lados = `unavailable` |
+| `cross_check` | false | também estima a focal (`camera.estimate`) e registra a estimada e a razão estimada/calibrada no `metrics.json` |
+
+A calibração é reescalada para o tamanho do vídeo só com a mesma proporção
+(outra proporção = outro recorte do sensor → erro); calibrar no modo exato
+das gravações é o recomendado. Com `calibration: null` (padrão) a execução é
+a da `task_0006` (o `metrics.json` só ganha `frame_intrinsics`, `camera: {}`
+e `video.transform: null`).
+
+### Avaliação contra referências
+
+`det-depth-distance-evaluate` cruza o `detections.csv` e o `metrics.json` de
+uma ou mais execuções com um arquivo de referências de campo (um por vídeo;
+modelo fictício em `configs/references/example_references.yaml`):
+
+```bash
+uv run det-depth-distance-evaluate --refs refs/IMG_4100.yaml _testbed/outputs/<execução>
+uv run det-depth-distance-evaluate --refs refs/IMG_4100.yaml RUN_A RUN_B --out _testbed/eval_4100
+uv run --extra eval det-depth-distance-evaluate --refs refs/IMG_4100.yaml RUN_A --plot   # laptop
+# gpu-host: ~/.local/bin/uv run --extra infer det-depth-distance-evaluate ... --plot (nunca --extra eval sozinho)
+```
+
+- **Referências**: `frames: [a, b]` ou `t: [a, b]`; `select` por `box`,
+  `point` (menor caixa que contém o ponto) ou `track_id`, com `label`
+  opcional; `distance_m` ou `series: [[t, d], …]`; `instrument` (incerteza
+  `hypot(uncertainty_m, uncertainty_rel · d)`) ou `uncertainty_m`;
+  `quantity: range` (linha reta) ou `z`. Coordenadas em pixels do vídeo
+  original; execuções com `undistort` têm as referências transformadas com a
+  K e a distorção registradas no `metrics.json` da execução
+  (`camera.calibration`), não com o arquivo de calibração — recalibrar
+  depois não muda a avaliação de execuções antigas (a K corrigida
+  reconstruída é conferida contra a registrada).
+- **Casamento**: em cada quadro processado do intervalo e para cada detector
+  (com fusão, a saída fundida é um grupo só), a instância de maior IoU
+  (`--iou-min` 0.3), a menor caixa com o ponto ou a do `track_id`. Quadro sem
+  candidato conta como "não detectado". Referências `range` viram `z` (e
+  `z` vira alcance numa execução `euclidean`) pelo raio do centro da caixa.
+  Referência por `track_id` numa execução sem rastreamento é ignorada, com
+  aviso.
+- **Estimadores** (os presentes no CSV): `distance_m`, `median`, `mean`,
+  `p10`, `p25`, `p75`, `p90`, `min`, `box_distance_m`, `distance_smooth_m`.
+- **Estatística**: erro = estimativa − referência; `n`, `n_refs`, viés,
+  mediana com sinal, MAE, mediana e p90 absolutos, RMSE, relativos (médio,
+  mediano, p90), `within_2u`, `scale_median`. Nível `reference` (padrão:
+  uma mediana por referência, quadros vizinhos são correlacionados) ou
+  `frame`. Tabelas por execução × detector × estimador e por faixa de
+  distância (`--bins`, padrão 0,5,10,20,30,50 m), classe, região
+  (máscara/caixa), produtor da máscara e referência; cobertura (válida,
+  `n/a`, não detectada, `track_id` distintos) e focal implícita por
+  detector (`metric_focal`: focal que zeraria o erro de escala).
+- **Saídas**: `eval.json`, `eval.md` e, com `--plot` (extra `eval`),
+  `eval_error_vs_distance.png` e `eval_abs_rel_by_bin.png`, em
+  `<execução>/eval_<nome das referências>/` ou `--out` (obrigatório com
+  várias execuções). Vídeo diferente entre referências e execução é erro
+  (`--force` avalia mesmo assim).
+
 ### Pesos dos refinadores e do SegFormer
 
 Nada é baixado em tempo de execução (`local_files_only=True`); um peso
@@ -490,7 +623,7 @@ Cada execução cria `<output.out_root>/<AAAAmmdd_HHMMSS>_<vídeo>_<detectores>_
 |---|---|
 | `video.mp4` | Vídeo anotado (H.264); com mais de um detector e `concat`, cor e contagem do HUD por modelo de origem; com fusão, cor pelo rótulo canônico, `×N` no rótulo quando N detectores viram o objeto e linhas de HUD com o agregador e a concordância (`agree <m> · only <a> <x> · only <b> <y>`); máscaras translúcidas na cor da instância, no quadro e no painel de profundidade, e `· region <política> · erode <k>` na linha de distância do HUD nos quadros em que alguma instância usou a máscara; camadas semânticas translúcidas (cor pelo nome da classe, por baixo das máscaras e caixas, só no painel do quadro, na ordem de `semantic`) e linhas de HUD `refine <nome> · <preenchidas>/<alvos>` e `semantic <nome> · excl <classes>`; com rastreamento, rótulo `#<id> classe conf · D m · ±v m/s` (distância suavizada com `show_smoothed`, velocidade com `show_speed`) e última linha de HUD `track iou · IoU ≥ 0.3 · age 0.5 s · kalman q 2 · ids <trilhas abertas>`; áudio copiado quando o vídeo inteiro é processado sem `stride` |
 | `detections.csv` | Uma linha por caixa: quadro, tempo, classe, confiança, caixa, região amostrada no mapa, `n_valid`/`n_inliers`/`inlier_frac`, média, mediana, desvio, variância, p10–p90, mín/máx, `distance_m` (vazio = n/a) e, no fim, `source` (detector de origem), `raw_label` (nome no vocabulário do modelo), `n_sources` (nº de detectores que viram o objeto; 1 sem fusão), `sources`, `source_scores` e `raw_labels` (um item por detector, o seu melhor membro, separados por `\|`, em score decrescente), e por fim `used_mask` (1 = estatísticas sobre a máscara), `mask_px` (pixels do mapa da máscara erodida; `mask_px / n_box_px` = ocupação da caixa), `mask_erode` (erosão aplicada) e `box_distance_m` (só com `region: both`, distância pela caixa da instância que usou máscara) e, por último, `mask_source` (componente que produziu a máscara — detector, refinador ou membro da fusão dono da máscara —; vazio = sem máscara) e `mask_score` (qualidade prevista pelo refinador, 4 casas; vazio para máscaras de detector) e, no fim, `track_id`, `distance_smooth_m`, `distance_smooth_std_m`, `rel_speed_mps` e `rel_speed_std_mps` (vazias sem rastreamento/suavização; desvios e velocidade só com `kalman`; `distance_m` segue sendo a distância bruta). Com máscara, as colunas de estatística descrevem a máscara e `n_box_px` é a janela da caixa sem encolhimento. A semântica não acrescenta colunas |
-| `metrics.json` | `components` (descrição de cada detector, da profundidade, do agregador, dos `refiners` e dos `semantic`), `pipeline` (política: `exclude_sky`, `agreement`, `region`, `mask_erode`, `exclude_semantic` como `{nome: [classes]}`, `smoothing`), `components.tracker` (null sem rastreamento), tempos por etapa (`det`, `det.<nome>`, `agree`, `aggregate`, `refine`/`refine.<nome>`, `track`, `semantic`/`semantic.<nome>` e `smooth` quando existem, `depth`, `dist`, `render`), `tracks` (só com rastreador: `n_tracks`, `short_tracks` — trilhas com menos de `min_duration_s` = 1 s, fora da lista — e `per_track` com `id`, `label` (moda), `labels`, `label_changes`, `sources`, `first_frame`/`last_frame`/`first_t`, `duration_s`, `n_frames`, `coverage`, `gaps`, `max_gap_s`, `distance_m` {min, median, max}, `jitter_raw_m`/`jitter_smooth_m` (desvio da diferença quadro a quadro) e `rel_speed_mps` {p5, median, p95}), `mask_sources` (instâncias com máscara por produtor), `refined` (por refinador: `targets` e `filled`), `semantic` (só com segmentador: por mapa `exclude`, `class_frac_mean`, `excluded_frac_mean`; no topo, `excluded_frac_mean` da união das exclusões), VRAM, focal (px do quadro e intrínsecos do mapa) e origem, parâmetros de distância, contagens (`detections_total`, `detections_by_source`, `detections_by_n_sources`), `distance_regions` (`{"mask": n, "box": n}`), `region_comparison` (só com `region: both`: diferença máscara − caixa com `n`, `median_signed_m`, `median_abs_m`, `p90_abs_m`, `median_rel`, total e `by_label`), `agreement` (com ≥ 2 detectores: por detector `instances`/`duplicates`; por par `matched`/`only_a`/`only_b`/`mean_iou`; séries por quadro em `per_frame`), versões (inclui `transformers` e `timm`), commit e `config` (YAML resolvido) |
+| `metrics.json` | `components` (descrição de cada detector, da profundidade, do agregador, dos `refiners` e dos `semantic`), `pipeline` (política: `exclude_sky`, `agreement`, `region`, `mask_erode`, `exclude_semantic` como `{nome: [classes]}`, `smoothing`), `components.tracker` (null sem rastreamento), tempos por etapa (`det`, `det.<nome>`, `agree`, `aggregate`, `refine`/`refine.<nome>`, `track`, `semantic`/`semantic.<nome>` e `smooth` quando existem, `depth`, `dist`, `render`), `tracks` (só com rastreador: `n_tracks`, `short_tracks` — trilhas com menos de `min_duration_s` = 1 s, fora da lista — e `per_track` com `id`, `label` (moda), `labels`, `label_changes`, `sources`, `first_frame`/`last_frame`/`first_t`, `duration_s`, `n_frames`, `coverage`, `gaps`, `max_gap_s`, `distance_m` {min, median, max}, `jitter_raw_m`/`jitter_smooth_m` (desvio da diferença quadro a quadro) e `rel_speed_mps` {p5, median, p95}), `mask_sources` (instâncias com máscara por produtor), `refined` (por refinador: `targets` e `filled`), `frame_intrinsics` (K do quadro entregue ao modelo de profundidade, `null` quando ele prevê K por quadro), `camera` (`{}` sem `camera.calibration`; com ela: `calibration` (caminho, tamanho, K contínua, distorção, RMS, desvios, câmera), `scaled_from`, `lens_check`, `undistort` e, com `cross_check`, `estimated_focal_frame_px`, `estimated_source` e `estimated_over_calibrated`), `video.transform` (correção de distorção aplicada aos quadros ou `null`), `semantic` (só com segmentador: por mapa `exclude`, `class_frac_mean`, `excluded_frac_mean`; no topo, `excluded_frac_mean` da união das exclusões), VRAM, focal (px do quadro e intrínsecos do mapa) e origem, parâmetros de distância, contagens (`detections_total`, `detections_by_source`, `detections_by_n_sources`), `distance_regions` (`{"mask": n, "box": n}`), `region_comparison` (só com `region: both`: diferença máscara − caixa com `n`, `median_signed_m`, `median_abs_m`, `p90_abs_m`, `median_rel`, total e `by_label`), `agreement` (com ≥ 2 detectores: por detector `instances`/`duplicates`; por par `matched`/`only_a`/`only_b`/`mean_iou`; séries por quadro em `per_frame`), versões (inclui `transformers` e `timm`), commit e `config` (YAML resolvido) |
 | `depth.npz` | Só com `output.save_depth: true`: mapas em metros (`float16`), índices dos quadros, intrínsecos por quadro (`fx, fy, cx, cy` na resolução do mapa) e geometria (`geometry` + `geometry_fields`); com segmentadores, por nome, `semantic_labels_<nome>` (`(F, map_h, map_w)`, `uint8` até 256 classes, rótulos amostrados na grade do mapa como na elegibilidade) e `semantic_classes_<nome>` |
 
 Prévia leve para trazer ao laptop:
@@ -519,9 +652,12 @@ Prévia leve para trazer ao laptop:
 4. A distância é a estatística escolhida (`distance.stat`) dos pixels
    restantes; com menos de `distance.min_valid_px` pixels, o rótulo mostra `n/a`.
 
-O `DA3METRIC-LARGE` só fornece metros com a focal da câmera: informe
-`camera.focal_px` (calibração) ou deixe que um modelo any-view a estime
-(`camera.estimate`, mediana de `frames` quadros). `distance_type: euclidean`
+O `DA3METRIC-LARGE` só fornece metros com a focal da câmera: use uma
+calibração (`camera.calibration`, K completa com `fx ≠ fy` e ponto principal
+fora do centro), informe `camera.focal_px` ou deixe que um modelo any-view a
+estime (`camera.estimate`, mediana de `frames` quadros). Os intrínsecos
+usam coordenadas contínuas (centro do pixel `i` em `i + 0,5`); o `cx`/`cy`
+do OpenCV é 0,5 menor e é convertido na leitura da calibração. `distance_type: euclidean`
 converte a profundidade ao longo do eixo óptico em distância em linha reta.
 
 ---
@@ -547,4 +683,4 @@ Variáveis opcionais: `SYNC_HOST` (padrão `gpu-host`) e `SYNC_DEST` (padrão
 - [x] **Segmentação de instâncias** (`task_0004`) — YOLO26-seg e RF-DETR-Seg; distância pela máscara (`distance.region`, `mask_erode`), máscaras no vídeo e colunas de máscara no CSV.
 - [x] **Refinadores de máscara e segmentação semântica** (`task_0005`) — família SAM (SAM2, EdgeTAM, SAM-HQ, SAM, SAM3) e MobileSAM via hierarquia `BoxPromptRefiner`; vários segmentadores semânticos nomeados (SegFormer, TwinLiteNet+) com exclusão de classes por `<nome>.<classe>`. Validação no servidor GPU pendente (testes `-m gpu`, pesos e execuções A–E).
 - [x] **Rastreamento e suavização temporal** (`task_0006`) — rastreador IoU com velocidade constante (`track_id`), suavização por trilha (Kalman 1D, EMA, mediana), velocidade relativa e resumo por trilha no `metrics.json`. Validação no servidor GPU pendente (regressão `-m gpu` e execuções nos vídeos reais).
-- [ ] **Calibração e avaliação** (`task_0007`) — focal calibrada, protocolo de verdade de campo e relatório de erro.
+- [x] **Calibração e avaliação** (`task_0007`) — calibração por tabuleiro/ChArUco, `camera.calibration` (K reescalada, conferência da lente, correção de distorção, comparação com a focal estimada), protocolo de verdade de campo e relatório de erro contra referências. Pendentes: calibração real do iPhone 14 Pro Max, coleta de referências de campo e validação no servidor GPU.

@@ -32,6 +32,8 @@ ssh gpu-host 'cd ~/dev/det-depth-distance && ~/.local/bin/uv sync --extra infer'
 ssh gpu-host 'cd ~/dev/det-depth-distance && ~/.local/bin/uv run --extra infer pytest -m gpu -v'
 ssh gpu-host 'cd ~/dev/det-depth-distance && ~/.local/bin/uv run --extra infer python -m det_depth_distance --config configs/rfdetr_da3.yaml'
 utils/sync_gpu_host.sh pull [RUN_DIR]      # saídas <- gpu-host
+uv run det-depth-distance-calibrate {calibrate,board,inspect} ...   # calibração (ambiente leve)
+uv run det-depth-distance-evaluate --refs REFS.yaml RUN [RUN ...]   # erro contra referências de campo
 ```
 
 ## Arquitetura (big picture)
@@ -47,8 +49,12 @@ ABCs `Detector`/`DepthEstimator`/`MaskRefiner`/`SemanticSegmenter`/`Tracker`,
 registro, `LabelMap`, agregadores `concat`/`nms`/`wbf`, geometria de caixas,
 concordância, rastreador IoU, `Pipeline`) não importa frameworks; `adapters/` envolve cada
 framework (refinadores: `MaskRefiner` → `BoxPromptRefiner` → `HFSamRefiner` →
-famílias finas, + `UltralyticsSamRefiner`); `io/` (vídeo, fonte, sinks);
-`cli.py` é só a raiz de composição.
+famílias finas, + `UltralyticsSamRefiner`); `io/` (vídeo, fonte, sinks,
+metadados QuickTime); `cli.py` é só a raiz de composição (a câmera —
+calibração, conferência da lente, correção de distorção — é composta por
+`camera.build_camera`). Calibração (`calibration.py`, `tools/calibrate.py`)
+e avaliação contra referências (`evaluation/`, `tools/evaluate.py`) rodam
+no ambiente leve; só os gráficos pedem o extra `eval` (matplotlib).
 
 ## Leia primeiro / Gotchas não-óbvios
 
@@ -62,7 +68,9 @@ famílias finas, + `UltralyticsSamRefiner`); `io/` (vídeo, fonte, sinks);
   escala separada em x e y, e os métodos `*_crop` ainda deslocam a origem
   (`adapters/depth/da3.py: da3_map_geometry` replica o `InputProcessor` privado do DA3).
 - No servidor, `uv sync` sem `--extra infer` remove a stack GPU (o sync é
-  exato por padrão); use `--extra infer` no `uv sync` e no `uv run`.
+  exato por padrão); use `--extra infer` no `uv sync` e no `uv run` —
+  também para `--plot` da avaliação (`--extra eval` sozinho removeria a
+  stack; o `infer` já traz o matplotlib).
 - Decodificador ffmpeg encerrado antecipadamente (`source.max_frames`) precisa de
   `kill()`: com SIGTERM ele trava escrevendo no pipe cheio.
 - Passar uma lista de imagens para um modelo any-view do DA3 ativa o modo
@@ -152,6 +160,30 @@ famílias finas, + `UltralyticsSamRefiner`); `io/` (vídeo, fonte, sinks);
 - O rastreador é agnóstico de classe por padrão (detectores alternam
   `car`/`truck` no mesmo objeto) e associa por `source` com `concat`
   (cópias do mesmo objeto por dois detectores mantêm IDs próprios).
+- Convenção de pixel: o projeto usa coordenadas **contínuas** (centro do
+  pixel `i` em `i + 0,5`: caixas, `MapGeometry`, `ray_factors`); o OpenCV
+  centra o pixel em `i`. Ao ler uma calibração, `cx/cy` ganham **+0,5**
+  (`Calibration.from_opencv`) e perdem 0,5 ao voltar ao OpenCV
+  (`camera_matrix()`); esquecer isso desloca o ponto principal meio pixel
+  (e, reescalada por `s`, o erro vira `0,5·(1 − s)` px).
+- O `ffprobe` só mostra as tags de `moov/meta`; a lente
+  (`camera.lens_model`) e o 35 mm-eq. dos iPhones estão em `moov/trak/meta`
+  e só são lidos pelo parser `io/quicktime.py`. O 35 mm-eq. **não** dá a
+  focal do vídeo (24 mm-eq. → 1222 px pela diagonal contra 1390/1503 px
+  estimados; recorte da estabilização não registrado): só diagnóstico.
+- ArUco/ChArUco está no `opencv-python` (`cv2.aruco.CharucoDetector`,
+  `Board.matchImagePoints`), mas **sem** `calibrateCameraCharuco`/
+  `interpolateCornersCharuco` (API legada do contrib): ChArUco calibra com
+  `calibrateCamera` como o tabuleiro. Não instalar `opencv-contrib-python`.
+- Arquivos de calibração são `cv2.FileStorage` (`%YAML:1.0`, tags
+  `!!opencv-matrix`): **não** são YAML válido para `yaml.safe_load`, e o
+  `FileStorage` recusa YAML sem o cabeçalho (o binding levanta
+  `SystemError`, não `cv2.error`).
+- Com `camera.calibration.undistort` tudo a jusante (caixas do CSV, vídeo,
+  `frame_intrinsics`) fica em pixels **corrigidos**; as referências de campo
+  são anotadas no vídeo original e a avaliação as transforma com a K e a
+  distorção gravadas no `metrics.json` (nunca relendo o arquivo de
+  calibração, que pode ter sido refeito).
 - No `gpu-host`: sem sudo, `uv` em `~/.local/bin` (fora do PATH), disco quase
   cheio (preferir `/dev/shm` para temporários grandes), e `nvidia-smi` pode
   falhar por driver mismatch — usar `torch.cuda.mem_get_info()`.

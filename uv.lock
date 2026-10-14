@@ -369,6 +369,9 @@ dependencies = [
 ]
 
 [package.optional-dependencies]
+eval = [
+    { name = "matplotlib" },
+]
 infer = [
     { name = "addict" },
     { name = "depth-anything-3" },
@@ -391,6 +394,7 @@ dev = [
 requires-dist = [
     { name = "addict", marker = "extra == 'infer'", specifier = ">=2.4.0" },
     { name = "depth-anything-3", marker = "extra == 'infer'", git = "https://github.com/ByteDance-Seed/Depth-Anything-3?rev=3d835ec1a5802d64a8b8b15f817a1ab54809bfe4" },
+    { name = "matplotlib", marker = "extra == 'eval'", specifier = ">=3.8" },
     { name = "numpy", specifier = "<2" },
     { name = "opencv-python" },
     { name = "pillow" },
@@ -403,7 +407,7 @@ requires-dist = [
     { name = "ultralytics", marker = "extra == 'infer'", specifier = "==8.4.175" },
     { name = "xformers", marker = "extra == 'infer'", specifier = "==0.0.32.post2", index = "https://download.pytorch.org/whl/cu128" },
 ]
-provides-extras = ["infer"]
+provides-extras = ["infer", "eval"]
 
 [package.metadata.requires-dev]
 dev = [

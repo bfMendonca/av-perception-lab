@@ -53,6 +53,17 @@ ssh gpu-host 'cd ~/dev/det-depth-distance && ~/.local/bin/uv run --extra infer p
 
 # Traz as saídas de volta para o _testbed/ local
 utils/sync_gpu_host.sh pull [RUN_DIR]
+
+# Calibração e avaliação (ambiente leve, local ou no gpu-host; protocolo em
+# docs/refs/protocolo_calibracao_e_referencias.md)
+uv run det-depth-distance-calibrate board --out _testbed/board.png              # alvo para impressão
+uv run det-depth-distance-calibrate inspect _testbed/data/VIDEO.MOV             # lente, 35 mm-eq.
+uv run det-depth-distance-calibrate calibrate _testbed/data/CALIB.MOV --square-mm 25 \
+    --out configs/calibration/<aparelho>_<lente>_<modo>.yaml
+uv run det-depth-distance-evaluate --refs REFS.yaml _testbed/outputs/RUN [RUN ...] [--out DIR]
+uv sync --extra eval   # laptop, só para --plot (matplotlib); `uv sync` volta ao ambiente leve
+# No gpu-host NUNCA `--extra eval` sozinho (removeria a stack GPU): o --extra infer já traz o matplotlib
+#   ~/.local/bin/uv run --extra infer det-depth-distance-evaluate ... --plot
 ```
 
 ## Comandos de Teste
@@ -109,14 +120,22 @@ uv run ruff format .
   ABCs, registro, rótulos e mapas de rótulos, geometria de caixas,
   agregação/fusão, concordância, rastreamento, pipeline — sem frameworks),
   `adapters/` (um módulo por framework, registrado com `@register` e listado
-  em `ADAPTER_MODULES`), `io/` (vídeo, fontes, sinks), e módulos de topo
-  `camera.py`, `config.py`, `distance.py`, `temporal.py`, `render.py`,
-  `runtime.py`, `cli.py`. Configurações de exemplo em `configs/` (mapas de rótulos
-  versionados em `configs/labels/`). Scripts utilitários bash em `utils/`.
+  em `ADAPTER_MODULES`), `io/` (vídeo, fontes, sinks, metadados QuickTime),
+  `evaluation/` (avaliação contra referências de campo, sem I/O no núcleo),
+  `tools/` (CLIs auxiliares `det-depth-distance-calibrate` e
+  `-evaluate`, finas), e módulos de topo `camera.py`, `calibration.py`,
+  `config.py`, `distance.py`, `temporal.py`, `render.py`, `runtime.py`,
+  `cli.py`. Configurações de exemplo em `configs/` (mapas de rótulos
+  versionados em `configs/labels/`, modelo de referências em
+  `configs/references/`, calibrações em `configs/calibration/`). Scripts
+  utilitários bash em `utils/`.
 - **Testes**: pytest em `tests/`, espelhando os módulos
   (`distance.py` → `tests/test_distance.py`). Testes unitários não dependem
   de GPU nem de pesos de modelos; `Instances` de teste são criadas pela
-  fixture-fábrica `make_instances` (`tests/conftest.py`). Testes que precisam
+  fixture-fábrica `make_instances` (`tests/conftest.py`); calibração e
+  avaliação usam as fixtures `synthetic_camera`, `render_board` (tabuleiro
+  renderizado com distorção conhecida) e `fake_run_dir` (fábrica de pasta de
+  execução fictícia). Testes que precisam
   de GPU/pesos ficam em `tests/gpu/` (marcador `gpu`).
 
 ---
@@ -283,9 +302,10 @@ Commits seguem **Conventional Commits** com assunto em **pt-BR**, no formato:
   | `adapters` | `src/det_depth_distance/adapters/` (invólucros de framework) |
   | `io` | `src/det_depth_distance/io/` (vídeo, fontes, sinks) |
   | `distance` | `src/det_depth_distance/distance.py` (núcleo numpy de distância) e `temporal.py` (suavização temporal por trilha) |
-  | `camera` | `src/det_depth_distance/camera.py` (intrínsecos) |
+  | `camera` | `src/det_depth_distance/camera.py` (intrínsecos, calibração, correção de distorção) e `calibration.py` (ferramenta de calibração) |
   | `render` | `src/det_depth_distance/render.py` |
-  | `cli` | `src/det_depth_distance/cli.py`, `__main__.py`, `__init__.py`, `config.py`, `runtime.py` (composição, configuração, ambiente) |
+  | `cli` | `src/det_depth_distance/cli.py`, `__main__.py`, `__init__.py`, `config.py`, `runtime.py` (composição, configuração, ambiente) e `tools/` (CLIs auxiliares) |
+  | `eval` | `src/det_depth_distance/evaluation/` (avaliação contra referências de campo) |
   | `configs` | `configs/` |
   | `tests` | `tests/` (inclui `tests/gpu/`) |
   | `utils` | `utils/` |

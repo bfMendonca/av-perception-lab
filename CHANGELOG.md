@@ -4,6 +4,113 @@ Todas as mudancas relevantes do det-depth-distance serao documentadas neste arqu
 
 ---
 
+## [2026-10-14] Calibracao da camera e avaliacao contra distancias de referencia
+
+A distancia do DA3METRIC e proporcional a focal da camera, e a focal
+estimada variou cerca de 8 % entre dois videos gravados com a mesma lente;
+alem disso, nao havia como medir o erro das distancias. A task_0007
+adiciona a calibracao da camera (ferramenta com tabuleiro ou ChArUco e uso
+da calibracao na execucao, com correcao opcional da distorcao) e a
+avaliacao das execucoes contra distancias medidas em campo. Sem
+`camera.calibration`, a execucao e a mesma de antes.
+
+### Novo: Ferramenta de calibracao (`det-depth-distance-calibrate`)
+
+- **`calibrate`:** calibra a partir de um video (decodificado exatamente
+  como nas execucoes) ou de imagens (`--images`), com tabuleiro (padrao
+  9x6 cantos de 25 mm) ou ChArUco; usa um quadro a cada 0,5 s, ate 60
+  vistas, descarta vistas atipicas e refaz o ajuste, informa RMS,
+  desvios de K e a cobertura do quadro e confere os criterios de aceitacao
+  do protocolo (RMS, cobertura, desvio de fx).
+- **`board`:** gera o alvo em PNG para impressao em escala real.
+- **`inspect`:** mostra os metadados de camera do video (modelo, lente,
+  focal equivalente a 35 mm, que o `ffprobe` nao mostra) e confere uma
+  calibracao contra o video.
+- Arquivo de calibracao no formato padrao do OpenCV (YAML ou JSON), com os
+  metadados da gravacao de calibracao.
+
+### Novo: Calibracao na execucao (`camera.calibration`)
+
+- **Precedencia:** calibracao > `focal_px` > estimativa.
+- **K completa** (fx, fy, ponto principal), reescalada para o tamanho do
+  video quando a proporcao e a mesma.
+- **`check_lens`:** compara modelo, lente e focal 35 mm da calibracao com
+  os do video antes de carregar qualquer modelo (`error`, `warn` ou `off`).
+- **`undistort`:** corrige a distorcao de cada quadro antes de todos os
+  componentes (`alpha` controla o recorte).
+- **`cross_check`:** tambem estima a focal e registra as duas.
+- Exemplo: `configs/rfdetr_da3_calibrated.yaml`.
+
+### Novo: Avaliacao (`det-depth-distance-evaluate`)
+
+- Arquivo de referencias por video (modelo ficticio em
+  `configs/references/example_references.yaml`): objeto selecionado por
+  caixa, ponto ou `track_id` num intervalo de quadros ou de tempo,
+  distancia constante ou serie (RTK), instrumento e incerteza, alcance ou
+  profundidade z.
+- Erros absolutos e relativos (media, mediana, p90, RMSE, vies, fracao
+  dentro de 2x a incerteza) por execucao, detector e estimador, e por faixa
+  de distancia, classe, regiao (mascara/caixa), produtor da mascara e
+  referencia; cobertura, trocas de ID e focal implicita.
+- Varias execucoes lado a lado; saidas `eval.json`, `eval.md` e, com
+  `--plot`, graficos.
+
+### Novo: Protocolo de campo
+
+- `docs/refs/protocolo_calibracao_e_referencias.md`: como gravar o alvo,
+  criterios de aceitacao da calibracao, como medir e sincronizar as
+  referencias, como anotar e como ler o relatorio.
+
+### Como usar
+
+1. Gerar e imprimir o alvo: `uv run det-depth-distance-calibrate board --out board.png`.
+2. Gravar o alvo no mesmo modo das gravacoes de campo e calibrar:
+   `uv run det-depth-distance-calibrate calibrate CALIB.MOV --square-mm 25 --out configs/calibration/<camera>.yaml`.
+3. Executar com `configs/rfdetr_da3_calibrated.yaml` (apontando para o
+   arquivo de calibracao).
+4. Avaliar: `uv run det-depth-distance-evaluate --refs REFS.yaml RUN [RUN ...]`
+   (graficos: `uv sync --extra eval` e `--plot`).
+
+### Detalhes tecnicos
+
+- O projeto usa coordenadas de pixel continuas (centro do pixel em
+  `i + 0,5`); o OpenCV usa `i`. A conversao (+0,5 em cx/cy) fica so na
+  leitura/escrita da calibracao.
+- ChArUco usa o `cv2.aruco` do `opencv-python` (`CharucoDetector` +
+  `matchImagePoints` + `calibrateCamera`); nao e preciso
+  `opencv-contrib-python`.
+- Metadados de camera do iPhone (lente, focal 35 mm) ficam no nivel da
+  trilha do MOV; um leitor proprio, so com a biblioteca padrao, le apenas o
+  atomo `moov`.
+- `metrics.json` ganha `frame_intrinsics`, `camera` e `video.transform`.
+- Novo extra opcional `eval` (matplotlib, so para os graficos); o ambiente
+  leve continua sem ele. Duas CLIs novas em `[project.scripts]`.
+
+### Observacoes importantes
+
+- Tudo foi testado localmente com dados sinteticos (tabuleiros
+  renderizados com distorcao conhecida, execucoes ficticias). Ficam
+  pendentes: a calibracao real do iPhone 14 Pro Max, a coleta de
+  referencias de campo e a validacao no servidor GPU (fora do ar durante a
+  implementacao).
+- A focal equivalente a 35 mm dos metadados nao serve como focal do video
+  (o recorte da estabilizacao nao e registrado): e mostrada so como
+  diagnostico.
+- Com `undistort`, caixas do CSV e o video ficam em pixels corrigidos; as
+  referencias continuam anotadas no video original e a avaliacao as
+  transforma com a K e a distorcao gravadas no `metrics.json` da execucao
+  (recalibrar depois nao muda a avaliacao de execucoes antigas).
+- No servidor GPU, os graficos usam o `--extra infer` (ja traz o
+  matplotlib); `--extra eval` sozinho removeria a stack GPU.
+
+### O que nao muda
+
+- Com `camera.calibration: null` (padrao), deteccoes, distancias, CSV e
+  video sao os da task_0006; o `metrics.json` so ganha `frame_intrinsics`,
+  `camera: {}` e `video.transform: null`.
+
+---
+
 ## [2026-10-13] Rastreamento de objetos e suavizacao temporal da distancia
 
 Cada quadro era processado isoladamente: a distancia de um mesmo objeto

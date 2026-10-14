@@ -63,16 +63,51 @@ class EstimateConfig:
             raise ValueError("process_res must be >= 14 (DA3 patch size)")
 
 
+# What a camera mismatch between the calibration file and the video does.
+LensCheck = Literal["error", "warn", "off"]
+
+
+@dataclass(frozen=True, slots=True)
+class CalibrationConfig:
+    """A camera calibration file (camera.calibration; see camera.build_camera).
+
+    The file's existence is checked by build_camera, before any model loads,
+    so configurations can be validated without it.
+    """
+
+    path: Path  # OpenCV FileStorage YAML/JSON (camera.load_calibration)
+    undistort: bool = False  # remove lens distortion from every frame
+    alpha: float = 0.0  # getOptimalNewCameraMatrix, [0, 1]; only with undistort
+    check_lens: LensCheck = "error"  # recording camera vs the video's metadata
+    cross_check: bool = (
+        False  # also estimate the focal (camera.estimate) and report both
+    )
+
+    def __post_init__(self) -> None:
+        if not 0.0 <= self.alpha <= 1.0:
+            raise ValueError(f"alpha must be in [0, 1], got {self.alpha}")
+
+
 @dataclass(frozen=True, slots=True)
 class CameraConfig:
-    """Camera intrinsics: a known focal (precedence) or its estimation."""
+    """Camera intrinsics, by precedence: a calibration file, a known focal or its
+    estimation."""
 
     focal_px: float | None = None  # focal length in pixels of the input video
     estimate: EstimateConfig | None = field(default_factory=EstimateConfig)
+    calibration: CalibrationConfig | None = None  # null = focal_px / estimate
 
     def __post_init__(self) -> None:
         if self.focal_px is not None and self.focal_px <= 0:
             raise ValueError("focal_px must be > 0 (null = estimate)")
+        if self.calibration is not None and self.focal_px is not None:
+            raise ValueError("calibration and focal_px are exclusive: set only one")
+        if (
+            self.calibration is not None
+            and self.calibration.cross_check
+            and self.estimate is None
+        ):
+            raise ValueError("calibration.cross_check needs the estimate section")
 
 
 @dataclass(frozen=True, slots=True)

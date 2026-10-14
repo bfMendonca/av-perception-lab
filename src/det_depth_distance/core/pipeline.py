@@ -21,8 +21,8 @@ Import direction: this module may import configuration dataclasses from
 import re
 import sys
 import time
-from collections.abc import Callable, Sequence
-from dataclasses import asdict, dataclass
+from collections.abc import Callable, Mapping, Sequence
+from dataclasses import asdict, dataclass, field
 from itertools import combinations
 from typing import Any, Self, TypeVar, get_args
 
@@ -72,6 +72,8 @@ class SetupInfo:
     frame_intrinsics: CameraIntrinsics | None  # frame resolution
     focal_frame_px: float | None
     focal_source: str
+    # IntrinsicsResult.details of the provider (e.g. the calibration cross-check).
+    intrinsics_details: Mapping[str, Any] = field(default_factory=dict)
 
 
 def _timed(fn: Callable[..., T], *args: Any) -> tuple[T, float]:
@@ -176,10 +178,15 @@ class Pipeline:
         if self.intrinsics is None:
             raise ConfigError(
                 f"{self.depth.name} needs camera intrinsics: "
-                "set camera.focal_px or camera.estimate"
+                "set camera.calibration, camera.focal_px or camera.estimate"
             )
         resolved = self.intrinsics.resolve(source, device=self.device)
-        return SetupInfo(resolved.intrinsics, resolved.intrinsics.fx, resolved.source)
+        return SetupInfo(
+            resolved.intrinsics,
+            resolved.intrinsics.fx,
+            resolved.source,
+            resolved.details,
+        )
 
     def load(self, source: FrameSource, info: SetupInfo) -> None:
         """Load every detector, the depth model, the refiners, the semantic
