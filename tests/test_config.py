@@ -3,6 +3,7 @@ from pathlib import Path
 import pytest
 import yaml
 
+from det_depth_distance.adapters.semantic.twinlitenet import TWINLITENET_CLASSES
 from det_depth_distance.config import (
     PIPELINE_DISTANCE_KEYS,
     AgreementConfig,
@@ -80,6 +81,7 @@ def test_example_configs_cover_the_planned_runs():
         "rfdetr_lanes_scene_da3.yaml",
         "rfdetr_da3_track.yaml",
         "rfdetr_da3_calibrated.yaml",
+        "yolo_light_da3.yaml",
     }
     multi = load_config(CONFIGS[0].with_name("multi_detector.yaml"))
     assert [d["type"] for d in multi.detectors] == ["rfdetr", "yolo"]
@@ -534,6 +536,39 @@ def test_tracking_options_are_validated_by_the_registry(tmp_path):
         registry.build("tracker", cfg.tracking, path="tracking")
     with pytest.raises(ConfigError, match=r"^tracking\.type: unknown tracker 'sort'"):
         registry.build("tracker", {"type": "sort"}, path="tracking")
+
+
+# task_0010: light stack for a 4 GB GPU.
+LIGHT = REPO / "configs" / "yolo_light_da3.yaml"
+
+
+def test_light_config_is_the_planned_light_stack(monkeypatch):
+    monkeypatch.chdir(REPO)
+    cfg = load_config(LIGHT)
+    (detector,) = cfg.detectors
+    assert detector["type"] == "yolo"
+    assert Path(detector["weights"]).name == "yolo26s-seg.pt"
+    assert cfg.refiners == ()  # the masks come from the detector
+    assert cfg.depth["model"] == "da3metric-large"
+    assert cfg.depth["hf_cache"] == "weights/hf"
+    assert cfg.camera.estimate.model == "da3-large-1.1"
+    assert cfg.camera.estimate.frames == 16
+    assert cfg.camera.estimate.hf_cache == Path("weights/hf")
+    track = load_config(TRACK)
+    assert cfg.tracking == track.tracking
+    assert cfg.smoothing == track.smoothing
+    lanes, scene = (
+        registry.build("semantic", spec, path=f"semantic[{i}]")
+        for i, spec in enumerate(cfg.semantic)
+    )
+    assert (lanes.name, lanes.options.variant) == ("lanes", "small")
+    assert scene.name == "scene"
+    assert scene.options.model == "nvidia/segformer-b0-finetuned-cityscapes-640-1280"
+    assert scene.options.size == (640, 1152)
+    assert cfg.region == "both" and cfg.distance.mask_erode == 1
+    assert cfg.exclude_semantic == ("lanes.lane", "scene.sky", "scene.vegetation")
+    assert "lane" in TWINLITENET_CLASSES  # load_config only checks the prefix
+    assert cfg.render.semantic_overlay == ("lanes", "scene")
 
 
 CALIBRATED = REPO / "configs" / "rfdetr_da3_calibrated.yaml"

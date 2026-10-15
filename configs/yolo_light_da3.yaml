@@ -1,0 +1,82 @@
+# Light version of the full stack for a 4 GB GPU (laptop RTX A1000, 4096 MiB):
+# one YOLO26s-seg (COCO instance masks, so no SAM refiner) + DA3METRIC-LARGE +
+# IoU tracking with per-track Kalman smoothing (same values as
+# rfdetr_da3_track.yaml) + two light semantic maps: "lanes" = TwinLiteNet+ small
+# (BDD100K, 0.12 M params) and "scene" = SegFormer-B0 Cityscapes trained and
+# tested on whole 1280x640 images (input 640x1152, close to 16:9).
+# Expected peak (task_0010 estimate, not yet measured on the 4 GB GPU): ~2.4 GB
+# allocated by torch for the main models, DA3 dominates (RF-DETR L + DA3METRIC-L
+# measured 2.32 GB in task_0001). The focal model (da3-large-1.1, 16 frames)
+# runs and is released before them, so it is not in metrics.json; its own peak
+# (~3 GB) is the tightest one. Levers: --set camera.estimate.frames=8, or
+# --set camera.focal_px=<px> (skips it); semantic off: --set semantic=[]
+# --set distance.exclude_semantic=[] --set render.semantic_overlay=null
+# Weights (download commands in README, "Execução no notebook"):
+#   ~/dev/ultralytics/_testbed/weights/yolo26s-seg.pt (ultralytics/assets v8.4.0)
+#   weights/hf: depth-anything/DA3METRIC-LARGE, depth-anything/DA3-LARGE-1.1
+#     (DA3 downloads a missing checkpoint at run time: fetch it first) and
+#     nvidia/segformer-b0-finetuned-cityscapes-640-1280 (pytorch_model.bin)
+#   ~/dev/TwinLiteNetPlus/pretrained/small.pth (clone @ 90f1b86)
+# Run: det-depth-distance --config configs/yolo_light_da3.yaml [VIDEO] [--set key=value]...
+device: cuda:0
+source: {video: _testbed/data/IMG_4021.MOV, start: 0.0, duration: 0.0, max_frames: 0, stride: 1}
+detectors:
+  - type: yolo
+    weights: ~/dev/ultralytics/_testbed/weights/yolo26s-seg.pt
+    threshold: 0.4
+    imgsz: 640
+    classes: driving
+depth:
+  type: da3
+  model: da3metric-large
+  process_res: 504
+  process_res_method: upper_bound_resize
+  hf_cache: &hf weights/hf
+camera:
+  focal_px: null  # focal length in pixels of the input video; takes precedence over estimate
+  estimate:
+    model: da3-large-1.1
+    frames: 16
+    process_res: 504
+    process_res_method: upper_bound_resize
+    hf_cache: *hf
+aggregation: {type: concat}
+refiners: []  # the masks come from YOLO26s-seg itself
+tracking: {type: iou, iou_thr: 0.3, max_age_s: 0.5, motion: constant_velocity,
+           velocity_alpha: 0.5, class_aware: false}
+smoothing: {filter: kalman, accel_std: 2.0, std_scale: 0.5, rel_floor: 0.01,
+            init_speed_std: 5.0, tau_s: 0.1, window_s: 0.15, reset_after_s: 1.0}
+semantic:  # run in this order on every frame
+  - {name: lanes, type: twinlitenet, variant: small}  # repo: ~/dev/TwinLiteNetPlus
+  - name: scene
+    type: segformer
+    model: nvidia/segformer-b0-finetuned-cityscapes-640-1280
+    hf_cache: *hf
+    size: [640, 1152]  # its test scale for 1920x1080 (short side 640), multiples of 32
+distance:
+  box_shrink: 0.1
+  outlier: iqr
+  outlier_k: null
+  stat: median
+  distance_type: z
+  min_valid_px: 20
+  max_range: 0.0
+  mask_erode: 1  # instance-mask erosion in depth-map pixels
+  exclude_sky: true
+  region: both  # mask distance + box distance (box_distance_m) for comparison
+  exclude_semantic: [lanes.lane, scene.sky, scene.vegetation]
+render:
+  layout: overlay
+  show_stats: false
+  draw_inner_box: false
+  max_depth: 30.0
+  cmap: turbo
+  crf: 20
+  hud: true
+  font: null
+  mask_alpha: 0.35  # instance-mask tint; 0 = no masks drawn
+  semantic_alpha: 0.4  # semantic layer tint; 0 = no layer drawn
+  semantic_overlay: [lanes, scene]  # null = all maps; drawn in list order
+  show_smoothed: true
+  show_speed: true
+output: {out_root: _testbed/outputs, tag: "", save_depth: false}

@@ -6,7 +6,8 @@ detectores (RF-DETR, YOLO26) e a profundidade métrica Depth Anything 3 sobre
 os mesmos quadros de um vídeo e estima, para cada caixa detectada, a distância do objeto à câmera a
 partir de estatísticas robustas dos pixels de profundidade dentro da caixa,
 gerando um vídeo anotado. A inferência roda no servidor GPU `gpu-host`
-(sincronizado por rsync); o desenvolvimento e os testes unitários rodam
+(sincronizado por rsync) e, com o exemplo leve `configs/yolo_light_da3.yaml`,
+também na GPU de 4 GB do notebook, num ambiente isolado; o desenvolvimento e os testes unitários rodam
 localmente.
 Detalhes de arquitetura, build e uso estão no `README.md`.
 
@@ -45,6 +46,12 @@ ssh gpu-host 'cd ~/dev/det-depth-distance && ~/.local/bin/uv run --extra infer p
 # Ajustes rápidos sem editar o YAML; lista de adaptadores e opções
 #   ... --config configs/multi_detector.yaml --set source.max_frames=300 --set render.show_stats=true
 #   ... --list-models
+
+# Notebook (GPU de 4 GB): ambiente isolado; nunca --extra infer no .venv (pesos e medição no README,
+# "Execução no notebook")
+#   export UV_PROJECT_ENVIRONMENT=_testbed/venv-infer && uv sync --extra infer
+#   (com a variável exportada, todo uv run leva --extra infer; unset UV_PROJECT_ENVIRONMENT para voltar ao .venv)
+#   uv run --extra infer python -m det_depth_distance --config configs/yolo_light_da3.yaml _testbed/data/VIDEO.MOV
 
 # Pesos dos refinadores SAM e do SegFormer: só com confirmação do usuário (~3,9 GB); vão para o
 # cache HF weights/hf (ignorado pelo git e pelo push); a execução nunca baixa nada.

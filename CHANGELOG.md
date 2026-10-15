@@ -4,6 +4,78 @@ Todas as mudancas relevantes do det-depth-distance serao documentadas neste arqu
 
 ---
 
+## [2026-10-15] Configuracao leve da stack completa para GPU de 4 GB
+
+Os exemplos de `configs/` usam modelos grandes, pensados para o servidor
+GPU (96 GB). A stack completa nessa forma (dois detectores, SAM 2.1 large,
+SegFormer-B5) foi estimada em 5 a 6,5 GB e nao cabe na GPU de 4 GB do
+notebook de desenvolvimento. A task_0010 cria um exemplo leve que mantem
+todas as etapas (deteccao com mascara, profundidade metrica, rastreamento
+com suavizacao e duas segmentacoes semanticas) com modelos menores. Nenhum
+codigo do pipeline muda. O consumo de VRAM e uma estimativa; a medicao real
+no notebook fica pendente.
+
+### Novo: Exemplo `configs/yolo_light_da3.yaml`
+
+- **Deteccao:** um unico YOLO26s-seg (COCO). A mascara vem do proprio
+  detector, entao nao ha refinador SAM.
+- **Profundidade:** DA3METRIC-LARGE, o unico DA3 metrico fora da familia
+  giant.
+- **Rastreamento e suavizacao:** os mesmos valores de
+  `rfdetr_da3_track.yaml` (IoU + Kalman).
+- **Semantica:** TwinLiteNet+ `small` para area trafegavel e faixas
+  (`lanes`) e SegFormer-B0 Cityscapes para ceu e vegetacao (`scene`).
+- **Video:** layout `overlay`, com mascaras, camadas semanticas, distancia
+  suavizada e velocidade.
+
+### Como usar
+
+1. Liberar cerca de 13 GB no disco (extra `infer` ~9 GB + pesos ~3 GB + video).
+2. Seguir a secao "Execucao no notebook (GPU de 4 GB)" do README: ambiente
+   isolado, download dos pesos, smoke e medicao.
+3. Rodar `uv run --extra infer python -m det_depth_distance --config configs/yolo_light_da3.yaml`.
+
+### Atualizacao: Documentacao
+
+- **README:**
+  - nova secao "Execucao no notebook (GPU de 4 GB)";
+  - quatro linhas novas na tabela de pesos;
+  - nota sobre o extra `infer`, que nunca vai no `.venv`;
+  - smoke de GPU agora com 10 exemplos.
+- **AGENTS.md, CLAUDE.md e DESCRIPTION.md:** comandos e cuidados do notebook.
+
+### Detalhes tecnicos
+
+- **SegFormer:** `nvidia/segformer-b0-finetuned-cityscapes-640-1280`, com
+  `size: [640, 1152]`. E a escala de teste do checkpoint, que foi treinado e
+  testado em imagem inteira com lado curto de 640 px. O B2 foi descartado
+  porque o decodificador dele tem cerca de 3 vezes mais ativacao.
+- **Pesos:**
+  - `yolo26s-seg.pt` (v8.4.0, 23 467 933 B) em `~/dev/ultralytics/_testbed/weights`;
+  - DA3 e SegFormer-B0 em `weights/hf`;
+  - TwinLiteNet+ `small.pth` (594 777 B) no clone `~/dev/TwinLiteNetPlus`.
+- **Pico estimado:**
+  - cerca de 2,4 GB alocados na fase principal (o DA3 domina);
+  - cerca de 3 GB na fase da focal (`da3-large-1.1`, 16 quadros), que roda
+    e e liberada antes dos modelos principais e nao aparece no `metrics.json`.
+- **Alavancas:** `--set camera.estimate.frames=8` ou `--set camera.focal_px=<px>`.
+- **Testes:**
+  - `test_light_config_is_the_planned_light_stack` em `tests/test_config.py`;
+  - caso `yolo_light_da3` no smoke de GPU, que pula onde faltam os pesos leves.
+
+### Observacoes importantes
+
+- O DA3 baixa um checkpoint ausente durante a execucao (os adaptadores
+  `transformers` nao baixam): baixe os pesos antes.
+- Com `UV_PROJECT_ENVIRONMENT=_testbed/venv-infer` exportado, todo `uv run`
+  precisa de `--extra infer`; sem ele, o sync exato remove a stack.
+
+### O que nao muda
+
+- Os demais exemplos de `configs/` e o codigo do pipeline continuam iguais.
+
+---
+
 ## [2026-10-14] Smoke test ponta a ponta do pipeline sem GPU
 
 As tasks 0002 a 0007 foram verificadas so com testes unitarios no laptop,

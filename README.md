@@ -26,6 +26,7 @@
 - [Pré-requisitos](#pré-requisitos)
 - [Início Rápido](#início-rápido)
 - [Testes](#testes)
+- [Execução no notebook (GPU de 4 GB)](#execução-no-notebook-gpu-de-4-gb)
 - [Uso da CLI](#uso-da-cli)
 - [Configuração YAML](#configuração-yaml)
 - [Refinadores de máscara](#refinadores-de-máscara)
@@ -130,7 +131,7 @@ rodam sem torch.
 det-depth-distance/
 ├── pyproject.toml           # manifesto uv; extra "infer" com a stack GPU, extra "eval" (matplotlib)
 ├── uv.lock                  # lock versionado
-├── configs/                 # exemplos de YAML: rfdetr_da3, yolo_o365_da3, multi_detector(_fused), rfdetr_seg_da3, yolo_seg_da3, yolo_o365_seg_da3, rfdetr_sam2_da3, yolo_o365_sam2_da3, rfdetr_semantic_da3, rfdetr_lanes_scene_da3, rfdetr_da3_track, rfdetr_da3_calibrated
+├── configs/                 # exemplos de YAML: rfdetr_da3, yolo_o365_da3, multi_detector(_fused), rfdetr_seg_da3, yolo_seg_da3, yolo_o365_seg_da3, rfdetr_sam2_da3, yolo_o365_sam2_da3, rfdetr_semantic_da3, rfdetr_lanes_scene_da3, rfdetr_da3_track, rfdetr_da3_calibrated, yolo_light_da3
 │   ├── labels/              # mapas de rótulos por vocabulário: coco_driving, objects365_driving
 │   └── references/          # example_references.yaml (modelo fictício do formato de referências de campo)
 ├── src/det_depth_distance/
@@ -184,9 +185,9 @@ det-depth-distance/
 | ffmpeg / ffprobe | laptop e servidor | decodificação e codificação por pipe; também usados por parte dos testes |
 | GPU NVIDIA com CUDA 12.8 | servidor | testado na RTX PRO 6000 Blackwell (sm_120) do `gpu-host` |
 | Acesso `ssh gpu-host` | laptop | sincronização por rsync (`utils/sync_gpu_host.sh`) |
-| Cache de pesos | servidor | DA3 via `hf_cache` no YAML (ex.: `~/dev/depth-anything-3/_testbed/weights/hf`); RF-DETR em `~/.roboflow/models` (as variantes Seg, ~135–155 MB cada, são baixadas pela biblioteca no primeiro uso, com MD5 conferido); YOLO26 em `~/dev/ultralytics/_testbed/weights` (caminho em `weights`; nada é baixado — pesos `-seg` vêm de `https://github.com/ultralytics/assets/releases/download/v8.4.0/<nome>.pt`); refinadores `transformers` e SegFormer no cache HF do projeto `weights/hf` (ignorado pelo git e pelo `push`; ver [Pesos](#pesos-dos-refinadores-e-do-segformer)); TwinLiteNet+ lido de `~/dev/TwinLiteNetPlus/pretrained/` |
+| Cache de pesos | servidor e notebook | DA3 via `hf_cache` no YAML (ex.: `~/dev/depth-anything-3/_testbed/weights/hf`); RF-DETR em `~/.roboflow/models` (as variantes Seg, ~135–155 MB cada, são baixadas pela biblioteca no primeiro uso, com MD5 conferido); YOLO26 em `~/dev/ultralytics/_testbed/weights` (caminho em `weights`; nada é baixado — pesos `-seg` vêm de `https://github.com/ultralytics/assets/releases/download/v8.4.0/<nome>.pt`); refinadores `transformers` e SegFormer no cache HF do projeto `weights/hf` (ignorado pelo git e pelo `push`; ver [Pesos](#pesos-dos-refinadores-e-do-segformer)); TwinLiteNet+ lido de `~/dev/TwinLiteNetPlus/pretrained/`; no notebook, DA3 e SegFormer-B0 do exemplo leve também em `weights/hf` |
 
-> **Nota:** nunca instale o extra `infer` no laptop; a stack GPU ocupa ~9 GB.
+> **Nota:** nunca instale o extra `infer` no `.venv` do laptop (a stack GPU ocupa ~9 GB e o próximo `uv run pytest` a removeria); para a GPU do notebook use o ambiente isolado de [Execução no notebook](#execução-no-notebook-gpu-de-4-gb).
 
 ---
 
@@ -222,7 +223,7 @@ Três níveis, todos com `pytest` (tempos medidos no laptop em 2026-10-14):
 |---|---|---|---|---|
 | Unitário | cada módulo isolado (dublês fixos, sem torch) | `uv run pytest -m "not gpu and not smoke"` | laptop | ~10 s |
 | Smoke (`smoke`) | o sistema inteiro pelo ponto de entrada real: CLI, YAML e `--set`, registro, `Pipeline` com todas as etapas, sinks e arquivos de saída, mais o encadeamento calibrar → rodar → avaliar | `uv run pytest -m smoke` | laptop | ~8 s |
-| GPU (`gpu`) | contratos dos adaptadores reais, regressão da `task_0001` e smoke com os modelos reais (5 quadros em 9 exemplos de `configs/`, um por família de adaptador) | `uv run --extra infer pytest -m gpu -v` | `gpu-host` | minutos |
+| GPU (`gpu`) | contratos dos adaptadores reais, regressão da `task_0001` e smoke com os modelos reais (5 quadros em 10 exemplos de `configs/`: um por família de adaptador e o exemplo leve, que só roda onde os pesos leves existem) | `uv run --extra infer pytest -m gpu -v` | `gpu-host` | minutos |
 
 O `uv run pytest` padrão roda unitários **e** smoke (~18 s no total); o
 `gpu` fica de fora.
@@ -275,6 +276,49 @@ que dependem desses pesos (caixa × máscara, validação B e comparações com
 o YOLO-seg) são puladas enquanto eles faltarem — o `rfdetr` baixaria os
 pesos Seg sozinho. Cada comando que falha é registrado e o passo segue;
 o passo termina FAIL se algum falhou.
+
+### Execução no notebook (GPU de 4 GB)
+
+`configs/yolo_light_da3.yaml` (`task_0010`) é a versão leve da stack
+completa para a RTX A1000 Laptop (4096 MiB): YOLO26s-seg COCO (máscara
+nativa, sem refinador), DA3METRIC-LARGE, rastreamento IoU + Kalman,
+TwinLiteNet+ `small` (`lanes`) e SegFormer-B0 Cityscapes `640-1280` em
+640×1152 (`scene`). Pico **estimado** (não medido): ≈ 2,4 GB alocados pelo
+PyTorch na fase principal (≈ 3,0 GB no dispositivo; o DA3 domina) e
+≈ 3 GB na fase da focal (`da3-large-1.1`, 16 quadros), que roda e é
+liberada antes dos modelos principais e **não** entra no `metrics.json`.
+Alavancas: `--set camera.estimate.frames=8` ou `--set camera.focal_px=<px>`
+(pula o modelo da focal).
+
+Pré-requisito: ~13 GB livres (extra `infer` ~9 GB + pesos ~3 GB + vídeo). O
+extra `infer` fica num ambiente isolado em `_testbed/` (ignorado e fora do
+`push`), nunca no `.venv`. Com a variável exportada, todo `uv run` leva
+`--extra infer` (sem ele, o sync exato remove a stack também desse
+ambiente); `unset UV_PROJECT_ENVIRONMENT` antes de voltar ao `.venv` leve.
+O DA3 **baixa** um checkpoint ausente em execução: baixe antes.
+
+```bash
+df -h ~
+export UV_PROJECT_ENVIRONMENT=_testbed/venv-infer   # o .venv continua leve
+uv sync --extra infer
+# DA3 + SegFormer-B0 em weights/hf (filtrados: sem .bin/.h5 duplicados)
+uv run --extra infer python -c "from huggingface_hub import snapshot_download as d; [d(r, cache_dir='weights/hf', allow_patterns=['*.json', 'model.safetensors']) for r in ('depth-anything/DA3METRIC-LARGE', 'depth-anything/DA3-LARGE-1.1')]; d('nvidia/segformer-b0-finetuned-cityscapes-640-1280', cache_dir='weights/hf', allow_patterns=['*.json', 'pytorch_model.bin'])"
+mkdir -p ~/dev/ultralytics/_testbed/weights
+curl -fL -o ~/dev/ultralytics/_testbed/weights/yolo26s-seg.pt https://github.com/ultralytics/assets/releases/download/v8.4.0/yolo26s-seg.pt
+git clone https://github.com/chequanghuy/TwinLiteNetPlus ~/dev/TwinLiteNetPlus && git -C ~/dev/TwinLiteNetPlus checkout 90f1b86
+mkdir -p ~/dev/TwinLiteNetPlus/pretrained   # small.pth: Google Drive do upstream
+curl -fL -o ~/dev/TwinLiteNetPlus/pretrained/small.pth "https://drive.usercontent.google.com/download?id=1N7jNsa8P1dM-UevqPRsx6heUpN4L00FJ&export=download&confirm=t"
+mkdir -p _testbed/data && rsync -av gpu-host:dev/det-depth-distance/_testbed/data/IMG_4021.MOV _testbed/data/
+DDD_HF_CACHE=weights/hf uv run --extra infer pytest -m gpu tests/gpu/test_smoke_gpu.py -k yolo_light -v -rs
+nvidia-smi --query-gpu=timestamp,memory.used --format=csv,noheader -lms 200 > _testbed/outputs/light_vram_IMG_4021.csv &
+uv run --extra infer python -m det_depth_distance --config configs/yolo_light_da3.yaml --set source.max_frames=300 --set output.tag=light
+kill %1
+```
+
+Registrar: `peak_vram_torch_allocated_gb` e `device_mem_used_delta_gb_approx`
+do `metrics.json` (fase principal), o máximo de `memory.used` do CSV (inclui
+a fase da focal), os tempos por etapa e a focal estimada. **Status:
+medição pendente.**
 
 ---
 
@@ -336,6 +380,10 @@ Rastreamento e suavização (`task_0006`): `rfdetr_da3_track.yaml`
 Calibração (`task_0007`): `rfdetr_da3_calibrated.yaml` (`rfdetr_da3.yaml` +
 `camera.calibration` com `cross_check`; o arquivo de calibração é criado
 pelo usuário, ver [Calibração da câmera](#calibração-da-câmera)).
+Leve (`task_0010`): `yolo_light_da3.yaml` (YOLO26s-seg + DA3METRIC-L +
+rastreamento/Kalman + TwinLiteNet+ `small` `lanes` + SegFormer-B0 `scene` em
+640×1152, `layout: overlay`) para GPU de 4 GB, ver
+[Execução no notebook](#execução-no-notebook-gpu-de-4-gb).
 Caminhos aceitam `~` e, quando relativos, são
 resolvidos a partir do diretório de execução (a raiz do repositório); chaves
 desconhecidas são erro (com o caminho, ex.
@@ -680,6 +728,15 @@ curl -fL -o ~/dev/ultralytics/_testbed/weights/mobile_sam.pt https://github.com/
 | `facebook/sam-vit-base` (opcional) | 374 979 480 | `sam` |
 | `mobile_sam.pt` (opcional) | 40 728 226 | `ultralytics_sam` |
 | `facebook/sam3` (opcional, *gated*) | 3 439 938 512 | `sam3_tracker` |
+| `nvidia/segformer-b0-finetuned-cityscapes-640-1280` (`pytorch_model.bin`) | 14 957 601 | `segformer` do exemplo leve (licença `other`) |
+| `yolo26s-seg.pt` (ultralytics/assets v8.4.0) | 23 467 933 | detector do exemplo leve |
+| TwinLiteNet+ `small.pth` (Google Drive do upstream) | 594 777 | `twinlitenet` `variant: small` |
+| `depth-anything/DA3METRIC-LARGE` / `DA3-LARGE-1.1` (`model.safetensors`) | 1 336 734 448 / 1 643 843 860 | DA3 no notebook (`weights/hf`) |
+
+As quatro últimas linhas são os pesos do exemplo leve, baixados pelos
+comandos de [Execução no notebook](#execução-no-notebook-gpu-de-4-gb). O DA3
+é a exceção ao `local_files_only` acima: um checkpoint ausente é baixado em
+execução.
 
 ---
 
@@ -753,3 +810,4 @@ Variáveis opcionais: `SYNC_HOST` (padrão `gpu-host`) e `SYNC_DEST` (padrão
 - [x] **Rastreamento e suavização temporal** (`task_0006`) — rastreador IoU com velocidade constante (`track_id`), suavização por trilha (Kalman 1D, EMA, mediana), velocidade relativa e resumo por trilha no `metrics.json`. Validação no servidor GPU pendente (regressão `-m gpu` e execuções nos vídeos reais).
 - [x] **Calibração e avaliação** (`task_0007`) — calibração por tabuleiro/ChArUco, `camera.calibration` (K reescalada, conferência da lente, correção de distorção, comparação com a focal estimada), protocolo de verdade de campo e relatório de erro contra referências. Pendentes: calibração real do iPhone 14 Pro Max, coleta de referências de campo e validação no servidor GPU.
 - [x] **Smoke test ponta a ponta** (`task_0008`) — smoke local sem GPU (cena sintética, dublês, matriz de configurações em pares, calibrar → rodar → avaliar), smoke `gpu` com os modelos reais e `utils/gpu_pending.sh` com todas as pendências de GPU em ordem. Execução no servidor GPU pendente.
+- [x] **Configuração leve** (`task_0010`) — `yolo_light_da3.yaml` para GPU de 4 GB (YOLO26s-seg, DA3METRIC-L, rastreamento, TwinLiteNet+ small, SegFormer-B0). Medição de VRAM no notebook pendente.

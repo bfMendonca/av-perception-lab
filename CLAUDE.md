@@ -73,6 +73,14 @@ no ambiente leve; só os gráficos pedem o extra `eval` (matplotlib).
   exato por padrão); use `--extra infer` no `uv sync` e no `uv run` —
   também para `--plot` da avaliação (`--extra eval` sozinho removeria a
   stack; o `infer` já traz o matplotlib).
+- No notebook (GPU de 4 GB, `configs/yolo_light_da3.yaml`) o extra `infer`
+  vai para `UV_PROJECT_ENVIRONMENT=_testbed/venv-infer`: no `.venv` o próximo
+  `uv run pytest` faria o sync exato e removeria a stack (com a variável
+  exportada vale o mesmo para o `_testbed/venv-infer`: todo `uv run` leva
+  `--extra infer`; `unset` para voltar ao `.venv`). O DA3 (ao contrário
+  dos adaptadores `transformers`) **baixa** um checkpoint ausente em execução
+  (`_load_da3` sem `local_files_only`): baixe antes. O pico do modelo da focal
+  não entra no `metrics.json` (linha de base depois dele).
 - Decodificador ffmpeg encerrado antecipadamente (`source.max_frames`) precisa de
   `kill()`: com SIGTERM ele trava escrevendo no pipe cheio.
 - Passar uma lista de imagens para um modelo any-view do DA3 ativa o modo

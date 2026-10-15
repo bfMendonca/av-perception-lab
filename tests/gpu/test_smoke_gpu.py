@@ -7,6 +7,10 @@ The focal is fixed (camera.focal_px) so no estimation model runs: focal
 estimation is covered by the task_0001 regression. Weights are checked at
 the paths the example configs use (the run reads those, not the
 DDD_* overrides of conftest).
+
+The light example (yolo_light_da3, task_0010) needs its own weights, kept only
+on the laptop (DA3 and SegFormer-B0 in weights/hf): it skips on gpu-host and,
+on the laptop, runs with DDD_HF_CACHE=weights/hf.
 """
 
 from collections.abc import Mapping
@@ -21,6 +25,12 @@ N_FRAMES = 5
 YOLO = Path("~/dev/ultralytics/_testbed/weights")
 SEGFORMER = ("nvidia/segformer-b5-finetuned-cityscapes-1024-1024", "pytorch_model.bin")
 TWINLITENET = Path("~/dev/TwinLiteNetPlus/pretrained/large.pth")
+TWINLITENET_SMALL = TWINLITENET.with_name("small.pth")
+SEGFORMER_B0 = (
+    "nvidia/segformer-b0-finetuned-cityscapes-640-1280",
+    "pytorch_model.bin",
+)
+DA3_METRIC = ("depth-anything/DA3METRIC-LARGE", "model.safetensors")  # in weights/hf
 
 # case -> (example config, extra --set overrides, assets the run needs besides DA3)
 GPU_SMOKE_CASES: dict[
@@ -52,6 +62,17 @@ GPU_SMOKE_CASES: dict[
         ({"path": TWINLITENET}, {"hf": SEGFORMER}),
     ),
     "rfdetr_da3_track": ("rfdetr_da3_track.yaml", (), ()),
+    # Light stack for a 4 GB GPU (task_0010): weights only on the laptop, skips elsewhere.
+    "yolo_light_da3": (
+        "yolo_light_da3.yaml",
+        (),
+        (
+            {"path": YOLO / "yolo26s-seg.pt"},
+            {"path": TWINLITENET_SMALL},
+            {"hf": SEGFORMER_B0},
+            {"hf": DA3_METRIC},
+        ),
+    ),
 }
 
 
