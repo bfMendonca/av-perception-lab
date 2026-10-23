@@ -1,0 +1,268 @@
+<svg xmlns="http://www.w3.org/2000/svg" xml:space="preserve" width="1800" height="1340" viewBox="0 0 1800 1340" font-family="DejaVu Sans, Helvetica, Arial, sans-serif">
+  <title>det-depth-distance — proposta: pré-processamento de resolução de entrada (escopo para discussão)</title>
+  <defs>
+    <marker id="arr" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse">
+      <path d="M0,0 L10,5 L0,10 z" fill="#334155"/>
+    </marker>
+    <marker id="arrN" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse">
+      <path d="M0,0 L10,5 L0,10 z" fill="#ea580c"/>
+    </marker>
+    <style>
+      .bg{fill:#f8fafc}
+      .panel{fill:#ffffff;stroke:#cbd5e1;stroke-width:1.5}
+      .ptitle{font-size:17px;font-weight:700;fill:#0f172a}
+      .t{font-size:13px;fill:#1e293b}
+      .s{font-size:11.5px;fill:#475569}
+      .m{white-space:pre;font-family:DejaVu Sans Mono, Menlo, monospace;font-size:11.5px;fill:#0f172a}
+      .st{font-size:13.5px;font-weight:700;fill:#0f172a}
+      .flow{stroke:#334155;stroke-width:2;fill:none;marker-end:url(#arr)}
+      .flowN{stroke:#ea580c;stroke-width:2.5;fill:none;marker-end:url(#arrN)}
+      .dash{stroke:#64748b;stroke-width:1.5;fill:none;stroke-dasharray:5 4;marker-end:url(#arr)}
+      .new{fill:#ffedd5;stroke:#ea580c;stroke-width:2.5}
+      .chg{fill:#fef9c3;stroke:#ca8a04;stroke-width:2}
+      .reuse{fill:#dcfce7;stroke:#16a34a;stroke-width:2}
+      .same{fill:#e2e8f0;stroke:#64748b;stroke-width:1.5}
+      .fixed{fill:#dbeafe;stroke:#2563eb;stroke-width:1.5}
+      .warn{fill:#fee2e2;stroke:#dc2626;stroke-width:1.5}
+    </style>
+  </defs>
+
+  <rect class="bg" width="1800" height="1340"/>
+
+  <!-- Header -->
+  <text x="30" y="40" font-size="24" font-weight="700" fill="#0f172a">Pré-processamento de resolução de entrada — proposta de arquitetura</text>
+  <text x="30" y="64" class="t">Redimensionar uma única vez, na decodificação: o frame reduzido (W×H) passa a ser "a resolução do frame" para câmera, modelos, distância, render e saídas.</text>
+
+  <!-- Legend -->
+  <g transform="translate(1180,22)">
+    <rect x="0" y="0" width="16" height="12" class="new"/><text x="22" y="11" class="s">novo</text>
+    <rect x="70" y="0" width="16" height="12" class="chg"/><text x="92" y="11" class="s">alterado</text>
+    <rect x="160" y="0" width="16" height="12" class="reuse"/><text x="182" y="11" class="s">reuso sem mudança (já escala)</text>
+    <rect x="370" y="0" width="16" height="12" class="same"/><text x="392" y="11" class="s">intocado</text>
+    <rect x="0" y="22" width="16" height="12" class="fixed"/><text x="22" y="33" class="s">resolução interna FIXA do modelo (custo GPU não depende de W×H)</text>
+    <rect x="430" y="22" width="16" height="12" class="warn"/><text x="452" y="33" class="s">risco</text>
+  </g>
+
+  <!-- ============ Panel 1: YAML ============ -->
+  <rect class="panel" x="20" y="84" width="520" height="300" rx="10"/>
+  <text x="36" y="110" class="ptitle">1 · Configuração (YAML / --set)</text>
+  <rect x="36" y="122" width="488" height="168" rx="6" class="new"/>
+  <text x="48" y="142" class="m"># nova seção; ausente ou null = desligado</text>
+  <text x="48" y="158" class="m"># (regressão bit-idêntica: caminho atual intacto)</text>
+  <text x="48" y="178" class="m">preprocess:</text>
+  <text x="48" y="194" class="m">  resize:</text>
+  <text x="48" y="210" class="m">    scale: 0.5        # OU width: 960 OU height: 540</text>
+  <text x="48" y="226" class="m">                      # (exclusivos; aspecto preservado,</text>
+  <text x="48" y="242" class="m">                      #  dimensões arredondadas a pares)</text>
+  <text x="48" y="258" class="m">    interpolation: area   # area|bilinear|bicubic|lanczos</text>
+  <text x="48" y="278" class="m">--set preprocess.resize.scale=0.25</text>
+  <text x="36" y="310" class="s">PreprocessConfig/ResizeConfig: dataclasses frozen via from_mapping</text>
+  <text x="36" y="326" class="s">(chaves desconhecidas = erro; validação em __post_init__); entra em</text>
+  <text x="36" y="342" class="s">RunConfig.to_dict() → metrics.json["config"] automaticamente.</text>
+  <text x="36" y="362" class="s">Upscale (scale &gt; 1) recusado; scale=1 ≡ desligado.</text>
+
+  <!-- ============ Panel 2: Source / decode ============ -->
+  <rect class="panel" x="560" y="84" width="1220" height="300" rx="10"/>
+  <text x="576" y="110" class="ptitle">2 · Fonte de frames (io/video.py · io/source.py · cli.py)</text>
+
+  <rect x="580" y="130" width="170" height="74" rx="8" class="same"/>
+  <text x="592" y="152" class="st">vídeo .MOV</text>
+  <text x="592" y="170" class="s">ffprobe → VideoInfo</text>
+  <text x="592" y="186" class="m">W0×H0 = 1920×1080</text>
+  <text x="592" y="200" class="s">(original, pós-rotação)</text>
+
+  <rect x="790" y="122" width="300" height="104" rx="8" class="new"/>
+  <text x="802" y="144" class="st">read_frames + filtro de escala</text>
+  <text x="802" y="162" class="m">ffmpeg -i v -vf scale=W:H:flags=area</text>
+  <text x="802" y="178" class="m">frame_bytes = W·H·3  (não W0·H0)</text>
+  <text x="802" y="196" class="s">resize dentro do decoder: pipe e cópia numpy</text>
+  <text x="802" y="211" class="s">já 4× menores em scale 0.5; sample() idem</text>
+
+  <rect x="1130" y="122" width="270" height="104" rx="8" class="chg"/>
+  <text x="1142" y="144" class="st">VideoSource</text>
+  <text x="1142" y="162" class="m">frame_size → (W, H) processado</text>
+  <text x="1142" y="178" class="m">info → W0×H0 (inalterado)</text>
+  <text x="1142" y="196" class="s">describe(): + preprocess {scale sx, sy,</text>
+  <text x="1142" y="211" class="s">W0×H0 → W×H, interpolation}</text>
+
+  <rect x="1440" y="122" width="320" height="104" rx="8" class="reuse"/>
+  <text x="1452" y="144" class="st">Undistorter (FrameTransform)</text>
+  <text x="1452" y="162" class="s">opcional (camera.calibration.undistort)</text>
+  <text x="1452" y="178" class="s">roda DEPOIS do resize, com K já escalado:</text>
+  <text x="1452" y="194" class="s">contrato same-shape preservado;</text>
+  <text x="1452" y="210" class="s">remap 4× mais barato em scale 0.5</text>
+
+  <path class="flow" d="M750,167 L790,167"/>
+  <path class="flowN" d="M1090,174 L1130,174"/>
+  <path class="flow" d="M1400,174 L1440,174"/>
+
+  <rect x="580" y="246" width="1180" height="124" rx="8" fill="#fff7ed" stroke="#fdba74"/>
+  <text x="592" y="268" class="st">Por que no decoder (e não um FrameTransform)?</text>
+  <text x="592" y="288" class="t">• FrameTransform exige mesma forma e dtype (source.py:26-37, ContractError em :93-97); frame_size vem do probe (:100-102) e alimenta</text>
+  <text x="604" y="305" class="t">build_camera, LoadContext, Renderer e VideoWriter: mudar frame_size na origem propaga tudo sem tocar nesses consumidores.</text>
+  <text x="592" y="324" class="t">• O ffmpeg já decodifica em pipe; escalar ali evita mover 1920×1080×3 B/frame pelo pipe e por bytearray→numpy.</text>
+  <text x="592" y="343" class="t">• Ordem resize → undistort reaproveita Calibration.scaled_to + Undistorter sem mudança de contrato.</text>
+  <text x="592" y="362" class="s">A verificar em teste: o autorotate do ffmpeg é aplicado antes do -vf (W×H calculado sobre o tamanho pós-rotação).</text>
+
+  <!-- ============ Panel 3: Camera ============ -->
+  <rect class="panel" x="20" y="400" width="520" height="440" rx="10"/>
+  <text x="36" y="426" class="ptitle">3 · Câmera / intrínsecos (camera.py)</text>
+  <text x="36" y="446" class="s">DA3METRIC: metros = raw · ((fx+fy)/2 no mapa) / 300 (alignment.py:132,</text>
+  <text x="36" y="462" class="s">da3.py:140-155) → K errado = distância errada na mesma proporção.</text>
+
+  <rect x="36" y="476" width="488" height="86" rx="8" class="chg"/>
+  <text x="48" y="497" class="st">calibration: Calibration.scaled_to(W, H)</text>
+  <text x="48" y="515" class="s">já reescala K (camera.py:182-209, chamado em :556). Ajuste: escala</text>
+  <text x="48" y="531" class="s">por eixo (sx=W/W0, sy=H/H0) ou tolerância de ±1 px, pois o arredondamento</text>
+  <text x="48" y="547" class="s">para pares pode exceder 1e-3 de aspecto e o scaled_to recusa hoje.</text>
+
+  <rect x="36" y="574" width="488" height="86" rx="8" class="chg"/>
+  <text x="48" y="595" class="st">focal_px: FixedIntrinsics(focal_px · sx)</text>
+  <text x="48" y="613" class="s">config.py:96 documenta "pixels do vídeo de entrada" = vídeo original.</text>
+  <text x="48" y="629" class="s">Sem escalar, a distância sai multiplicada por 1/s (2× em scale 0.5).</text>
+  <text x="48" y="645" class="s">Proposta: manter semântica "pixels do vídeo original" e escalar.</text>
+
+  <rect x="36" y="672" width="488" height="70" rx="8" class="reuse"/>
+  <text x="48" y="693" class="st">estimate: EstimatedIntrinsics</text>
+  <text x="48" y="711" class="s">usa source.sample() → frames já reduzidos; foco estimado na</text>
+  <text x="48" y="727" class="s">resolução processada. Sem mudança.</text>
+
+  <rect x="36" y="754" width="488" height="72" rx="8" class="same"/>
+  <text x="48" y="775" class="st">tools/calibrate.py · lens check</text>
+  <text x="48" y="793" class="s">calibração continua em resolução nativa (cornerSubPix 5×5 perde</text>
+  <text x="48" y="809" class="s">precisão se reduzido). check_lens usa metadados, não pixels.</text>
+
+  <!-- ============ Panel 4: Pipeline ============ -->
+  <rect class="panel" x="560" y="400" width="1220" height="440" rx="10"/>
+  <text x="576" y="426" class="ptitle">4 · Pipeline (core/pipeline.py) — nenhuma mudança: tudo deriva de frame.shape / LoadContext.frame_size</text>
+  <text x="576" y="446" class="s">Frame (W×H, RGB uint8) → cada adaptador redimensiona INTERNAMENTE para a sua resolução e devolve caixas/máscaras/mapas em W×H (contratos validados em components.py).</text>
+
+  <!-- stage boxes -->
+  <g>
+    <rect x="580" y="462" width="190" height="112" rx="8" class="fixed"/>
+    <text x="592" y="483" class="st">Detector RF-DETR</text>
+    <text x="592" y="501" class="s">quadrado model.resolution</text>
+    <text x="592" y="516" class="s">384–704 (variante), estica</text>
+    <text x="592" y="531" class="s">detr.py:3483-3487</text>
+    <text x="592" y="548" class="s">sem opção no YAML</text>
+    <text x="592" y="564" class="s">(upstream aceita shape=)</text>
+
+    <rect x="780" y="462" width="190" height="112" rx="8" class="fixed"/>
+    <text x="792" y="483" class="st">Detector YOLO</text>
+    <text x="792" y="501" class="s">letterbox imgsz (640)</text>
+    <text x="792" y="516" class="s">retina_masks → W×H</text>
+    <text x="792" y="534" class="m">imgsz: 640</text>
+
+    <rect x="980" y="462" width="190" height="112" rx="8" class="fixed"/>
+    <text x="992" y="483" class="st">Refinadores SAM</text>
+    <text x="992" y="501" class="s">HF: 1024² (SAM3 1008²)</text>
+    <text x="992" y="516" class="s">SAM1/HQ: lado 1024 + pad</text>
+    <text x="992" y="531" class="s">post_process_masks → W×H</text>
+    <text x="992" y="549" class="s">ultralytics_sam: imgsz 1024</text>
+
+    <rect x="1180" y="462" width="190" height="112" rx="8" class="fixed"/>
+    <text x="1192" y="483" class="st">Profundidade DA3</text>
+    <text x="1192" y="501" class="s">lado maior → process_res 504</text>
+    <text x="1192" y="516" class="s">÷14 → mapa 504×280</text>
+    <text x="1192" y="531" class="s">MapGeometry(W,H→mapa)</text>
+    <text x="1192" y="549" class="m">process_res: 504</text>
+
+    <rect x="1380" y="462" width="190" height="112" rx="8" class="fixed"/>
+    <text x="1392" y="483" class="st">Semântica</text>
+    <text x="1392" y="501" class="s">SegFormer size 1024×1024</text>
+    <text x="1392" y="516" class="s">TwinLiteNet letterbox 640</text>
+    <text x="1392" y="531" class="s">logits → bilinear W×H</text>
+    <text x="1392" y="549" class="m">size / imgsz</text>
+
+    <rect x="1580" y="462" width="185" height="112" rx="8" class="reuse"/>
+    <text x="1592" y="483" class="st">Agreg./Track/Dist.</text>
+    <text x="1592" y="501" class="s">IoU e frações: invariantes</text>
+    <text x="1592" y="516" class="s">min_valid_px, mask_erode:</text>
+    <text x="1592" y="531" class="s">em px do MAPA (fixo)</text>
+    <text x="1592" y="549" class="s">resample_mask: W×H→mapa</text>
+  </g>
+
+  <rect x="580" y="590" width="1185" height="236" rx="8" fill="#eff6ff" stroke="#93c5fd"/>
+  <text x="592" y="612" class="st">Achado central — onde o custo realmente cai ao reduzir W×H (1920×1080 → 960×540, ¼ dos pixels)</text>
+  <text x="592" y="634" class="t">Cai ∝ W·H (CPU/GPU fora do backbone): decodificação+pipe ffmpeg · conversões numpy/PIL/tensor de entrada · resize interno de cada modelo</text>
+  <text x="604" y="651" class="t">(a partir de 960 em vez de 1920) · upsample de máscaras e logits para W×H (SAM, RF-DETR-seg, SegFormer, YOLO retina) · máscaras (N,H,W) bool</text>
+  <text x="604" y="668" class="t">em memória/CPU · elegibilidade e resample_mask · undistort · render (blend de máscaras/semântica) · codificação libx264.</text>
+  <text x="592" y="692" class="t">NÃO cai: o forward dos backbones — cada modelo já trabalha na sua resolução fixa (caixas azuis). Ex.: DA3 504 → mapa 504×280 em 1920 e em 960.</text>
+  <text x="592" y="716" class="t">Consequência: medir "custo por resolução" de forma honesta exige (a) o resize global E (b) os knobs de resolução por modelo, que já existem para</text>
+  <text x="604" y="733" class="t">DA3 (process_res), YOLO/TwinLiteNet/ultralytics_sam (imgsz) e SegFormer (size); faltam RF-DETR (só variante) e SAM-HF (fixo no processor).</text>
+  <rect x="592" y="746" width="1160" height="68" rx="6" class="warn"/>
+  <text x="604" y="766" class="t">Risco: se W ou H ficar abaixo da entrada interna de um modelo, ele FAZ UPSCALE (DA3 INTER_CUBIC se lado maior &lt; process_res, input_processor.py:324-334;</text>
+  <text x="604" y="783" class="t">SAM 1024; TwinLiteNet min(imgsz/h, imgsz/w) &gt; 1) — informação perdida sem ganho de GPU. Ex.: scale 0.25 (480×270) &lt; DA3 504.</text>
+  <text x="604" y="800" class="t">Proposta: aviso [warn] no load comparando W×H com a entrada efetiva de cada componente (describe() já expõe resolution/geometry).</text>
+
+  <path class="flowN" d="M1700,226 C1760,300 1760,390 1700,455"/>
+
+  <!-- ============ Panel 5: Outputs & metrics ============ -->
+  <rect class="panel" x="20" y="856" width="880" height="464" rx="10"/>
+  <text x="36" y="882" class="ptitle">5 · Saídas e métricas (io/sinks.py · cli.py · runtime.py)</text>
+
+  <rect x="36" y="896" width="270" height="92" rx="8" class="reuse"/>
+  <text x="48" y="917" class="st">video.mp4 / Renderer</text>
+  <text x="48" y="935" class="s">tamanho = frame_size → W×H</text>
+  <text x="48" y="951" class="s">fontes/linhas ∝ H/1080 com pisos</text>
+  <text x="48" y="967" class="s">(render.py:237-242); W,H pares</text>
+  <text x="48" y="983" class="s">exigidos por yuv420p</text>
+
+  <rect x="320" y="896" width="270" height="92" rx="8" class="reuse"/>
+  <text x="332" y="917" class="st">detections.csv / depth.npz</text>
+  <text x="332" y="935" class="s">caixas em px de W×H (processado)</text>
+  <text x="332" y="951" class="s">npz guarda geometry (frame_w/h)</text>
+  <text x="332" y="967" class="s">colunas map_* em px do mapa</text>
+
+  <rect x="604" y="896" width="282" height="92" rx="8" class="chg"/>
+  <text x="616" y="917" class="st">metrics.json</text>
+  <text x="616" y="935" class="s">+ frame_size processado (W×H)</text>
+  <text x="616" y="951" class="s">+ preprocess (W0×H0, sx, sy, interp.)</text>
+  <text x="616" y="967" class="s">video{} continua W0×H0 (original)</text>
+  <text x="616" y="983" class="s">print [run] mostra W0×H0 → W×H</text>
+
+  <rect x="36" y="1002" width="850" height="148" rx="8" class="new"/>
+  <text x="48" y="1023" class="st">Instrumentação de custo (hoje inexistente para decode/transform/encode)</text>
+  <text x="48" y="1043" class="t">Hoje: timings_ms por estágio (_timed, perf_counter; sync via .numpy()) + render; wall_time_s, end_to_end_fps.</text>
+  <text x="48" y="1061" class="t">Falta: "decode" (bloqueio no read do pipe, inclui o scale do ffmpeg), "transform" (undistort), "write" (CSV/NPZ/encode).</text>
+  <text x="48" y="1079" class="t">Proposta: decode/transform no iterador da fonte e write no laço da CLI, como séries extra_timings</text>
+  <text x="60" y="1096" class="t">(padrão de render_ms) → latency_stats em timings_ms: soma dos estágios ≈ wall/frame.</text>
+  <text x="48" y="1118" class="s">VRAM (DeviceMonitor) já registrada: pico deve cair pouco (backbones dominam; máscaras W×H na GPU caem).</text>
+  <text x="48" y="1136" class="s">Nome da pasta do run não inclui resolução: usar output.tag (ex.: "s050") ou sufixo automático — decisão aberta.</text>
+
+  <rect x="36" y="1164" width="850" height="140" rx="8" class="chg"/>
+  <text x="48" y="1185" class="st">Avaliação (evaluation/ · tools/evaluate.py) — compatibilidade com a task 0007</text>
+  <text x="48" y="1205" class="t">Referências (references.py:48-51) em px do vídeo ORIGINAL; matching por IoU/ponto (matching.py:86-102).</text>
+  <text x="48" y="1223" class="t">Sem ajuste, run em 960×540 não casa caixa/ponto; points_transform só desfaz distorção (:61-70).</text>
+  <text x="48" y="1241" class="t">Proposta: RunData lê preprocess do metrics.json e compõe escala(sx,sy) → undistort. Distâncias (m)</text>
+  <text x="60" y="1258" class="t">já comparáveis; K do run e caixas coerentes na mesma resolução (matching.py:39-58).</text>
+  <text x="48" y="1282" class="s">Runs antigos sem a chave preprocess = escala 1 (retrocompatível).</text>
+
+  <!-- ============ Panel 6: Scope / decisions ============ -->
+  <rect class="panel" x="920" y="856" width="860" height="464" rx="10"/>
+  <text x="936" y="882" class="ptitle">6 · Escopo proposto e decisões em aberto</text>
+
+  <text x="936" y="908" class="st">Dentro do escopo (núcleo)</text>
+  <text x="948" y="928" class="t">A. config: PreprocessConfig/ResizeConfig + validação (pares, sem upscale, exclusividade)</text>
+  <text x="948" y="946" class="t">B. io/video.read_frames(size, interpolation) + VideoSource.frame_size/describe</text>
+  <text x="948" y="964" class="t">C. camera: scaled_to por eixo/tolerância; focal_px · sx; ordem resize → undistort</text>
+  <text x="948" y="982" class="t">D. metrics.json: frame_size + preprocess; print [run]</text>
+  <text x="948" y="1000" class="t">E. timings: decode / transform / write; aviso de upscale interno por componente</text>
+  <text x="948" y="1018" class="t">F. evaluation: escala compondo o points_transform (RunData)</text>
+  <text x="948" y="1036" class="t">G. testes (config, video com ffmpeg real, câmera, matching, smoke) + README/CHANGELOG</text>
+  <text x="948" y="1054" class="t">   regressão: preprocess ausente ⇒ CSV e vídeo bit-idênticos ao estado atual</text>
+
+  <text x="936" y="1086" class="st">Decisões para fechar o escopo</text>
+  <text x="948" y="1106" class="t">1. Onde fica no YAML: seção nova preprocess.resize (proposta) ou source.resize?</text>
+  <text x="948" y="1124" class="t">2. Especificação: scale e/ou width/height (proposta: os três, exclusivos)?</text>
+  <text x="948" y="1142" class="t">3. Resize no ffmpeg (proposta; mais barato) ou cv2 em Python (mesma interpolação</text>
+  <text x="966" y="1160" class="t">   dos modelos, mais lento)? Interpolação padrão: area.</text>
+  <text x="948" y="1178" class="t">4. Expor resolução do RF-DETR (upstream predict(shape=)) nesta task ou depois?</text>
+  <text x="948" y="1196" class="t">5. Script de varredura (ex.: utils/bench_resolution.sh: scales 1, .75, .5, .375)</text>
+  <text x="966" y="1214" class="t">   gerando tabela comparativa de timings_ms/VRAM — incluir?</text>
+  <text x="948" y="1232" class="t">6. Opção de vídeo de saída na resolução original (upscale só no render)? Proposta: não.</text>
+  <text x="948" y="1250" class="t">7. Sufixo automático de resolução no nome da pasta do run?</text>
+
+  <text x="936" y="1284" class="s">Fora do escopo: TensorRT/quantização; crop/ROI; mudar a resolução interna dos modelos SAM-HF;</text>
+  <text x="936" y="1300" class="s">recalibração em resolução reduzida; resize dinâmico durante o run.</text>
+</svg>
