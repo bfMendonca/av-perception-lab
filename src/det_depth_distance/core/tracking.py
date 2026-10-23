@@ -164,6 +164,11 @@ class _TrackRecord:
     distance: list[float] = field(default_factory=list)  # NaN = n/a
     smooth: list[float] = field(default_factory=list)  # NaN = none
     speed: list[float] = field(default_factory=list)  # NaN = none
+    # motion stage (TrackSummary(motion=True)); "" / NaN = no estimate
+    motion_model: list[str] = field(default_factory=list)
+    motion_speed: list[float] = field(default_factory=list)
+    nis: list[float] = field(default_factory=list)  # NaN = no measurement
+    restarts: int = 0
 
 
 def _jitter(order: np.ndarray, values: np.ndarray) -> float | None:
@@ -180,11 +185,13 @@ class TrackSummary:
 
     Same pattern as core.agreement.AgreementStats: pure, fed one FrameResult
     per processed frame (frames without track ids only advance the frame
-    count, so coverage and gaps are measured in processed frames).
+    count, so coverage and gaps are measured in processed frames). With
+    `motion`, every summarised track also gets a "motion" entry.
     """
 
-    def __init__(self, *, min_duration_s: float = 1.0) -> None:
+    def __init__(self, *, min_duration_s: float = 1.0, motion: bool = False) -> None:
         self.min_duration_s = min_duration_s
+        self.motion = motion
         self._n_frames = 0
         self._tracks: dict[int, _TrackRecord] = {}
 
@@ -196,8 +203,16 @@ class TrackSummary:
         if inst.track_id is None:
             return
         temporal = result.temporal or (None,) * len(inst)
-        for i, (tid, members, stats, est) in enumerate(
-            zip(inst.track_id, inst.provenance(), result.stats, temporal, strict=True)
+        motion = result.motion or (None,) * len(inst)
+        for i, (tid, members, stats, est, mot) in enumerate(
+            zip(
+                inst.track_id,
+                inst.provenance(),
+                result.stats,
+                temporal,
+                motion,
+                strict=True,
+            )
         ):
             rec = self._tracks.setdefault(int(tid), _TrackRecord())
             rec.order.append(order)
@@ -208,6 +223,11 @@ class TrackSummary:
             rec.distance.append(math.nan if stats.distance is None else stats.distance)
             rec.smooth.append(math.nan if est is None else est.distance)
             rec.speed.append(math.nan if est is None else est.rel_speed)
+            if self.motion:
+                rec.motion_model.append("" if mot is None else mot.model)
+                rec.motion_speed.append(math.nan if mot is None else mot.speed)
+                rec.nis.append(math.nan if mot is None else mot.nis)
+                rec.restarts += mot is not None and mot.restarted
 
     def summary(self) -> dict[str, Any]:
         """JSON summary for metrics.json["tracks"]:
@@ -218,7 +238,11 @@ class TrackSummary:
            "gaps", "max_gap_s",
            "distance_m" {"min", "median", "max"},
            "jitter_raw_m", "jitter_smooth_m" (std of frame-to-frame differences),
-           "rel_speed_mps" {"p5", "median", "p95"} (kalman only)}]}
+           "rel_speed_mps" {"p5", "median", "p95"} (kalman only),
+           "motion" (only with motion=True; null when the track never had a
+             motion estimate): {"model" (most frequent), "speed_mps" {"p5",
+             "median", "p95"}, "nis_mean" (frames with a measurement),
+             "restarts" (NIS-gate restarts)}}]}
         Frames are processed frames (stride aware); "max_gap_s" is the longest
         time between two consecutive observations around a gap (the quantity
         compared with the tracker's max_age_s), 0 without gaps. Statistics
@@ -231,13 +255,42 @@ class TrackSummary:
             if duration < self.min_duration_s:
                 short += 1
                 continue
-            per_track.append(_track_summary(tid, rec, duration))
+            entry = _track_summary(tid, rec, duration)
+            if self.motion:
+                entry["motion"] = _motion_summary(rec)
+            per_track.append(entry)
         return {
             "n_tracks": len(self._tracks),
             "short_tracks": short,
             "min_duration_s": self.min_duration_s,
             "per_track": per_track,
         }
+
+
+def _percentiles(values: np.ndarray) -> dict[str, float] | None:
+    """{"p5", "median", "p95"} of the finite values; None without any."""
+    values = values[np.isfinite(values)]
+    if not len(values):
+        return None
+    return {
+        "p5": float(np.percentile(values, 5)),
+        "median": float(np.median(values)),
+        "p95": float(np.percentile(values, 95)),
+    }
+
+
+def _motion_summary(rec: _TrackRecord) -> dict[str, Any] | None:
+    models = Counter(m for m in rec.motion_model if m)
+    if not models:
+        return None
+    nis = np.asarray(rec.nis)
+    nis = nis[np.isfinite(nis)]
+    return {
+        "model": models.most_common(1)[0][0],
+        "speed_mps": _percentiles(np.asarray(rec.motion_speed)),
+        "nis_mean": float(nis.mean()) if len(nis) else None,
+        "restarts": rec.restarts,
+    }
 
 
 def _track_summary(tid: int, rec: _TrackRecord, duration: float) -> dict[str, Any]:
@@ -249,7 +302,6 @@ def _track_summary(tid: int, rec: _TrackRecord, duration: float) -> dict[str, An
     gap = steps > 1
     labels = Counter(rec.label)
     valid = distance[np.isfinite(distance)]
-    speed = speed[np.isfinite(speed)]
     return {
         "id": tid,
         "label": labels.most_common(1)[0][0],
@@ -275,13 +327,5 @@ def _track_summary(tid: int, rec: _TrackRecord, duration: float) -> dict[str, An
         ),
         "jitter_raw_m": _jitter(order, distance),
         "jitter_smooth_m": _jitter(order, np.asarray(rec.smooth)),
-        "rel_speed_mps": (
-            {
-                "p5": float(np.percentile(speed, 5)),
-                "median": float(np.median(speed)),
-                "p95": float(np.percentile(speed, 95)),
-            }
-            if len(speed)
-            else None
-        ),
+        "rel_speed_mps": _percentiles(speed),
     }

@@ -34,6 +34,12 @@ rel_speed_mps and rel_speed_std_mps (empty without tracking/smoothing; std
 and speed only with the kalman filter); distance_m stays the raw per-frame
 value. metrics.json adds "tracks" (per-track summary) with a tracker.
 
+detections.csv ends with the motion_* columns (MOTION_FIELDS; empty without
+motion; heading NaN below the model's min speed, yaw rate only with ctrv,
+abs speed only with ego-motion). With motion, trajectories.jsonl holds one
+line per frame and instance with its predicted trajectory, and metrics.json
+tracks.per_track[] gains "motion".
+
 metrics.json also holds frame_intrinsics (the frame-resolution K given to the
 depth model, null when it predicts K per frame) and camera (calibration file,
 rescaling, lens check, undistortion and the focal cross-check; {} without
@@ -60,9 +66,11 @@ from det_depth_distance.core.agreement import AgreementStats
 from det_depth_distance.core.pipeline import SetupInfo
 from det_depth_distance.core.tracking import TrackSummary
 from det_depth_distance.core.types import (
+    DepthResult,
     FrameResult,
     Instances,
     MapGeometry,
+    MotionEstimate,
     TrackEstimate,
     best_per_source,
 )
@@ -74,7 +82,14 @@ from det_depth_distance.distance import (
 )
 from det_depth_distance.io.source import VideoSource
 from det_depth_distance.io.video import VideoWriter
-from det_depth_distance.render import BoxAnnotation, Renderer, format_label
+from det_depth_distance.motion.measurement import project_points, reference_pixel
+from det_depth_distance.render import (
+    BevTrack,
+    BoxAnnotation,
+    PathAnnotation,
+    Renderer,
+    format_label,
+)
 from det_depth_distance.runtime import DeviceMonitor, git_commit, package_version
 
 # Smoothing columns of a row, from TrackEstimate (distance, distance_std,
@@ -84,6 +99,25 @@ ESTIMATE_FIELDS: tuple[str, ...] = (
     "distance_smooth_std_m",
     "rel_speed_mps",
     "rel_speed_std_mps",
+)
+# Motion columns of a row, from MotionEstimate (model ... n_updates).
+MOTION_FIELDS: tuple[str, ...] = (
+    "motion_model",
+    "motion_x_m",
+    "motion_z_m",
+    "motion_x_std_m",
+    "motion_z_std_m",
+    "motion_vx_mps",
+    "motion_vz_mps",
+    "motion_speed_mps",
+    "motion_speed_std_mps",
+    "motion_heading_deg",
+    "motion_heading_std_deg",
+    "motion_yaw_rate_dps",
+    "motion_yaw_rate_std_dps",
+    "motion_abs_speed_mps",
+    "motion_nis",
+    "motion_n_updates",
 )
 # Columns of task_0001 in the same order, then the new ones at the end so
 # readers that index by position keep working.
@@ -110,6 +144,7 @@ CSV_FIELDS: tuple[str, ...] = (
     "mask_score",
     "track_id",
     *ESTIMATE_FIELDS,
+    *MOTION_FIELDS,
 )
 
 
@@ -214,8 +249,9 @@ class CsvSink(Sink):
         mask_sources, mask_scores = inst.mask_sources(), inst.mask_score
         track_ids = inst.track_id
         temporal = result.temporal or (None,) * len(inst)
-        for i, (stats, members, est) in enumerate(
-            zip(result.stats, inst.provenance(), temporal, strict=True)
+        motion = result.motion or (None,) * len(inst)
+        for i, (stats, members, est, mot) in enumerate(
+            zip(result.stats, inst.provenance(), temporal, motion, strict=True)
         ):
             best = best_per_source(members)
             box = result.box_stats[i] if result.box_stats is not None else None
@@ -249,6 +285,7 @@ class CsvSink(Sink):
                     ),
                     "track_id": None if track_ids is None else int(track_ids[i]),
                     **_estimate_row(est),
+                    **_motion_row(mot),
                 }
             )
 
@@ -268,6 +305,71 @@ def _estimate_row(est: TrackEstimate | None) -> dict[str, float | None]:
     }
 
 
+def _motion_row(est: MotionEstimate | None) -> dict[str, str | float | int | None]:
+    """MOTION_FIELDS of one CSV row (all empty without an estimate)."""
+    if est is None:
+        return dict.fromkeys(MOTION_FIELDS)
+    values = (
+        est.x,
+        est.z,
+        est.x_std,
+        est.z_std,
+        est.vx,
+        est.vz,
+        est.speed,
+        est.speed_std,
+        est.heading_deg,
+        est.heading_std_deg,
+        est.yaw_rate_dps,
+        est.yaw_rate_std_dps,
+        est.abs_speed,
+        est.nis,
+    )
+    floats = zip(MOTION_FIELDS[1:-1], values, strict=True)
+    return {
+        "motion_model": est.model,
+        **{name: _csv_float(v) for name, v in floats},
+        "motion_n_updates": est.n_updates,
+    }
+
+
+def _path_annotation(
+    est: MotionEstimate,
+    ref_px: tuple[float, float],
+    depth: DepthResult,
+    n_sigma: float,
+) -> PathAnnotation | None:
+    """The predicted trajectory in frame pixels, from the box reference point;
+    cut at the first point that cannot be projected (None if that is the
+    first). Radii: n_sigma half-axes of each point's uncertainty projected on
+    the ground: x std * fx / z across, z std * fy * |y| / z^2 along (the
+    ground recedes toward the horizon)."""
+    traj = est.trajectory
+    if traj is None or not len(traj.t):
+        return None
+    x, z = traj.xz.T
+    px = project_points(
+        np.stack([x, np.full_like(x, traj.y), z], axis=1),
+        depth.intrinsics,
+        depth.geometry,
+    )
+    invalid = ~np.isfinite(px).all(axis=1)
+    n = int(np.argmax(invalid)) if invalid.any() else len(px)
+    if n == 0:
+        return None
+    k, g = depth.intrinsics, depth.geometry
+    std = np.sqrt(np.diagonal(traj.cov[:n], axis1=1, axis2=2).clip(0.0))
+    z = z[:n]
+    radii = n_sigma * np.stack(
+        [
+            std[:, 0] * (k.fx / g.sx) / z,
+            std[:, 1] * (k.fy / g.sy) * abs(traj.y) / z**2,
+        ],
+        axis=1,
+    )
+    return PathAnnotation(np.vstack([ref_px, px[:n]]), np.vstack([[0.0, 0.0], radii]))
+
+
 class VideoSink(Sink):
     """video.mp4: semantic layers, boxes, instance masks, labels with distance,
     HUD and optional depth panel.
@@ -282,7 +384,10 @@ class VideoSink(Sink):
     With a tracker, labels start with "#<track id>" and the last HUD line
     describes tracking (ids = tracks opened so far) and smoothing; with
     smoothing, labels show the smoothed distance (`render.show_smoothed`) and
-    the relative speed (`render.show_speed`, kalman only).
+    the relative speed (`render.show_speed`, kalman only). With motion, labels
+    end with the speed on the plane (`render.show_motion_speed`), each box
+    gets its predicted trajectory (`render.show_trajectory`) and, with
+    `render.bev_inset`, the frame panel a top-view inset.
     """
 
     def __init__(self, cfg: RenderConfig, distance: DistanceConfig) -> None:
@@ -293,6 +398,7 @@ class VideoSink(Sink):
     def open(self, ctx: RunContext) -> None:
         super().open(ctx)
         cfg, source = self.cfg, ctx.source
+        motion = ctx.config.motion
         detectors = ctx.pipeline["components"]["detectors"]
         depth_name = ctx.pipeline["components"]["depth"]["name"]
         self._by_source = len(detectors) > 1
@@ -306,7 +412,15 @@ class VideoSink(Sink):
             font_path=cfg.font,
             mask_alpha=cfg.mask_alpha,
             semantic_alpha=cfg.semantic_alpha,
+            trajectory_alpha=cfg.trajectory_alpha,
+            bev_size_px=round(cfg.bev_size * source.frame_size[1])
+            if cfg.bev_inset
+            else 0,
+            bev_range_m=cfg.bev_range_m,
+            bev_width_m=cfg.bev_width_m,
+            n_sigma=motion.prediction.n_sigma if motion is not None else 2.0,
         )
+        self._motion = motion
         self._refiners = ctx.pipeline["components"]["refiners"]
         self._semantic_hud = [
             f"semantic {s['name']} · excl "
@@ -316,7 +430,7 @@ class VideoSink(Sink):
         policy = ctx.pipeline["pipeline"]
         self._region = f" · region {policy['region']} · erode {policy['mask_erode']}"
         self._track_hud = _track_hud(
-            ctx.pipeline["components"]["tracker"], policy["smoothing"]
+            ctx.pipeline["components"]["tracker"], policy["smoothing"], policy["motion"]
         )
         self._max_track_id = 0
         thresholds = [(d["name"], d["options"]["threshold"]) for d in detectors]
@@ -346,9 +460,10 @@ class VideoSink(Sink):
         by_source = self._by_source and inst.sources is None
         masks = inst.masks if self.cfg.mask_alpha > 0 else None
         temporal = result.temporal or (None,) * len(inst)
-        annotations = []
-        for i, (stats, members, est) in enumerate(
-            zip(result.stats, inst.provenance(), temporal, strict=True)
+        motion = result.motion or (None,) * len(inst)
+        annotations, bev = [], []
+        for i, (stats, members, est, mot) in enumerate(
+            zip(result.stats, inst.provenance(), temporal, motion, strict=True)
         ):
             name, score = inst.label[i], float(inst.score[i])
             n_sources = len(best_per_source(members))
@@ -377,18 +492,42 @@ class VideoSink(Sink):
                 rel_speed=(
                     est.rel_speed if est is not None and self.cfg.show_speed else None
                 ),
+                motion_speed=(
+                    mot.speed
+                    if mot is not None and self.cfg.show_motion_speed
+                    else None
+                ),
             )
-            annotations.append(
-                BoxAnnotation(
-                    tuple(float(v) for v in inst.xyxy[i]),
-                    name,
-                    score,
-                    label,
-                    inner,
-                    color_key=inst.source[i] if by_source else None,
-                    mask=None if masks is None else masks[i],
+            xyxy = tuple(float(v) for v in inst.xyxy[i])
+            path = None
+            if mot is not None and self.cfg.show_trajectory:
+                path = _path_annotation(
+                    mot,
+                    reference_pixel(xyxy, self._motion.measurement.reference_point),
+                    result.depth,
+                    self._motion.prediction.n_sigma,
                 )
+            box = BoxAnnotation(
+                xyxy,
+                name,
+                score,
+                label,
+                inner,
+                color_key=inst.source[i] if by_source else None,
+                mask=None if masks is None else masks[i],
+                path=path,
             )
+            annotations.append(box)
+            if mot is not None and mot.trajectory is not None:
+                bev.append(
+                    BevTrack(
+                        box.key,
+                        f"#{int(inst.track_id[i])}",
+                        (mot.x, mot.z),
+                        mot.trajectory.xz,
+                        mot.trajectory.cov,
+                    )
+                )
         ms, n_total = result.timings_ms, self.ctx.source.info.n_frames
         hud = [
             f"det {ms['det']:5.1f} ms  ·  depth {ms['depth']:5.1f} ms",
@@ -431,6 +570,7 @@ class VideoSink(Sink):
                 hud,
                 result.depth.depth_m if side_by_side else None,
                 semantic=layers,
+                bev=bev,
             )
         )
         self.render_ms.append((time.perf_counter() - t0) * 1e3)
@@ -440,10 +580,12 @@ class VideoSink(Sink):
 
 
 def _track_hud(
-    tracker: dict[str, Any] | None, smoothing: dict[str, Any] | None
+    tracker: dict[str, Any] | None,
+    smoothing: dict[str, Any] | None,
+    motion: dict[str, Any] | None = None,
 ) -> str | None:
     """Static part of the tracking HUD line, e.g. "track iou · IoU ≥ 0.3 · age
-    0.5 s · kalman q 2"; None without a tracker."""
+    0.5 s · kalman q 2 · motion cv/ctrv · 3 s"; None without a tracker."""
     if tracker is None:
         return None
     options = tracker["options"]
@@ -456,7 +598,47 @@ def _track_hud(
         text += f" · {smoothing['filter']}"
         if smoothing["filter"] == "kalman":
             text += f" q {smoothing['accel_std']:g}"
+    if motion is not None:
+        types = dict.fromkeys(m["type"] for m in motion["models"].values())
+        text += f" · motion {'/'.join(types)} · {motion['prediction']['horizon_s']:g} s"
     return text
+
+
+class TrajectorySink(Sink):
+    """trajectories.jsonl: one JSON line per frame x instance with a motion
+    estimate: {"frame", "t", "track_id", "label", "model", "x", "z", "vx",
+    "vz", "y", "t_ahead" [K], "xz" [K][2], "cov" [K][2][2]} in the current
+    camera frame (metres, seconds; 4 decimals)."""
+
+    def open(self, ctx: RunContext) -> None:
+        super().open(ctx)
+        # Kept open across write() calls; closed in close().
+        self._fh = open(ctx.run_dir / "trajectories.jsonl", "w")  # noqa: SIM115
+
+    def write(self, result: FrameResult) -> None:
+        if result.motion is None:
+            return
+        inst = result.instances
+        for i, est in enumerate(result.motion):
+            if est is None or est.trajectory is None:
+                continue
+            traj = est.trajectory
+            line = {
+                "frame": result.frame.index,
+                "t": round(result.frame.t, 4),
+                "track_id": int(inst.track_id[i]),
+                "label": inst.label[i],
+                "model": est.model,
+                **{k: round(getattr(est, k), 4) for k in ("x", "z", "vx", "vz")},
+                "y": round(traj.y, 4),
+                "t_ahead": np.round(traj.t, 4).tolist(),
+                "xz": np.round(traj.xz, 4).tolist(),
+                "cov": np.round(traj.cov, 4).tolist(),
+            }
+            self._fh.write(json.dumps(line) + "\n")
+
+    def close(self) -> None:
+        self._fh.close()
 
 
 class NpzSink(Sink):
@@ -507,17 +689,23 @@ class MetricsSink(Sink):
     """metrics.json: run summary, written at close.
 
     `extra_timings` returns per-frame timing series measured outside the
-    pipeline (e.g. {"render": VideoSink.render_ms}). With a tracker it adds
-    "tracks" (core.tracking.TrackSummary).
+    pipeline (e.g. {"render": VideoSink.render_ms}). `describe`, when given
+    (Pipeline.describe), is read again at close for the "pipeline" policy,
+    whose counters are only final after the last frame (e.g.
+    motion.ego_motion.clamped_frames). With a tracker it adds "tracks"
+    (core.tracking.TrackSummary, with per-track "motion" when motion runs).
     """
 
     def __init__(
         self,
         monitor: DeviceMonitor,
         extra_timings: Callable[[], dict[str, list[float]]],
+        *,
+        describe: Callable[[], dict[str, Any]] | None = None,
     ) -> None:
         self.monitor = monitor
         self.extra_timings = extra_timings
+        self.describe = describe
         self.n_frames = 0
         self._timings: dict[str, list[float]] = defaultdict(list)
         self._labels: Counter = Counter()
@@ -541,7 +729,8 @@ class MetricsSink(Sink):
         agreement = ctx.config.agreement
         self._agreement = AgreementStats(agreement.iou_thr, agreement.class_aware)
         has_tracker = ctx.pipeline["components"]["tracker"] is not None
-        self._tracks = TrackSummary() if has_tracker else None
+        has_motion = ctx.pipeline["pipeline"]["motion"] is not None
+        self._tracks = TrackSummary(motion=has_motion) if has_tracker else None
         self._t_start = time.perf_counter()
 
     def write(self, result: FrameResult) -> None:
@@ -627,7 +816,9 @@ class MetricsSink(Sink):
             "run_dir": str(ctx.run_dir),
             "frames_processed": self.n_frames,
             "components": components,
-            "pipeline": ctx.pipeline["pipeline"],
+            "pipeline": (self.describe() if self.describe else ctx.pipeline)[
+                "pipeline"
+            ],
             "focal_frame_px": ctx.setup.focal_frame_px,
             "focal_map_intrinsics": components["depth"].get("fixed_intrinsics"),
             "focal_source": ctx.setup.focal_source,

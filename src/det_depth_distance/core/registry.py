@@ -7,7 +7,10 @@ optional "name" key is accepted only for Component kinds; aggregators have
 no name, so "name" in an aggregator spec is a ConfigError.
 
 Adding an adapter = a new module with `@register(kind, type_name)` and an
-entry in ADAPTER_MODULES; pipeline, config and CLI do not change.
+entry in ADAPTER_MODULES; pipeline, config and CLI do not change. Besides
+the components, the families "aggregator", "motion" (motion models) and
+"ego_motion" (ego-motion providers) hold registered classes that are not
+Components.
 """
 
 import importlib
@@ -22,6 +25,8 @@ T = TypeVar("T")
 ADAPTER_MODULES: tuple[str, ...] = (
     "det_depth_distance.core.aggregate",
     "det_depth_distance.core.tracking",
+    "det_depth_distance.motion.models",
+    "det_depth_distance.motion.ego",
     "det_depth_distance.adapters.detectors.rfdetr",
     "det_depth_distance.adapters.detectors.ultralytics_yolo",
     "det_depth_distance.adapters.depth.da3",

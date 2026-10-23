@@ -7,8 +7,8 @@ then runs source -> pipeline -> sinks. `--list-models` prints the registered ada
 and their options. torch is imported only through runtime.DeviceMonitor.
 
 Writes <output.out_root>/<timestamp>_<video>_<detectors>_<depth>[_tag]/ with
-video.mp4, detections.csv, metrics.json and optionally depth.npz (see
-io.sinks).
+video.mp4, detections.csv, metrics.json, trajectories.jsonl (with motion)
+and optionally depth.npz (see io.sinks).
 """
 
 import argparse
@@ -29,10 +29,12 @@ from det_depth_distance.io.sinks import (
     MetricsSink,
     NpzSink,
     RunContext,
+    TrajectorySink,
     VideoSink,
     make_run_dir,
 )
 from det_depth_distance.io.source import VideoSource
+from det_depth_distance.motion import build_motion
 from det_depth_distance.runtime import DeviceMonitor
 
 
@@ -60,7 +62,8 @@ def build_parser() -> argparse.ArgumentParser:
         "--list-models",
         action="store_true",
         help="list the registered detectors, depth models, aggregators, trackers, "
-        "mask refiners and semantic segmenters with their options",
+        "mask refiners, semantic segmenters, motion models and ego-motion "
+        "providers with their options",
     )
     return p
 
@@ -117,6 +120,11 @@ def run(cfg: RunConfig) -> Path:
         if cfg.tracking is not None
         else None
     )
+    motion = (
+        build_motion(cfg.motion, distance_type=cfg.distance.distance_type)
+        if cfg.motion is not None
+        else None
+    )
     camera = build_camera(cfg.camera, VideoSource(cfg.source))
     source = camera.source
     pipeline = Pipeline(
@@ -134,6 +142,7 @@ def run(cfg: RunConfig) -> Path:
         exclude_semantic=cfg.exclude_semantic,
         tracker=tracker,
         smoothing=cfg.smoothing,
+        motion=motion,
     )
     monitor = DeviceMonitor(cfg.device)
     with pipeline, ExitStack() as sinks_stack:
@@ -157,8 +166,12 @@ def run(cfg: RunConfig) -> Path:
             flush=True,
         )
         video = VideoSink(cfg.render, cfg.distance)
-        metrics = MetricsSink(monitor, lambda: {"render": video.render_ms})
+        metrics = MetricsSink(
+            monitor, lambda: {"render": video.render_ms}, describe=pipeline.describe
+        )
         sinks = [CsvSink(), video, *([NpzSink()] if cfg.output.save_depth else [])]
+        if motion is not None:
+            sinks.append(TrajectorySink())
         sinks.append(metrics)
         ctx = RunContext(
             run_dir, source, info, pipeline.describe(), cfg, camera.details

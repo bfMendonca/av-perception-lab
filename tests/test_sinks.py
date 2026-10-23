@@ -17,10 +17,12 @@ from det_depth_distance.core.types import (
     FrameAgreement,
     FrameResult,
     MapGeometry,
+    MotionEstimate,
     PairAgreement,
     Provenance,
     SemanticMap,
     TrackEstimate,
+    Trajectory,
 )
 from det_depth_distance.distance import (
     DistanceConfig,
@@ -34,13 +36,17 @@ from det_depth_distance.io.sinks import (
     MetricsSink,
     NpzSink,
     RunContext,
+    TrajectorySink,
     VideoSink,
+    _path_annotation,
     _region_comparison,
     latency_stats,
     make_run_dir,
 )
 from det_depth_distance.io.source import VideoSource
 from det_depth_distance.io.video import VideoWriter, probe
+from det_depth_distance.motion import MotionConfig
+from det_depth_distance.motion.measurement import MIN_PROJECT_Z_M
 
 GEOMETRY = MapGeometry(100, 100, 50, 50, 0.5, 0.5)
 MASK_COLUMNS = ("used_mask", "mask_px", "mask_erode", "box_distance_m")  # task_0004
@@ -51,6 +57,24 @@ TRACK_COLUMNS = (  # task_0006
     "distance_smooth_std_m",
     "rel_speed_mps",
     "rel_speed_std_mps",
+)
+MOTION_COLUMNS = (  # task_0009
+    "motion_model",
+    "motion_x_m",
+    "motion_z_m",
+    "motion_x_std_m",
+    "motion_z_std_m",
+    "motion_vx_mps",
+    "motion_vz_mps",
+    "motion_speed_mps",
+    "motion_speed_std_mps",
+    "motion_heading_deg",
+    "motion_heading_std_deg",
+    "motion_yaw_rate_dps",
+    "motion_yaw_rate_std_dps",
+    "motion_abs_speed_mps",
+    "motion_nis",
+    "motion_n_updates",
 )
 
 
@@ -102,6 +126,7 @@ def test_csv_fields_order():
         "distance_smooth_std_m",
         "rel_speed_mps",
         "rel_speed_std_mps",
+        *MOTION_COLUMNS,
     )
 
 
@@ -165,6 +190,7 @@ def ctx(tmp_path):
             "mask_erode": 1,
             "exclude_semantic": {},
             "smoothing": None,
+            "motion": None,
         },
     }
     source = SimpleNamespace(describe=lambda: {"path": "clip.mov", "width": 100})
@@ -406,7 +432,7 @@ def test_video_sink_single_detector_concat_is_unchanged(ctx, result, tmp_path):
     sink.write(result)
     sink.close()
     (boxes, hud, kw) = drawn[0]
-    assert kw == {"semantic": []}  # no semantic segmenter: no layer
+    assert kw == {"semantic": [], "bev": []}  # no semantic layer, no motion
     assert [b.color_key for b in boxes] == [None, None]  # colour by label
     assert [b.label for b in boxes] == ["car 91% · 12.0 m", "suv 50% · n/a"]
     assert len(hud) == 4  # no fusion or agreement line
@@ -692,7 +718,7 @@ def test_video_sink_semantic_layers_and_hud(
     )
     off.write(refined_result)
     off.close()
-    assert calls[-1][1] == {"semantic": []}
+    assert calls[-1][1] == {"semantic": [], "bev": []}
 
 
 def test_npz_sink_semantic_labels(ctx, result, refined_result):
@@ -928,3 +954,211 @@ def test_video_sink_track_labels_and_hud(track_ctx, result, tmp_path, render, fi
     assert labels == [first, "#9 suv 50% · n/a"]
     assert hud[-1] == "track iou · IoU ≥ 0.3 · age 0.5 s · kalman q 2 · ids 9"
     assert later_hud[-1].endswith("· ids 17")  # tracks opened so far
+
+
+# task_0009: motion outputs.
+MOTION = {
+    "models": {"vehicle": {"type": "cv"}, "car": {"type": "ctrv"}},
+    "prediction": {"horizon_s": 3.0, "step_s": 0.25, "n_sigma": 2.0},
+    "ego_motion": None,
+}
+
+
+def motion_estimate(**fields) -> MotionEstimate:
+    """A cv estimate at (1, 12) m moving right at 2.5 m/s, with a 3-point path."""
+    path = np.array([[1.5, 12.0], [2.0, 12.0], [2.5, 12.0]])
+    values = {
+        "model": "vehicle",
+        "x": 1.0,
+        "z": 12.0,
+        "x_std": 0.1,
+        "z_std": 0.24,
+        "vx": 2.5,
+        "vz": 0.0,
+        "speed": 2.5,
+        "speed_std": 0.3,
+        "heading_deg": 90.0,
+        "heading_std_deg": 4.0,
+        "yaw_rate_dps": math.nan,
+        "yaw_rate_std_dps": math.nan,
+        "abs_speed": math.nan,
+        "nis": 1.23456,
+        "n_updates": 7,
+        "restarted": False,
+        "trajectory": Trajectory(
+            np.array([0.25, 0.5, 0.75]), path, np.tile(0.04 * np.eye(2), (3, 1, 1)), 1.2
+        ),
+    }
+    return MotionEstimate(**(values | fields))
+
+
+def moving(result, *estimates):
+    """`result` tracked (ids 4, 9) with the given motion estimates."""
+    return replace(tracked(result), motion=estimates)
+
+
+@pytest.fixture
+def motion_ctx(track_ctx):
+    policy = {**track_ctx.pipeline["pipeline"], "motion": MOTION}
+    config = replace(track_ctx.config, motion=MotionConfig())
+    return replace(
+        track_ctx,
+        pipeline={**track_ctx.pipeline, "pipeline": policy},
+        config=config,
+    )
+
+
+def test_csv_sink_motion_columns(motion_ctx, result):
+    rows = _csv_rows(motion_ctx, moving(result, motion_estimate(), None))
+    assert [rows[0][c] for c in MOTION_COLUMNS] == [
+        "vehicle",
+        "1.0",
+        "12.0",
+        "0.1",
+        "0.24",
+        "2.5",
+        "0.0",
+        "2.5",
+        "0.3",
+        "90.0",
+        "4.0",
+        "",  # no turn rate with cv
+        "",
+        "",  # no speed over ground without ego-motion
+        "1.2346",
+        "7",
+    ]
+    assert all(rows[1][c] == "" for c in MOTION_COLUMNS)  # no estimate
+    # Without motion the columns stay empty.
+    plain = _csv_rows(motion_ctx, tracked(result))
+    assert all(r[c] == "" for r in plain for c in MOTION_COLUMNS)
+
+
+def test_trajectory_sink(motion_ctx, result):
+    sink = TrajectorySink()
+    sink.open(motion_ctx)
+    sink.write(moving(result, None, motion_estimate(x=-0.123456)))
+    sink.write(tracked(result))  # no motion: nothing written
+    sink.close()
+    (line,) = (motion_ctx.run_dir / "trajectories.jsonl").read_text().splitlines()
+    data = json.loads(line)
+    assert data == {
+        "frame": 7,
+        "t": 0.2346,
+        "track_id": 9,
+        "label": "suv",
+        "model": "vehicle",
+        "x": -0.1235,
+        "z": 12.0,
+        "vx": 2.5,
+        "vz": 0.0,
+        "y": 1.2,
+        "t_ahead": [0.25, 0.5, 0.75],
+        "xz": [[1.5, 12.0], [2.0, 12.0], [2.5, 12.0]],
+        "cov": [[[0.04, 0.0], [0.0, 0.04]]] * 3,
+    }
+
+
+def motion_ctx_without_motion(ctx):
+    policy = {**ctx.pipeline["pipeline"], "motion": None}
+    return replace(ctx, pipeline={**ctx.pipeline, "pipeline": policy})
+
+
+def test_metrics_sink_motion_summary(motion_ctx, result):
+    frames = []
+    for k in range(12):
+        est = motion_estimate(speed=2.0 + 0.1 * k, restarted=k == 5)
+        r = moving(result, est, None)
+        frames.append(replace(r, frame=replace(r.frame, index=k, t=k / 10)))
+    metrics = _metrics(motion_ctx, *frames)
+    first, second = metrics["tracks"]["per_track"]
+    assert first["motion"]["model"] == "vehicle"
+    assert first["motion"]["speed_mps"]["median"] == pytest.approx(2.55)
+    assert first["motion"]["nis_mean"] == pytest.approx(1.23456)
+    assert first["motion"]["restarts"] == 1
+    assert second["motion"] is None  # never estimated
+    assert metrics["pipeline"]["motion"] == MOTION
+    # Without motion the per-track entries have no "motion" key.
+    plain = _metrics(motion_ctx_without_motion(motion_ctx), *frames)
+    assert "motion" not in plain["tracks"]["per_track"][0]
+
+
+def test_metrics_sink_reads_the_final_policy(ctx, result):
+    # Counters known only after the last frame (motion.ego_motion.clamped_frames)
+    # reach metrics.json through the describe callable.
+    final = {**ctx.pipeline, "pipeline": {**ctx.pipeline["pipeline"], "late": 3}}
+    sink = MetricsSink(_monitor(), dict, describe=lambda: final)
+    sink.open(ctx)
+    sink.write(result)
+    sink.close()
+    metrics = json.loads((ctx.run_dir / "metrics.json").read_text())
+    assert metrics["pipeline"]["late"] == 3
+
+
+def test_path_annotation_projects_and_cuts():
+    k = CameraIntrinsics(25.0, 25.0, 25.0, 25.0)
+    depth = DepthResult(np.zeros((50, 50), np.float32), k, None, GEOMETRY)
+    est = motion_estimate()
+    ann = _path_annotation(est, (20.0, 40.0), depth, 2.0)
+    assert ann.points.shape == (4, 2) and tuple(ann.points[0]) == (20.0, 40.0)
+    # (x, y, z) = (1.5, 1.2, 12) -> map u = 25 * 1.5 / 12 + 25 -> frame / 0.5
+    assert ann.points[1] == pytest.approx(
+        [(25 * 1.5 / 12 + 25) / 0.5, (25 * 1.2 / 12 + 25) / 0.5]
+    )
+    # 2 sigma of 0.2 m at 12 m, frame focal 50 px: across / z, along * y / z^2.
+    across, along = 2 * 0.2 * 50 / 12, 2 * 0.2 * 50 * 1.2 / 12**2
+    np.testing.assert_allclose(ann.radii, [[0.0, 0.0]] + [[across, along]] * 3)
+    near = Trajectory(
+        np.array([0.25, 0.5]),
+        np.array([[0.0, 2.0], [0.0, MIN_PROJECT_Z_M / 2]]),
+        np.tile(np.eye(2), (2, 1, 1)),
+        1.2,
+    )
+    cut = _path_annotation(motion_estimate(trajectory=near), (20.0, 40.0), depth, 2.0)
+    assert cut.points.shape == (2, 2)  # stops before the point that cannot be drawn
+    behind = replace(near, xz=near.xz[::-1])
+    assert (
+        _path_annotation(motion_estimate(trajectory=behind), (0, 0), depth, 2.0) is None
+    )
+
+
+@pytest.mark.skipif(shutil.which("ffmpeg") is None, reason="needs ffmpeg/ffprobe")
+@pytest.mark.parametrize(
+    ("render", "label", "has_path"),
+    [
+        (RenderConfig(bev_inset=True), "#4 car 91% · 12.0 m · v 2.5 m/s", True),
+        (RenderConfig(show_motion_speed=False), "#4 car 91% · 12.0 m", True),
+        (RenderConfig(show_trajectory=False), "#4 car 91% · 12.0 m · v 2.5 m/s", False),
+    ],
+)
+def test_video_sink_motion_label_path_and_bev(
+    motion_ctx, result, tmp_path, render, label, has_path
+):
+    clip = tmp_path / "clip.mp4"
+    with VideoWriter(clip, 100, 100, "10/1") as writer:
+        writer.write(np.zeros((100, 100, 3), np.uint8))
+    ctx = replace(motion_ctx, source=VideoSource(SourceConfig(video=clip)))
+    ctx = replace(
+        ctx,
+        pipeline={
+            **ctx.pipeline,
+            "pipeline": {**ctx.pipeline["pipeline"], "smoothing": None},
+        },
+    )
+    sink = VideoSink(render, DistanceConfig())
+    sink.open(ctx)
+    assert sink._renderer.bev_size_px == (35 if render.bev_inset else 0)
+    drawn = []
+    sink._renderer.render = lambda rgb, boxes, hud, depth, **kw: (
+        drawn.append((boxes, hud, kw)) or rgb
+    )
+    sink.write(moving(result, motion_estimate(), None))
+    sink.close()
+    ((boxes, hud, kw),) = drawn
+    assert boxes[0].label == label and boxes[1].path is None
+    assert (boxes[0].path is not None) == has_path
+    if has_path:
+        assert tuple(boxes[0].path.points[0]) == (20.0, 40.0)  # bottom centre
+    (bev,) = kw["bev"]
+    assert (bev.key, bev.label, bev.xz) == ("car", "#4", (1.0, 12.0))
+    assert hud[-1] == "track iou · IoU ≥ 0.3 · age 0.5 s · motion cv/ctrv · 3 s · ids 9"

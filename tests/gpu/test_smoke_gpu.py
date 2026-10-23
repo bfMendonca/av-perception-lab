@@ -62,6 +62,12 @@ GPU_SMOKE_CASES: dict[
         ({"path": TWINLITENET}, {"hf": SEGFORMER}),
     ),
     "rfdetr_da3_track": ("rfdetr_da3_track.yaml", (), ()),
+    "rfdetr_da3_motion": ("rfdetr_da3_motion.yaml", (), ()),
+    "rfdetr_sam2_lanes_motion_da3": (
+        "rfdetr_sam2_lanes_motion_da3.yaml",
+        (),
+        ({"refiner": "sam2"}, {"path": TWINLITENET}),
+    ),
     # Light stack for a 4 GB GPU (task_0010): weights only on the laptop, skips elsewhere.
     "yolo_light_da3": (
         "yolo_light_da3.yaml",

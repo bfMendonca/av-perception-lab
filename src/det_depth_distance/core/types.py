@@ -71,6 +71,16 @@ class MapGeometry:
             (y1 - self.oy) / self.sy,
         )
 
+    def frame_to_map_points(self, xy: np.ndarray) -> np.ndarray:
+        """Same affine as `frame_to_map` for (N, 2) points; (N, 2) float64."""
+        xy = np.asarray(xy, dtype=np.float64)
+        return xy * (self.sx, self.sy) + (self.ox, self.oy)
+
+    def map_to_frame_points(self, xy: np.ndarray) -> np.ndarray:
+        """Inverse of `frame_to_map_points`."""
+        xy = np.asarray(xy, dtype=np.float64)
+        return (xy - (self.ox, self.oy)) / (self.sx, self.sy)
+
     def scale_intrinsics(self, k: "CameraIntrinsics") -> "CameraIntrinsics":
         """Frame-resolution intrinsics -> depth-map-resolution intrinsics.
 
@@ -502,6 +512,46 @@ class TrackEstimate:
 
 
 @dataclass(frozen=True, slots=True)
+class Trajectory:
+    """Predicted positions of one track after the frame time, in the current
+    camera frame, with covariances; `y` is the measured height of the
+    reference point used to draw it."""
+
+    t: np.ndarray  # (K,) s after the frame time, step_s .. horizon_s
+    xz: np.ndarray  # (K, 2) m, camera frame of the current frame
+    cov: np.ndarray  # (K, 2, 2) m^2
+    y: float  # m, camera y (+ down) of the reference point
+
+
+@dataclass(frozen=True, slots=True)
+class MotionEstimate:
+    """2D motion state of one track at one frame, on the camera plane (x right,
+    z forward; see det_depth_distance.motion for the frames and signs)."""
+
+    model: str  # key of motion.models
+    x: float  # m, camera frame
+    z: float
+    x_std: float
+    z_std: float
+    vx: float  # m/s, d/dt of the position in the camera frame
+    vz: float
+    speed: float  # m/s, |(vx, vz)|
+    speed_std: float
+    # 0 = moving away, +90 = moving right; NaN when slow. With ego-motion the
+    # heading, its min speed and the yaw rate are those of the motion over
+    # ground (camera axes of this frame), not atan2(vx, vz).
+    heading_deg: float
+    heading_std_deg: float
+    yaw_rate_dps: float  # + = turning right; NaN for models without turn rate
+    yaw_rate_std_dps: float
+    abs_speed: float  # m/s over ground; NaN without ego-motion
+    nis: float  # normalised innovation squared; NaN without a measurement
+    n_updates: int  # measurements since the filter (re)started
+    restarted: bool  # the filter restarted at this frame (NIS gate)
+    trajectory: Trajectory | None
+
+
+@dataclass(frozen=True, slots=True)
 class FrameResult:
     """Everything computed for one frame; input of the sinks."""
 
@@ -512,7 +562,7 @@ class FrameResult:
     # "det", "det.<name>", "agree" (when computed), "aggregate", "refine" and
     # "refine.<name>" (with refiners), "track" (with a tracker), "depth",
     # "semantic" and "semantic.<name>" (with semantic segmenters), "dist",
-    # "smooth" (with smoothing)
+    # "smooth" (with smoothing), "motion" (with motion)
     timings_ms: dict[str, float]
     agreement: FrameAgreement | None = None  # None with one detector or disabled
     # Box statistics aligned with instances, only with region "both": set where
@@ -524,3 +574,6 @@ class FrameResult:
     # Smoothed per-track state aligned with instances, only with smoothing;
     # None for an instance whose track has no distance yet.
     temporal: tuple[TrackEstimate | None, ...] | None = None
+    # Per-track motion estimate aligned with instances, only with motion;
+    # None where the track has no estimate.
+    motion: tuple[MotionEstimate | None, ...] | None = None

@@ -62,6 +62,12 @@ def test_list_models(capsys):
             "iou: iou_thr=0.3, max_age_s=0.5, motion='constant_velocity', "
             "velocity_alpha=0.5, class_aware=False"
         ),
+        "motion:",
+        "cv: init_speed_std=5.0, min_speed_for_heading=1.0, accel_std=2.0",
+        "ctrv: ",
+        "warmup_s=0.5",
+        "ego_motion:",
+        "csv: path (required), time_offset_s=0.0",
     ):
         assert name in out
 

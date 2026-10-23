@@ -3,7 +3,8 @@ tests (tests/smoke/) and the GPU smoke (tests/gpu/test_smoke_gpu.py).
 
 `check_run_outputs` derives every expectation from the run's own resolved
 configuration (metrics.json["config"]): the files (depth.npz only with
-output.save_depth), the 45 CSV columns in CSV_FIELDS order, the base
+output.save_depth, trajectories.jsonl only with motion), the 61 CSV columns
+in CSV_FIELDS order, the base
 metrics keys plus the conditional ones (agreement with >= 2 detectors,
 region_comparison with region "both", semantic with segmenters, tracks with
 a tracker), and the ffprobe of video.mp4 (one frame per processed frame,
@@ -109,10 +110,14 @@ def check_run_outputs(run_dir: Path) -> RunOutputs:
     save_depth = config["output"]["save_depth"]
     files = {p.name for p in run_dir.iterdir()}
     expected_files = {"video.mp4", "detections.csv", "metrics.json"}
-    assert files == expected_files | ({"depth.npz"} if save_depth else set()), files
+    if save_depth:
+        expected_files.add("depth.npz")
+    if config["motion"] is not None:
+        expected_files.add("trajectories.jsonl")
+    assert files == expected_files, files
 
     header, rows = read_detections(run_dir)
-    assert header == list(CSV_FIELDS) and len(header) == 45, header
+    assert header == list(CSV_FIELDS) and len(header) == 61, header
     assert len(rows) == metrics["boxes_total"]
 
     missing = BASE_METRICS_KEYS - set(metrics)

@@ -32,6 +32,7 @@ STEP_IDS = (
     "17-gpu-refiners",
     "18-refiner-runs",
     "19-calibrated",
+    "20-motion",
 )
 needs_bash = pytest.mark.skipif(shutil.which("bash") is None, reason="needs bash")
 
@@ -133,7 +134,7 @@ def test_dry_run_executes_and_downloads_nothing():
 def test_dry_run_selection_and_bad_options():
     out = _script("run", "--dry-run", "--from", "17", "--skip-long")
     ids = re.findall(r"^=== (\S+)", out.stdout, re.MULTILINE)
-    assert ids == ["17-gpu-refiners", "18-refiner-runs", "19-calibrated"]
+    assert ids == ["17-gpu-refiners", "18-refiner-runs", "19-calibrated", "20-motion"]
     out = _script("run", "--dry-run", "--only", "10-track", "--skip-long")
     assert re.findall(r"^=== (\S+)", out.stdout, re.MULTILINE) == ["10-track"]
     assert "SKIP: --skip-long" in out.stdout

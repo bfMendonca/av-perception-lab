@@ -220,8 +220,8 @@ def test_frame_result_box_stats_is_optional(make_instances):
     assert plain.box_stats is None and plain.agreement is None
     both = FrameResult(frame, inst, stats, depth, {}, box_stats=(stats[0], None))
     assert both.box_stats == (stats[0], None)
-    # task_0006: no smoothing -> no temporal estimates.
-    assert plain.temporal is None
+    # task_0006: no smoothing -> no temporal estimates; task_0009: no motion.
+    assert plain.temporal is None and plain.motion is None
 
 
 def _two_with_one_mask(make_instances):
@@ -296,3 +296,12 @@ def test_frame_result_semantic_defaults_to_an_unshared_dict(make_instances):
     a = FrameResult(frame, Instances.empty(), (), depth, {})
     b = FrameResult(frame, Instances.empty(), (), depth, {})
     assert a.semantic == {} and a.semantic is not b.semantic
+
+
+def test_map_geometry_points_are_degenerate_boxes():
+    g = MapGeometry(1920, 1080, 504, 280, 504 / 1920, 280 / 1080, -2.0, -1.0)
+    pts = np.array([[0.0, 0.0], [960.5, 540.25], [1920.0, 1080.0]])
+    on_map = g.frame_to_map_points(pts)
+    for (x, y), (u, v) in zip(pts, on_map, strict=True):
+        assert g.frame_to_map((x, y, x, y)) == pytest.approx((u, v, u, v))
+    np.testing.assert_allclose(g.map_to_frame_points(on_map), pts)

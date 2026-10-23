@@ -46,11 +46,13 @@ GPU `gpu-host` (RTX PRO 6000 Blackwell, sm_120) instala o extra `infer`
 (torch 2.8.0+cu128, xformers, `rfdetr` e `depth-anything-3` fixados por
 commit git, `ultralytics==8.4.175`, `transformers` e `timm`). Não há git remote: o código vai por rsync.
 
-Código em camadas: `core/` (contratos `Instances`/`DepthResult`/`SemanticMap`,
-ABCs `Detector`/`DepthEstimator`/`MaskRefiner`/`SemanticSegmenter`/`Tracker`,
-registro, `LabelMap`, agregadores `concat`/`nms`/`wbf`, geometria de caixas,
-concordância, rastreador IoU, `Pipeline`) não importa frameworks; `adapters/` envolve cada
-framework (refinadores: `MaskRefiner` → `BoxPromptRefiner` → `HFSamRefiner` →
+Código em camadas: `core/` (contratos `Instances`/`DepthResult`/`SemanticMap`/
+`MotionEstimate`, ABCs `Detector`/`DepthEstimator`/`MaskRefiner`/
+`SemanticSegmenter`/`Tracker`, registro, `LabelMap`, agregadores
+`concat`/`nms`/`wbf`, geometria de caixas, concordância, rastreador IoU,
+`Pipeline`) não importa frameworks; `motion/` (numpy) estima o movimento 2D
+por trilha e prevê trajetórias (modelos `cv`/`ctrv` e ego-motion `csv` no
+registro); `adapters/` envolve cada framework (refinadores: `MaskRefiner` → `BoxPromptRefiner` → `HFSamRefiner` →
 famílias finas, + `UltralyticsSamRefiner`); `io/` (vídeo, fonte, sinks,
 metadados QuickTime); `cli.py` é só a raiz de composição (a câmera —
 calibração, conferência da lente, correção de distorção — é composta por
@@ -205,6 +207,22 @@ no ambiente leve; só os gráficos pedem o extra `eval` (matplotlib).
 - A CLI em processo sem torch precisa trocar `cli.DeviceMonitor` (o
   `start`/`summary` importam torch) e `DA3Depth._close` (importa torch); a
   rede do DA3 é trocável por `da3._load_da3` (ver `tests/smoke/smoke_fakes.py`).
+- `motion:` (estágio de movimento 2D, `motion/`, `task_0009`) ≠
+  `tracking.motion` (predição da caixa do `IouTracker`). Estado em `(x, z)`
+  da câmera (x à direita, z à frente); rumo 0 = afastando, +90° = para a
+  direita; taxa de giro > 0 = virando à direita. Sem `ego_motion` tudo é
+  relativo à câmera (o giro do carro próprio vira movimento lateral dos
+  objetos): use `cv` para todas as classes; `ctrv` sem ego gera aviso. O
+  CTRV aquece com CV (`warmup_s`) porque com `v ≈ 0` não observa o lateral.
+  Com ego-motion o filtro roda no mundo (REP-103) e as saídas voltam à
+  câmera do quadro atual. Padrões do Passo 0: `rel_floor` 0,02 (o ruído do
+  DA3 longe tem cauda pesada) e `nis_gate` 30, não 13,8.
+- Coluna de texto nova no CSV entra em `evaluation/run_data.TEXT_COLUMNS`
+  (a avaliação lê o resto como float) e `tests/run_outputs.py` fixa o
+  número de colunas (61 desde a `task_0009`).
+- O `MetricsSink` relê `Pipeline.describe()` no `close` (o `pipeline` do
+  `metrics.json` é o final): contadores que só fecham no último quadro
+  (`motion.ego_motion.clamped_frames`) entram em `describe()`.
 - No `gpu-host`: sem sudo, `uv` em `~/.local/bin` (fora do PATH), disco quase
   cheio (preferir `/dev/shm` para temporários grandes), e `nvidia-smi` pode
   falhar por driver mismatch — usar `torch.cuda.mem_get_info()`.

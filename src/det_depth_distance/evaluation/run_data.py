@@ -57,6 +57,7 @@ TEXT_COLUMNS: frozenset[str] = frozenset(
         "source_scores",
         "raw_labels",
         "mask_source",
+        "motion_model",
     }
 )
 

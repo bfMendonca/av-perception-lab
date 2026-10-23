@@ -76,12 +76,12 @@ uv sync --extra eval   # laptop, só para --plot (matplotlib); `uv sync` volta a
 ## Comandos de Teste
 
 ```bash
-uv run pytest                      # local: unitários + smoke, sem GPU (pula -m gpu; ~18 s)
-uv run pytest -m smoke             # só o smoke ponta a ponta (tests/smoke/, ~8 s)
+uv run pytest                      # local: unitários + smoke, sem GPU (pula -m gpu; ~21 s)
+uv run pytest -m smoke             # só o smoke ponta a ponta (tests/smoke/, ~10 s)
 uv run pytest -m "not gpu and not smoke"   # ciclo rápido: só os unitários (~10 s; um -m substitui o do addopts)
 # gpu-host: contratos dos adaptadores + regressão + smoke gpu (precisa de --extra infer e pesos)
 ssh gpu-host 'cd ~/dev/det-depth-distance && ~/.local/bin/uv run --extra infer pytest -m gpu -v'
-# gpu-host: todas as pendências de GPU das tasks 0002-0008, em ordem, com logs
+# gpu-host: todas as pendências de GPU das tasks 0002-0009, em ordem, com logs
 utils/gpu_pending.sh list                           # passos (local ou no gpu-host)
 utils/gpu_pending.sh run --dry-run                  # só imprime os comandos
 ssh -t gpu-host 'cd ~/dev/det-depth-distance && utils/gpu_pending.sh run'   # em tmux
@@ -140,7 +140,9 @@ uv run ruff format .
   ABCs, registro, rótulos e mapas de rótulos, geometria de caixas,
   agregação/fusão, concordância, rastreamento, pipeline — sem frameworks),
   `adapters/` (um módulo por framework, registrado com `@register` e listado
-  em `ADAPTER_MODULES`), `io/` (vídeo, fontes, sinks, metadados QuickTime),
+  em `ADAPTER_MODULES`), `motion/` (estimação de movimento 2D por trilha,
+  previsão de trajetória e ego-motion opcional — numpy; modelos e provedores
+  de ego-motion registrados), `io/` (vídeo, fontes, sinks, metadados QuickTime),
   `evaluation/` (avaliação contra referências de campo, sem I/O no núcleo),
   `tools/` (CLIs auxiliares `det-depth-distance-calibrate` e
   `-evaluate`, finas), e módulos de topo `camera.py`, `calibration.py`,
@@ -331,6 +333,7 @@ Commits seguem **Conventional Commits** com assunto em **pt-BR**, no formato:
   | `adapters` | `src/det_depth_distance/adapters/` (invólucros de framework) |
   | `io` | `src/det_depth_distance/io/` (vídeo, fontes, sinks) |
   | `distance` | `src/det_depth_distance/distance.py` (núcleo numpy de distância) e `temporal.py` (suavização temporal por trilha) |
+  | `motion` | `src/det_depth_distance/motion/` (estimação de movimento por trilha, modelos, ego-motion) |
   | `camera` | `src/det_depth_distance/camera.py` (intrínsecos, calibração, correção de distorção) e `calibration.py` (ferramenta de calibração) |
   | `render` | `src/det_depth_distance/render.py` |
   | `cli` | `src/det_depth_distance/cli.py`, `__main__.py`, `__init__.py`, `config.py`, `runtime.py` (composição, configuração, ambiente) e `tools/` (CLIs auxiliares) |

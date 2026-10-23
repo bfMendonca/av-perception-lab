@@ -30,6 +30,7 @@ from det_depth_distance.distance import (
     map_eligibility,
 )
 from det_depth_distance.io.source import FrameSource
+from det_depth_distance.motion import MotionConfig, MotionEstimator, build_motion
 from det_depth_distance.temporal import SmoothingConfig
 
 FRAME = Frame(0, 0.0, np.zeros((100, 100, 3), np.uint8))
@@ -293,6 +294,7 @@ def test_single_detector_concat_without_labels_is_unchanged(scene):
         "mask_erode": 1,
         "exclude_semantic": {},
         "smoothing": None,
+        "motion": None,
     }
     assert (desc["components"]["refiners"], desc["components"]["semantic"]) == ([], [])
     # task_0006: no tracker nor smoothing -> no track ids, no temporal estimates.
@@ -329,6 +331,7 @@ def test_describe_separates_components_and_policy(scene):
         "mask_erode": 1,
         "exclude_semantic": {},
         "smoothing": None,
+        "motion": None,
     }
 
 
@@ -948,3 +951,72 @@ def test_without_tracker_and_smoothing_the_result_is_unchanged(scene):
     assert result.instances.track_id is None and result.temporal is None
     assert list(result.timings_ms) == ["det", "det.det", "aggregate", "depth", "dist"]
     assert result.stats == _expected_stats(result, pipeline, ~result.depth.sky)
+
+
+# task_0009: per-track motion estimation.
+def motion_stage(**cfg) -> MotionEstimator:
+    return build_motion(MotionConfig(**cfg), distance_type="z")
+
+
+def test_motion_needs_a_tracker(scene):
+    log, det = scene
+    with pytest.raises(ConfigError, match=r"^motion: needs tracking"):
+        make_pipeline([det], FakeDepth(log), motion=motion_stage())
+
+
+class SidewaysDetector(FakeDetector):
+    """One car box moving 1 px to the right per call, inside the 10 m object."""
+
+    def _load(self, ctx):
+        super()._load(ctx)
+        self.calls = 0
+
+    def _predict(self, rgb):
+        x0 = 25.0 + self.calls
+        self.calls += 1
+        return dataclasses.replace(
+            self.instances, xyxy=np.array([[x0, 40.0, x0 + 20, 60.0]], np.float32)
+        )
+
+
+def test_motion_follows_a_sideways_track(make_instances):
+    # 1 px per frame at 30 fps, z = 10 m, fx = 50 px: 6 m/s to the right.
+    log = []
+    det = SidewaysDetector(
+        make_instances([[25, 40, 45, 60]], labels=["car"]), log, name="det"
+    )
+    pipeline = make_pipeline(
+        [det],
+        FakeDepth(log, needs_intrinsics=False),
+        tracker=IouTracker(IouTracker.Options()),
+        motion=motion_stage(),
+    )
+    pipeline.setup(Source())
+    results = [pipeline.process(Frame(k, k / 30, FRAME.rgb)) for k in range(30)]
+    last = results[-1]
+    assert list(last.timings_ms)[-1] == "motion"
+    (m,) = last.motion
+    assert m.model == "cv" and m.n_updates == 30
+    assert m.vx == pytest.approx(6.0, abs=0.2) and abs(m.vz) < 0.2
+    assert m.heading_deg == pytest.approx(90.0, abs=3.0)
+    desc = pipeline.describe()["pipeline"]["motion"]
+    assert desc["default"] == "cv" and desc["ego_motion"] is None
+    # A new run (load after close) starts with fresh motion filters.
+    pipeline.close()
+    pipeline.setup(Source())
+    (m,) = pipeline.process(Frame(0, 0.0, FRAME.rgb)).motion
+    assert m.n_updates == 1
+
+
+def test_warns_when_no_detector_emits_a_motion_class(scene, capsys):
+    log, det = scene  # emits car and person
+    stage = motion_stage(classes={"vehicle": "cv", "person": "cv"})
+    make_pipeline(
+        [det],
+        FakeDepth(log, needs_intrinsics=False),
+        tracker=FakeTracker(),
+        motion=stage,
+    ).setup(Source())
+    err = capsys.readouterr().err
+    assert "[warn] motion.classes.vehicle: no detector emits this label" in err
+    assert "motion.classes.person" not in err

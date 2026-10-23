@@ -15,6 +15,12 @@ from det_depth_distance.core import registry
 from det_depth_distance.core.options import ConfigError
 from det_depth_distance.core.pipeline import Pipeline
 from det_depth_distance.distance import DistanceConfig
+from det_depth_distance.motion import MotionConfig, build_motion
+from det_depth_distance.motion.config import (
+    CameraMount,
+    MeasurementConfig,
+    PredictionConfig,
+)
 from det_depth_distance.temporal import SmoothingConfig
 
 REPO = Path(__file__).parents[1]
@@ -46,6 +52,10 @@ def test_defaults(tmp_path):
     # task_0007: no calibration by default (focal_px / estimate as before).
     assert cfg.camera.calibration is None
     assert cfg.render.show_smoothed and cfg.render.show_speed
+    # task_0009: no motion stage by default; its drawing options are inert.
+    assert cfg.motion is None
+    assert cfg.render.show_trajectory and cfg.render.show_motion_speed
+    assert not cfg.render.bev_inset
 
 
 @pytest.mark.parametrize("path", CONFIGS, ids=lambda p: p.name)
@@ -62,6 +72,8 @@ def test_example_configs_build_without_frameworks(path, monkeypatch):
         assert not registry.build("semantic", spec, path=f"semantic[{i}]").is_loaded
     if cfg.tracking is not None:
         assert not registry.build("tracker", cfg.tracking, path="tracking").is_loaded
+    if cfg.motion is not None:
+        build_motion(cfg.motion, distance_type=cfg.distance.distance_type)
     assert cfg.source.video == Path("_testbed/data/IMG_4021.MOV")
 
 
@@ -82,6 +94,8 @@ def test_example_configs_cover_the_planned_runs():
         "rfdetr_da3_track.yaml",
         "rfdetr_da3_calibrated.yaml",
         "yolo_light_da3.yaml",
+        "rfdetr_da3_motion.yaml",
+        "rfdetr_sam2_lanes_motion_da3.yaml",
     }
     multi = load_config(CONFIGS[0].with_name("multi_detector.yaml"))
     assert [d["type"] for d in multi.detectors] == ["rfdetr", "yolo"]
@@ -569,6 +583,85 @@ def test_light_config_is_the_planned_light_stack(monkeypatch):
     assert cfg.exclude_semantic == ("lanes.lane", "scene.sky", "scene.vegetation")
     assert "lane" in TWINLITENET_CLASSES  # load_config only checks the prefix
     assert cfg.render.semantic_overlay == ("lanes", "scene")
+
+
+# task_0009: per-track motion estimation.
+MOTION = REPO / "configs" / "rfdetr_da3_motion.yaml"
+
+
+def test_motion_config_builds_the_motion_pipeline(monkeypatch, capsys):
+    monkeypatch.chdir(REPO)
+    cfg = load_config(MOTION)
+    track = load_config(TRACK)
+    assert (cfg.tracking, cfg.smoothing) == (track.tracking, track.smoothing)
+    assert cfg.detectors[0]["labels"] == "configs/labels/coco_driving.yaml"
+    m = cfg.motion
+    assert dict(m.classes) == {"vehicle": "vehicle", "person": "pedestrian"}
+    # Without ego-motion every class uses constant velocity (no ctrv warning).
+    assert {spec["type"] for spec in m.models.values()} == {"cv"}
+    assert m.ego_motion is None and m.default == "cv"
+    # The YAML spells out the section defaults (models aside).
+    assert (m.measurement, m.prediction, m.camera_mount) == (
+        MeasurementConfig(),
+        PredictionConfig(),
+        CameraMount(),
+    )
+    assert (m.reset_after_s, m.nis_gate) == (
+        MotionConfig().reset_after_s,
+        MotionConfig().nis_gate,
+    )
+    assert cfg.render.bev_inset and cfg.render.layout == "overlay"
+    estimator = build_motion(m, distance_type=cfg.distance.distance_type)
+    assert capsys.readouterr().err == ""
+    pipeline = Pipeline(
+        [registry.build("detector", cfg.detectors[0], path="detectors[0]")],
+        registry.build("depth", cfg.depth, path="depth"),
+        registry.build("aggregator", cfg.aggregation, path="aggregation"),
+        cfg.distance,
+        tracker=registry.build("tracker", cfg.tracking, path="tracking"),
+        motion=estimator,
+    )
+    described = pipeline.describe()["pipeline"]["motion"]
+    assert set(described["models"]) == {"vehicle", "pedestrian", "cv"}
+    assert cfg.to_dict()["motion"]["classes"] == dict(m.classes)
+
+
+def test_motion_overrides(tmp_path):
+    cfg = load_config(write(tmp_path, MINIMAL), ["motion={}"])
+    assert cfg.motion == MotionConfig()
+    cfg = load_config(
+        write(tmp_path, MINIMAL),
+        ["motion.prediction.horizon_s=5", "motion.classes={person: cv}"],
+    )
+    assert cfg.motion.prediction.horizon_s == 5.0
+    assert dict(cfg.motion.classes) == {"person": "cv"}
+    off = load_config(write(tmp_path, {**MINIMAL, "motion": {}}), ["motion=null"])
+    assert off.motion is None
+
+
+@pytest.mark.parametrize(
+    ("overrides", "match"),
+    [
+        (
+            ["motion.classes={car: truck}"],
+            r"^motion: classes\.car: unknown model 'truck'",
+        ),
+        (["motion.default=fast"], r"^motion: default: unknown model 'fast'"),
+        (["motion.models={}"], r"^motion: models: at least one model"),
+        (["motion.nis_gate=0"], r"^motion: reset_after_s and nis_gate must be > 0"),
+        (["motion.prediction.step_s=4"], r"^motion\.prediction: step_s must be in"),
+        (["motion.measurement.pixel_std=0"], r"^motion\.measurement: pixel_std"),
+        (["motion.measurement.reference_point=top"], r"reference_point: 'top' is not"),
+        (["motion.camera_mount.z_m=1"], r"^motion\.camera_mount\.z_m: unknown option"),
+        (["render.bev_inset=true"], r"^render\.bev_inset: needs the motion section"),
+        (["render.trajectory_alpha=2"], r"^render: trajectory_alpha must be in"),
+        (["render.bev_size=0"], r"^render: bev_size must be in"),
+        (["render.bev_range_m=0"], r"^render: bev_range_m and bev_width_m"),
+    ],
+)
+def test_motion_and_render_errors(tmp_path, overrides, match):
+    with pytest.raises(ConfigError, match=match):
+        load_config(write(tmp_path, MINIMAL), overrides)
 
 
 CALIBRATED = REPO / "configs" / "rfdetr_da3_calibrated.yaml"

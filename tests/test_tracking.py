@@ -1,5 +1,7 @@
+import dataclasses
 import json
 import math
+from types import SimpleNamespace
 
 import numpy as np
 import pytest
@@ -339,3 +341,31 @@ def test_track_summary_without_estimates_or_ids(make_instances):
         "min_duration_s": 1.0,
         "per_track": [],
     }
+
+
+def test_track_summary_with_motion(make_instances):
+    # task_0009: with motion=True each summarised track gets a "motion" entry.
+    def motion(speed, nis, restarted=False):
+        return SimpleNamespace(
+            model="vehicle", speed=speed, nis=nis, restarted=restarted
+        )
+
+    summary = TrackSummary(min_duration_s=0.0, motion=True)
+    estimates = [motion(2.0, 1.0), motion(3.0, math.nan), motion(4.0, 3.0, True)]
+    for k, m in enumerate(estimates):
+        result = _result(
+            make_instances, k, [(4, "car", 10.0, None), (5, "person", 9.0, None)]
+        )
+        summary.add(dataclasses.replace(result, motion=(m, None)))
+    first, second = summary.summary()["per_track"]
+    assert first["motion"] == {
+        "model": "vehicle",
+        "speed_mps": {"p5": 2.1, "median": 3.0, "p95": 3.9},
+        "nis_mean": 2.0,
+        "restarts": 1,
+    }
+    assert second["motion"] is None
+    # Without motion=True the entry is absent (the task_0006 schema).
+    plain = TrackSummary(min_duration_s=0.0)
+    plain.add(_result(make_instances, 0, [(4, "car", 10.0, None)]))
+    assert "motion" not in plain.summary()["per_track"][0]

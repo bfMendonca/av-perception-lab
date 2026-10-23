@@ -3,9 +3,10 @@
 Sections are dataclasses built with `from_mapping` (unknown keys are errors,
 reported with their dotted path); domain rules live in each dataclass's
 __post_init__. Component specs (detectors, depth, aggregation, refiners,
-semantic, tracking) are validated by their adapter's Options when built through the
-registry; RunConfig only checks what crosses sections (semantic segmenter
-names, the namespaces of excluded semantic labels, the drawn maps).
+semantic, tracking, motion models and ego-motion) are validated by their
+adapter's Options when built through the registry; RunConfig only checks what
+crosses sections (semantic segmenter names, the namespaces of excluded
+semantic labels, the drawn maps, the BEV inset needing motion).
 Pipeline-policy keys written in the `distance` section
 (PIPELINE_DISTANCE_KEYS: exclude_sky, region, exclude_semantic) are split
 off into RunConfig fields before DistanceConfig is built.
@@ -24,6 +25,7 @@ from det_depth_distance.adapters.depth.da3 import ProcessResMethod
 from det_depth_distance.core.labels import SEMANTIC_NAME_PATTERN, group_semantic_labels
 from det_depth_distance.core.options import ConfigError, from_mapping
 from det_depth_distance.distance import DistanceConfig, RegionPolicy
+from det_depth_distance.motion.config import MotionConfig
 from det_depth_distance.temporal import SmoothingConfig
 
 
@@ -130,10 +132,27 @@ class RenderConfig:
     semantic_overlay: tuple[str, ...] | None = None
     show_smoothed: bool = True  # label shows the smoothed distance (raw stays in CSV)
     show_speed: bool = True  # label shows the relative speed (kalman smoothing)
+    # With motion: the predicted trajectory (polyline fading out with n-sigma
+    # ground ellipses), the motion speed at the end of the label and a top-view inset.
+    show_trajectory: bool = True
+    trajectory_alpha: float = 0.8  # opacity of the first segment, [0, 1]
+    show_motion_speed: bool = True
+    bev_inset: bool = False  # needs motion
+    bev_size: float = 0.35  # inset side, fraction of the frame height, (0, 1]
+    bev_range_m: float = 40.0  # forward range of the inset
+    bev_width_m: float = 20.0  # lateral span of the inset
 
     def __post_init__(self) -> None:
         if self.max_depth <= 0:
             raise ValueError("max_depth must be > 0")
+        if not 0.0 <= self.trajectory_alpha <= 1.0:
+            raise ValueError(
+                f"trajectory_alpha must be in [0, 1], got {self.trajectory_alpha}"
+            )
+        if not 0.0 < self.bev_size <= 1.0:
+            raise ValueError(f"bev_size must be in (0, 1], got {self.bev_size}")
+        if self.bev_range_m <= 0 or self.bev_width_m <= 0:
+            raise ValueError("bev_range_m and bev_width_m must be > 0")
         if not 0.0 <= self.mask_alpha <= 1.0:
             raise ValueError(f"mask_alpha must be in [0, 1], got {self.mask_alpha}")
         if not 0.0 <= self.semantic_alpha <= 1.0:
@@ -194,6 +213,8 @@ class RunConfig:
     tracking: Mapping[str, Any] | None = None
     # Per-track distance smoothing; needs tracking (checked by the Pipeline).
     smoothing: SmoothingConfig | None = None
+    # Per-track motion estimation; needs tracking (checked by the Pipeline).
+    motion: MotionConfig | None = None
     distance: DistanceConfig = field(default_factory=DistanceConfig)
     exclude_sky: bool = True  # from distance.exclude_sky (PIPELINE_DISTANCE_KEYS)
     region: RegionPolicy = "mask"  # from distance.region (PIPELINE_DISTANCE_KEYS)
@@ -235,6 +256,8 @@ class RunConfig:
                 f"render.semantic_overlay: unknown semantic map {unknown[0]!r}; "
                 f"configured: {', '.join(names) or 'none'}"
             )
+        if self.render.bev_inset and self.motion is None:
+            raise ValueError("render.bev_inset: needs the motion section")
 
     def to_dict(self) -> dict[str, Any]:
         """Resolved configuration in YAML layout (for metrics.json["config"])."""

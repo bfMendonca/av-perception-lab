@@ -11,7 +11,8 @@ from det_depth_distance.evaluation.run_data import ESTIMATORS, load_run
 ROWS = [
     {"frame": 3, "t": 0.1, "class_name": "car", "x0": 1, "y0": 2, "x1": 3, "y1": 4,
      "distance_m": 12.5, "median": 12.5, "source": "rfdetr-large", "raw_label": "car",
-     "track_id": 1, "distance_smooth_m": 12.4},
+     "track_id": 1, "distance_smooth_m": 12.4, "motion_model": "vehicle",
+     "motion_speed_mps": 2.5},
     {"frame": 4, "t": 0.1333, "class_name": "person", "x0": 1, "y0": 2, "x1": 3, "y1": 4,
      "median": 30.0, "source": "rfdetr-large", "raw_label": "person", "track_id": 2},
 ]  # fmt: skip
@@ -23,6 +24,9 @@ def test_columns_and_properties(fake_run_dir):
     assert run.columns["frame"].dtype == np.float64
     assert np.isnan(run.columns["distance_m"][1])  # empty cell = n/a
     assert run.columns["class_name"].tolist() == ["car", "person"]
+    # task_0009: the motion model is text, the motion numbers are floats.
+    assert run.columns["motion_model"].tolist() == ["vehicle", ""]
+    assert run.columns["motion_speed_mps"][0] == 2.5
     assert run.video_name == "IMG_4100.MOV" and run.distance_type == "z"
     assert run.depth_kind == "metric_focal" and run.focal_frame_px == 1400.0
     assert run.frame_intrinsics == CameraIntrinsics(1400.0, 1400.0, 960.0, 540.0)

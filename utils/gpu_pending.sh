@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# Run, in dependency order, every pending GPU check of tasks 0002-0007 (and
-# the task_0008 GPU smoke) ON the GPU host, from the repository root, after
+# Run, in dependency order, every pending GPU check of tasks 0002-0007 and
+# 0009 (and the task_0008 GPU smoke) ON the GPU host, from the repository root, after
 # `utils/sync_gpu_host.sh push` on the laptop. Each step logs to
 # _testbed/outputs/gpu_pending_<stamp>/NN-<id>.log and one line of
 # summary.tsv (id, task, PASS|FAIL|SKIP|MANUAL, exit code, seconds); pytest
@@ -60,6 +60,7 @@ STEPS=(
   "17-gpu-refiners|0005.4|test|refiner and segmenter GPU tests"
   "18-refiner-runs|0005.5|run|refiner validations A-E on both videos"
   "19-calibrated|0007a.5|run|calibrated runs (needs the real calibration file)"
+  "20-motion|0009|run|rfdetr_da3_motion on both videos and IMG_4021 at stride 3"
 )
 
 DRY_RUN=0
@@ -371,6 +372,15 @@ step_19_calibrated() {
     ddd --config configs/rfdetr_da3_calibrated.yaml "_testbed/data/$v.MOV" \
       --set camera.calibration.undistort=true --set output.tag=calib_undist
   done
+}
+
+step_20_motion() {
+  local v
+  for v in "${VIDEOS[@]}"; do
+    ddd --config configs/rfdetr_da3_motion.yaml "_testbed/data/$v.MOV" --set output.tag=motion
+  done
+  ddd --config configs/rfdetr_da3_motion.yaml _testbed/data/IMG_4021.MOV \
+    --set source.stride=3 --set output.tag=motion_s3
 }
 
 # Whether step id $1 is selected by $2 (full id or its number).

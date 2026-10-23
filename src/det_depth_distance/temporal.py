@@ -16,7 +16,8 @@ level error (~20 %); it cannot remove depth or focal bias. The raw
 distance is always kept alongside.
 
 Import rule: depends on core.types and distance only; core.pipeline and
-config import SmoothingConfig from here, never the reverse.
+config import SmoothingConfig from here, and motion imports distance_sigma
+and white_accel_cov from here, never the reverse.
 """
 
 import math
@@ -65,11 +66,28 @@ class SmoothingConfig:
                 raise ValueError(f"{name} must be > 0, got {getattr(self, name)}")
 
 
-def measurement_sigma(distance: float, std: float, cfg: SmoothingConfig) -> float:
-    """Measurement std (m) of a distance: max(std_scale * std, rel_floor * distance);
+def distance_sigma(
+    distance: float, std: float, *, std_scale: float, rel_floor: float
+) -> float:
+    """Measurement std (m) of a distance: max(std_scale * std, rel_floor * |distance|);
     a non-finite `std` leaves the relative floor only."""
-    scaled = cfg.std_scale * std if math.isfinite(std) else 0.0
-    return max(scaled, cfg.rel_floor * abs(distance))
+    scaled = std_scale * std if math.isfinite(std) else 0.0
+    return max(scaled, rel_floor * abs(distance))
+
+
+def measurement_sigma(distance: float, std: float, cfg: SmoothingConfig) -> float:
+    """distance_sigma with the smoothing section's std_scale and rel_floor."""
+    return distance_sigma(
+        distance, std, std_scale=cfg.std_scale, rel_floor=cfg.rel_floor
+    )
+
+
+def white_accel_cov(dt: float, accel_var: float) -> np.ndarray:
+    """Process noise (2, 2) of one position/velocity axis under white
+    piecewise-constant acceleration of variance `accel_var` over `dt` seconds."""
+    return accel_var * np.array(
+        [[dt**4 / 4, dt**3 / 2], [dt**3 / 2, dt**2]], dtype=np.float64
+    )
 
 
 class TemporalFilter(ABC):
@@ -115,11 +133,8 @@ class KalmanFilter1D(TemporalFilter):
         else:
             dt = t - self.t
             f = np.array([[1.0, dt], [0.0, 1.0]])
-            q = self.q2 * np.array(
-                [[dt**4 / 4, dt**3 / 2], [dt**3 / 2, dt**2]], dtype=np.float64
-            )
             self.x = f @ self.x
-            self.p = f @ self.p @ f.T + q
+            self.p = f @ self.p @ f.T + white_accel_cov(dt, self.q2)
             if z is not None:
                 r = sigma**2
                 gain = self.p[:, 0] / (self.p[0, 0] + r)

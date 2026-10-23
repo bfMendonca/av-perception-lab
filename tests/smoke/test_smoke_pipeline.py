@@ -4,9 +4,11 @@ Nine cases cover every pair of levels of aggregation x region x refiner x
 semantic exclusion x tracking+smoothing x calibration+undistort
 (`test_cases_cover_every_pair` guards it). Each case checks the exit code,
 the run contract (tests/run_outputs.py) and every distance against the
-analytic value of the scene. `test_all_off_is_task_0002` pins the
-detector-only behaviour: neutral stages leave the task_0001/0002 columns
-(REQUIRED_COLUMNS) byte-identical.
+analytic value of the scene; two of them also run the motion stage
+(task_0009), checked against the scene's analytic velocities.
+`test_all_off_is_task_0002` pins the detector-only behaviour: neutral stages
+leave the task_0001/0002 columns (REQUIRED_COLUMNS) byte-identical.
+`test_ego_motion_csv` runs the motion stage with a straight ego trajectory.
 """
 
 import itertools
@@ -43,6 +45,13 @@ BOX = {
 OBJECT_OF_RAW = {"car": "car", "person": "person", "truck": "truck", "bus": "truck"}
 REL_TOL = 1e-4  # float32 rounding of to_metres (8.000000954 for 8 m)
 EUCLIDEAN_REL_TOL = 1e-3
+# Car A: 8 px per frame at 10 fps and z = 8 m, focal 725/3 px at 320x180.
+CAR_VX_MPS = 8 * 10 * 8.0 / (725 / 3)
+# After 12 frames (1.1 s) the cv filter, started at rest +- 5 m/s, is within
+# ~2 % of the car's speed (undistorted: also the residual of the remapping);
+# the static person and truck keep a few cm/s of filter noise.
+MOTION_SPEED_TOL_MPS = 0.15
+MOTION_STATIC_MPS = 0.1
 
 
 @dataclass(frozen=True, slots=True)
@@ -64,6 +73,7 @@ class SmokeCase:
     save_depth: bool = False
     layout: Literal["overlay", "side-by-side"] = "overlay"
     crop: bool = False  # depth.process_res_method=upper_bound_crop
+    motion: bool = False  # motion stage with defaults (needs smoothing's tracker)
 
     @property
     def fused(self) -> bool:
@@ -104,6 +114,8 @@ class SmokeCase:
         ]
         if self.crop:
             out.append("depth.process_res_method=upper_bound_crop")
+        if self.motion:
+            out += ["motion={}", f"render.bev_inset={str(self.motion).lower()}"]
         return out
 
 
@@ -120,7 +132,18 @@ CASES: tuple[SmokeCase, ...] = (
         True,
         layout="side-by-side",
     ),
-    SmokeCase("c03", "concat", True, "both", None, False, "ema", False, box_shrink=0.0),
+    SmokeCase(
+        "c03",
+        "concat",
+        True,
+        "both",
+        None,
+        False,
+        "ema",
+        False,
+        box_shrink=0.0,
+        motion=True,
+    ),
     SmokeCase("c04", "nms", True, "box", None, True, "median", True, exclude_sky=False),
     SmokeCase(
         "c05", "nms", True, "mask", "all", True, None, False, crop=True, stride=2
@@ -160,6 +183,7 @@ CASES: tuple[SmokeCase, ...] = (
         True,
         save_depth=True,
         layout="side-by-side",
+        motion=True,
     ),
 )
 # The factors every pair of levels of which some case covers.
@@ -317,6 +341,30 @@ def _check_tracks(out: RunOutputs, case: SmokeCase) -> None:
                 assert abs(float(r["rel_speed_mps"])) < 1e-6
 
 
+def _check_motion(out: RunOutputs, case: SmokeCase) -> None:
+    """Motion columns: empty without the stage; with it, every row has a cv
+    estimate and the last frame has the analytic velocities of the scene."""
+    columns = [c for c in out.rows[0] if c.startswith("motion_")]
+    if not case.motion:
+        assert all(r[c] == "" for r in out.rows for c in columns)
+        return
+    assert all(r["motion_model"] == "cv" for r in out.rows)
+    last = max(int(r["frame"]) for r in out.rows)
+    for row in (r for r in out.rows if int(r["frame"]) == last):
+        vx, vz = float(row["motion_vx_mps"]), float(row["motion_vz_mps"])
+        if OBJECT_OF_RAW[row["raw_label"]] == "car":
+            assert vx == pytest.approx(CAR_VX_MPS, abs=MOTION_SPEED_TOL_MPS), row
+            assert abs(vz) < MOTION_STATIC_MPS
+            assert float(row["motion_heading_deg"]) == pytest.approx(90.0, abs=5.0)
+        else:
+            assert float(row["motion_speed_mps"]) < MOTION_STATIC_MPS, row
+            assert row["motion_heading_deg"] == ""  # too slow for a heading
+        assert row["motion_abs_speed_mps"] == "" and row["motion_yaw_rate_dps"] == ""
+    lines = (out.run_dir / "trajectories.jsonl").read_text().splitlines()
+    assert len(lines) == len(out.rows)  # every row has an estimate
+    assert all(t["motion"] is not None for t in out.metrics["tracks"]["per_track"])
+
+
 @pytest.mark.parametrize("case", CASES, ids=lambda c: c.id)
 def test_pipeline_case(case, run_cli, scene_videos, true_calibration):
     video = scene_videos.distorted if case.undistort else scene_videos.pinhole
@@ -328,6 +376,7 @@ def test_pipeline_case(case, run_cli, scene_videos, true_calibration):
     _check_rows(out, case)
     _check_metrics(out, case)
     _check_tracks(out, case)
+    _check_motion(out, case)
 
 
 def _columns(
@@ -357,6 +406,9 @@ def test_all_off_is_task_0002(run_cli, scene_videos, true_calibration):
             "distance_smooth_std_m",
             "rel_speed_mps",
             "rel_speed_std_mps",
+            "motion_model",
+            "motion_x_m",
+            "motion_speed_mps",
         )
         assert all(r[c] == "" for c in empty), r
         assert (r["n_sources"], r["sources"]) == ("1", r["source"])
@@ -367,6 +419,7 @@ def test_all_off_is_task_0002(run_cli, scene_videos, true_calibration):
     components = m["components"]
     assert components["refiners"] == [] and components["semantic"] == []
     assert components["tracker"] is None and m["pipeline"]["smoothing"] is None
+    assert m["pipeline"]["motion"] is None
     assert m["camera"] == {} and m["video"]["transform"] is None
     assert m["frame_intrinsics"] == {
         "fx": 725 / 3,
@@ -375,7 +428,8 @@ def test_all_off_is_task_0002(run_cli, scene_videos, true_calibration):
         "cy": 90.0,
     }
 
-    # Neutral stages: region "both" without masks, a tracker and a smoother.
+    # Neutral stages: region "both" without masks, a tracker, a smoother and
+    # the motion stage.
     neutral = check_run_outputs(
         run_cli(
             scene_videos.pinhole,
@@ -384,6 +438,7 @@ def test_all_off_is_task_0002(run_cli, scene_videos, true_calibration):
                 "distance.region=both",
                 "tracking={type: iou}",
                 "smoothing.filter=kalman",
+                "motion={}",
             ],
             perceived=scene_videos.true_k,
         )
@@ -391,6 +446,45 @@ def test_all_off_is_task_0002(run_cli, scene_videos, true_calibration):
     assert _columns(neutral.rows, REQUIRED_COLUMNS) == _columns(
         off.rows, REQUIRED_COLUMNS
     )
+
+
+def test_ego_motion_csv(run_cli, scene_videos, true_calibration, tmp_path):
+    # The camera drives straight ahead at 5 m/s: objects static in the image
+    # move with it over ground; car A adds its lateral speed. That speed is
+    # along z, where the default distance std (2 % floor, half the box std:
+    # large for the person ring showing the road) makes the filter take more
+    # than the scene's 1.1 s to converge; the scene's depth is exact, so a
+    # 0.2 % floor alone is still conservative.
+    ego = tmp_path / "ego.csv"
+    ego.write_text("t,x,y,yaw\n0,0,0,0\n2,10,0,0\n")
+    (case,) = (c for c in CASES if c.id == "c01_all_off")
+    out = check_run_outputs(
+        run_cli(
+            scene_videos.pinhole,
+            [
+                *case.overrides(true_calibration),
+                "tracking={type: iou}",
+                f"motion={{ego_motion: {{type: csv, path: {ego}}}}}",
+                "motion.measurement={rel_floor: 0.002, std_scale: 0.0}",
+            ],
+            perceived=scene_videos.true_k,
+        )
+    )
+    last = max(int(r["frame"]) for r in out.rows)
+    for row in (r for r in out.rows if int(r["frame"]) == last):
+        abs_speed = float(row["motion_abs_speed_mps"])
+        if OBJECT_OF_RAW[row["raw_label"]] == "car":
+            assert abs_speed == pytest.approx(
+                np.hypot(5.0, CAR_VX_MPS), abs=MOTION_SPEED_TOL_MPS
+            )
+            assert float(row["motion_vx_mps"]) == pytest.approx(
+                CAR_VX_MPS, abs=MOTION_SPEED_TOL_MPS
+            )
+        else:
+            assert abs_speed == pytest.approx(5.0, abs=MOTION_SPEED_TOL_MPS)
+            assert float(row["motion_speed_mps"]) < MOTION_STATIC_MPS, row
+    ego_desc = out.metrics["pipeline"]["motion"]["ego_motion"]
+    assert ego_desc["type"] == "csv" and ego_desc["clamped_frames"] == 0
 
 
 def test_python_m_entry_point():
@@ -402,6 +496,14 @@ def test_python_m_entry_point():
         text=True,
     )
     assert out.returncode == 0, out.stderr
-    for family in ("detector:", "depth:", "refiner:", "semantic:", "tracker:"):
+    for family in (
+        "detector:",
+        "depth:",
+        "refiner:",
+        "semantic:",
+        "tracker:",
+        "motion:",
+        "ego_motion:",
+    ):
         assert family in out.stdout
     assert "scene_det" not in out.stdout  # the doubles never leave the test process

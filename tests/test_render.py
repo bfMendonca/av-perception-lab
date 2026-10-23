@@ -1,3 +1,5 @@
+import dataclasses
+
 import cv2
 import numpy as np
 import pytest
@@ -5,12 +7,15 @@ import pytest
 from det_depth_distance.render import (
     CLASS_COLORS,
     PALETTE,
+    BevTrack,
     BoxAnnotation,
+    PathAnnotation,
     Renderer,
     color_for,
     colorize_metric,
     format_label,
     metric_legend,
+    render_bev,
 )
 
 
@@ -34,6 +39,12 @@ def test_format_label_track_id_and_speed():
     assert format_label("car", 0.5, 8.0, rel_speed=0.5) == "car 50% · 8.0 m · +0.5 m/s"
     assert format_label("car", 0.5, 8.0, rel_speed=float("nan")) == "car 50% · 8.0 m"
     assert format_label("car", 0.5, None, track_id=1) == "#1 car 50% · n/a"
+    # task_0009: the motion speed ends the label.
+    assert (
+        format_label("car", 0.5, 8.0, rel_speed=-1.0, motion_speed=2.56)
+        == "car 50% · 8.0 m · -1.0 m/s · v 2.6 m/s"
+    )
+    assert format_label("car", 0.5, 8.0, motion_speed=float("nan")) == "car 50% · 8.0 m"
 
 
 def test_colorize_metric_is_rgb_near_warm():
@@ -216,3 +227,71 @@ def test_semantic_layer_is_under_the_boxes_and_not_on_the_depth_panel():
     assert np.array_equal(with_layer[:, 160:], without[:, 160:])
     # Box outline pixels are drawn over the layer: identical where the box edge is.
     assert np.array_equal(with_layer[21, 15:55], without[21, 15:55])
+
+
+# task_0009: trajectories and the top-view inset.
+PATH = PathAnnotation(
+    np.array([[40.0, 70.0], [60.0, 70.0], [80.0, 70.0]]),
+    np.array([[0.0, 0.0], [3.0, 1.0], [6.0, 2.0]]),
+)
+
+
+def test_path_is_drawn_only_when_present():
+    frame = np.zeros((120, 160, 3), np.uint8)
+    r = Renderer(160, 120, title="t", show_hud=False)
+    plain = r.render(frame, [BOX], [])
+    with_path = r.render(frame, [dataclasses.replace(BOX, path=PATH)], [])
+    assert not np.array_equal(plain, with_path)
+    # Pixels along the path, right of the box, take the box colour.
+    assert with_path[70, 75].any() and not plain[70, 75].any()
+    no_points = dataclasses.replace(
+        BOX, path=PathAnnotation(PATH.points[:1], PATH.radii[:1])
+    )
+    assert np.array_equal(r.render(frame, [no_points], []), plain)
+
+
+def test_trajectory_alpha_range():
+    with pytest.raises(ValueError, match="trajectory_alpha"):
+        Renderer(160, 120, title="t", trajectory_alpha=1.5)
+
+
+def test_render_bev_size_and_colours():
+    track = BevTrack(
+        "car", "#3", (2.0, 10.0), np.array([[3.0, 10.0], [4.0, 10.0]]),
+        np.tile(0.25 * np.eye(2), (2, 1, 1)),
+    )  # fmt: skip
+    font = Renderer(160, 120, title="t").bev_font
+    empty = render_bev(
+        [], size_px=80, range_m=40.0, width_m=20.0, n_sigma=2.0, font=font
+    )
+    image = render_bev(
+        [track], size_px=80, range_m=40.0, width_m=20.0, n_sigma=2.0, font=font
+    )
+    assert image.shape == empty.shape == (80, 80, 3)
+    # The track's position: x = 2 m of 20 -> 0.6 * 80; z = 10 of 40 -> 0.75 * 80.
+    assert tuple(image[60, 48]) == color_for("car")
+    assert not np.array_equal(image, empty)
+
+
+def test_bev_inset_is_pasted_in_the_corner():
+    frame = np.zeros((120, 160, 3), np.uint8)
+    r = Renderer(160, 120, title="t", show_hud=False, bev_size_px=40)
+    out = r.render(frame, [], [], bev=[])
+    m = 2 * r.pad
+    corner = out[120 - 40 - m : 120 - m, 160 - 40 - m : 160 - m]
+    assert corner.any() and not out[:40, :40].any()
+    # Without the inset, bev is ignored.
+    off = Renderer(160, 120, title="t", show_hud=False)
+    assert not off.render(frame, [], [], bev=[]).any()
+
+
+@pytest.mark.parametrize(("w", "h", "size"), [(160, 120, 120), (90, 160, 128)])
+def test_bev_inset_larger_than_the_frame_is_clamped(w, h, size):
+    # bev_size is a fraction of the height: 1.0, or a portrait frame, would
+    # not fit beside the margin; the inset shrinks instead of failing.
+    r = Renderer(w, h, title="t", show_hud=False, bev_size_px=size)
+    m = 2 * r.pad
+    assert r.bev_size_px == min(w, h) - m
+    out = r.render(np.zeros((h, w, 3), np.uint8), [], [], bev=[])
+    assert out.shape == (h, w, 3)
+    assert out[h - m - 1, w - m - 1].any() and not out[:m, :m].any()

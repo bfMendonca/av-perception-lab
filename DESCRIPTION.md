@@ -65,12 +65,12 @@ still pending.
 det-depth-distance/
 ├── pyproject.toml           # uv manifest; "infer" extra holds the GPU stack, "eval" extra matplotlib; 3 console scripts; pytest "gpu" marker
 ├── uv.lock
-├── configs/                 # example run YAMLs: rfdetr_da3, yolo_o365_da3, multi_detector(_fused), *_seg_da3, rfdetr_sam2_da3, yolo_o365_sam2_da3, rfdetr_semantic_da3, rfdetr_lanes_scene_da3, rfdetr_da3_track, rfdetr_da3_calibrated, yolo_light_da3
+├── configs/                 # example run YAMLs: rfdetr_da3, yolo_o365_da3, multi_detector(_fused), *_seg_da3, rfdetr_sam2_da3, yolo_o365_sam2_da3, rfdetr_semantic_da3, rfdetr_lanes_scene_da3, rfdetr_da3_track, rfdetr_da3_calibrated, yolo_light_da3, rfdetr_da3_motion, rfdetr_sam2_lanes_motion_da3
 │   ├── labels/              # versioned label maps: coco_driving, objects365_driving
 │   └── references/          # example_references.yaml (fictitious field-reference template)
 ├── src/det_depth_distance/
 │   ├── core/                # contracts + orchestration, no ML framework imports
-│   │   ├── types.py         # Frame, Instances, DepthResult, FrameResult, RefinedMasks, SemanticMap, TrackEstimate, MapGeometry, CameraIntrinsics, ContractError
+│   │   ├── types.py         # Frame, Instances, DepthResult, FrameResult, RefinedMasks, SemanticMap, TrackEstimate, Trajectory, MotionEstimate, MapGeometry, CameraIntrinsics, ContractError
 │   │   ├── options.py       # ConfigError, from_mapping (typed YAML -> dataclass, dotted error paths)
 │   │   ├── components.py    # LoadContext, Component, DetectorOptions, Detector, DepthEstimator, RefinerOptions, MaskRefiner, SemanticSegmenter, TrackerOptions, Tracker (ABCs)
 │   │   ├── registry.py      # @register, build, available, load_adapters (ADAPTER_MODULES)
@@ -79,13 +79,14 @@ det-depth-distance/
 │   │   ├── aggregate.py     # Aggregator (bind_sources hook), Concat, FusionOptions, FusionAggregator, Nms, Wbf
 │   │   ├── agreement.py     # frame_agreement, AgreementStats (cross-detector agreement)
 │   │   ├── tracking.py      # IouTracker (registered "iou"), association_keys, TrackSummary (metrics.json "tracks")
-│   │   └── pipeline.py      # Pipeline: detectors -> agreement -> aggregation -> refiners -> tracker -> depth -> semantic -> eligibility -> distance -> smoothing, timings
+│   │   └── pipeline.py      # Pipeline: detectors -> agreement -> aggregation -> refiners -> tracker -> depth -> semantic -> eligibility -> distance -> smoothing -> motion, timings
 │   ├── adapters/detectors/  # rfdetr.py (RFDETRDetector), ultralytics_yolo.py (YoloDetector)
 │   ├── adapters/depth/      # da3.py (DA3Depth + geometry/focal/unit helpers)
 │   ├── adapters/refiners/   # box_prompt.py (BoxPromptRefiner, numpy), hf_sam.py (HFSamRefiner + sam2/edgetam/sam_hq/sam/sam3_tracker), ultralytics_sam.py
 │   ├── adapters/semantic/   # segformer.py (SegformerSegmenter), twinlitenet.py (TwinLiteNetSegmenter)
 │   ├── adapters/_hf_hub.py  # offline from_pretrained + exact download command
 │   ├── adapters/_ultralytics_env.py  # YOLO_OFFLINE / YOLO_AUTOINSTALL / YOLO_CONFIG_DIR policy (YOLO and SAM)
+│   ├── motion/              # pure numpy, per-track 2D motion: config.py (MotionConfig, MeasurementConfig, PredictionConfig, CameraMount), measurement.py (box -> (x, z) + covariance, project_points), models.py (MotionModel/MotionFilter, registered "cv" and "ctrv" EKF), ego.py (EgoMotionProvider, registered "csv", PlanarTransform), estimator.py (MotionEstimator, build_motion)
 │   ├── io/                  # video.py (ffmpeg pipes), source.py (FrameSource, FrameTransform, VideoSource), sinks.py (CSV/video/npz/metrics), quicktime.py (stdlib MOV metadata reader: moov/meta + trak/udta metas)
 │   ├── camera.py            # IntrinsicsProvider: FixedIntrinsics, EstimatedIntrinsics, CalibratedIntrinsics; Calibration, load/save_calibration, Undistorter, check_camera_metadata, CameraSetup, build_camera
 │   ├── calibration.py       # TargetSpec, CalibrationTarget (ChessboardTarget, CharucoTarget), detect_views, select_views, coverage, calibrate_views, focal_px_from_35mm
@@ -93,8 +94,8 @@ det-depth-distance/
 │   ├── tools/               # calibrate.py (det-depth-distance-calibrate), evaluate.py (det-depth-distance-evaluate)
 │   ├── config.py            # RunConfig + sections, load_config, apply_overrides (--set)
 │   ├── distance.py          # pure numpy: box -> map pixels -> robust stats -> distance
-│   ├── temporal.py          # pure numpy: SmoothingConfig, KalmanFilter1D / EmaFilter / MedianFilter (FILTERS), TrackSmoother
-│   ├── render.py            # PIL boxes/labels/HUD (colour by class or source), depth panel + legend
+│   ├── temporal.py          # pure numpy: SmoothingConfig, distance_sigma, white_accel_cov, KalmanFilter1D / EmaFilter / MedianFilter (FILTERS), TrackSmoother
+│   ├── render.py            # PIL boxes/labels/HUD (colour by class or source), predicted trajectories, top-view (BEV) inset, depth panel + legend
 │   ├── runtime.py           # DeviceMonitor (torch, lazy), package versions, git commit
 │   ├── cli.py               # --config/--set/--list-models; composition root
 │   └── __main__.py          # python -m det_depth_distance
@@ -116,15 +117,18 @@ dataclass (`core/types.py`), never a framework object:
 - `RefinedMasks`: masks (K,H,W) bool + score (K,) float32, the output of `MaskRefiner._refine` for its K targets.
 - `SemanticMap`: labels (H,W) int32 indexing `class_names`; `fractions()` per class.
 - `TrackEstimate`: smoothed state of one track at one frame: distance (m), distance_std, rel_speed (m/s, d(distance)/dt, negative = approaching), rel_speed_std (the three NaN for ema/median), n_updates.
-- `FrameResult`: frame, instances, per-instance `BoxDepthStats`, depth, timings, optional `temporal` (with smoothing: one `TrackEstimate | None` per instance), `semantic` (segmenter name -> `SemanticMap`, config order; `{}` without segmenters; maps are never merged), optional `box_stats` (only with region "both": box statistics where `stats` came from the mask, None elsewhere), optional `FrameAgreement` (per detector `instances`/`duplicates` after in-detector NMS, and one `PairAgreement(a, b, matched, only_a, only_b, iou_sum)` per detector pair).
+- `Trajectory`: predicted positions of one track after the frame time — `t` (K,) s, `xz` (K, 2) m and `cov` (K, 2, 2) in the current camera frame, plus the reference point's height `y`.
+- `MotionEstimate`: 2D motion state of one track at one frame on the camera plane (x right, z forward): model name, position and stds, velocity `vx`/`vz` (d/dt of the camera-frame position), speed and std, heading (deg; 0 = moving away, +90 = right; NaN below the model's min speed; with ego-motion the heading and yaw rate are those of the motion over ground, in the current camera axes, not `atan2(vx, vz)`) and std, yaw rate (deg/s, + = turning right; NaN without a turn-rate state), `abs_speed` over ground (NaN without ego-motion), `nis` (NaN without a measurement), `n_updates`, `restarted`, `trajectory`.
+- `FrameResult`: frame, instances, per-instance `BoxDepthStats`, depth, timings, optional `temporal` (with smoothing: one `TrackEstimate | None` per instance), optional `motion` (with the motion stage: one `MotionEstimate | None` per instance), `semantic` (segmenter name -> `SemanticMap`, config order; `{}` without segmenters; maps are never merged), optional `box_stats` (only with region "both": box statistics where `stats` came from the mask, None elsewhere), optional `FrameAgreement` (per detector `instances`/`duplicates` after in-detector NMS, and one `PairAgreement(a, b, matched, only_a, only_b, iou_sum)` per detector pair).
 - `LabelMap` (core/labels.py): name, raw -> canonical `mapping`, `unmapped` policy (`keep`/`drop`), optional declared `vocabulary`; loaded from `configs/labels/*.yaml`, checked against the model's class names and identified vocabulary at load.
 - `DistanceConfig` / `BoxDepthStats` (distance.py): parameters (incl. `mask_erode`, depth-map pixels) and per-region statistics; `mask_px` / `mask_erode` are set (and `used_mask` true) when the region was the instance mask. `Instances.masks` are filled by the Seg adapters: RF-DETR Seg (`rfdetr` `variant: seg-*`, COCO) and YOLO26-seg (`*-seg.pt`, COCO; `*-objv1-seg.pt`, expected Objects365 — not yet verified on the GPU host).
+- `MotionConfig` (motion/config.py): `models` (name -> spec `{type, **options}`, registry family "motion"), `classes` (canonical label -> model name), `default` (model or null), `reset_after_s`, `nis_gate`, `measurement` (`reference_point`, `std_scale`, `rel_floor`, `pixel_std`), `prediction` (`horizon_s`, `step_s`, `n_sigma`), `ego_motion` (spec, registry family "ego_motion", or null = camera frame), `camera_mount` (`x_m`, `y_m`, `yaw_deg`).
 - `SmoothingConfig` (temporal.py): `filter` (kalman/ema/median), `accel_std`, `std_scale`, `rel_floor`, `init_speed_std`, `tau_s`, `window_s`, `reset_after_s` (times in seconds).
 - `Calibration` (camera.py): one recording mode's calibration: `image_size` (W, H), K as `CameraIntrinsics` in the continuous convention (OpenCV cx/cy + 0.5, converted only in `from_opencv`/`camera_matrix`), OpenCV-order `dist`, `rms_px`, `std`, recording `camera` metadata, `meta`; `scaled_to` (same aspect ratio only). Stored as an OpenCV `FileStorage` YAML/JSON (`image_width`, `image_height`, `camera_matrix`, `distortion_coefficients` + optional keys); `CalibrationConfig` (config.py) is the `camera.calibration` section (`path`, `undistort`, `alpha`, `check_lens`, `cross_check`).
 - `ReferenceSet` (evaluation/references.py): field references of one video (YAML via `from_mapping`): `video`, `instruments` (uncertainty_m, uncertainty_rel), `references` (`Reference`: id, frame or time range, `Selector` box/point/track_id + label, constant `distance_m` or `series`, instrument or uncertainty, `quantity` range/z, target, notes). `RunData` (run_data.py): a run's CSV columns as numpy arrays + metrics.json.
-- `RunConfig` (config.py): the YAML run (source, detectors, depth, camera, aggregation, refiners, semantic, tracking (flat tracker spec or null), smoothing (`SmoothingConfig` or null), agreement, distance incl. `exclude_semantic` "<segmenter>.<class>" labels, render incl. `semantic_alpha`/`semantic_overlay`/`show_smoothed`/`show_speed`, output, device).
+- `RunConfig` (config.py): the YAML run (source, detectors, depth, camera, aggregation, refiners, semantic, tracking (flat tracker spec or null), smoothing (`SmoothingConfig` or null), motion (`MotionConfig` or null), agreement, distance incl. `exclude_semantic` "<segmenter>.<class>" labels, render incl. `semantic_alpha`/`semantic_overlay`/`show_smoothed`/`show_speed` and, for motion, `show_trajectory`/`trajectory_alpha`/`show_motion_speed`/`bev_inset`/`bev_size`/`bev_range_m`/`bev_width_m`, output, device).
 
-Per run: `video.mp4`, `detections.csv` (one row per box; task_0001 columns then `source`, `raw_label`, `n_sources`, `sources`, `source_scores`, `raw_labels` — the last three `|`-joined, best member per detector — then `used_mask`, `mask_px`, `mask_erode`, `box_distance_m`, then `mask_source`, `mask_score`, then `track_id`, `distance_smooth_m`, `distance_smooth_std_m`, `rel_speed_mps`, `rel_speed_std_mps` (empty without tracking/smoothing; `distance_m` stays raw); no semantic column), `metrics.json` (`components` incl. `refiners`/`semantic`/`tracker`, `pipeline` incl. `agreement`, `region`, `mask_erode`, `exclude_semantic` and `smoothing` policy, focal, timings incl. `det.<name>`, `agree`, `aggregate`, `refine(.<name>)`, `track`, `semantic(.<name>)`, `smooth`, `tracks` (with a tracker: per-track summary — label mode and changes, sources, span, coverage, gaps, distance range, raw/smoothed jitter, relative-speed percentiles; tracks shorter than 1 s only counted), `detections_by_source`, `detections_by_n_sources`, `distance_regions`, `frame_intrinsics` (frame K given to the depth model or null), `camera` (`{}` without calibration; calibration, rescaling, lens check, undistortion, focal cross-check), `video.transform`, `mask_sources`, `refined` (targets/filled per refiner), `semantic` (with segmenters: per-map class fractions and excluded fraction, plus the excluded fraction of the union), `region_comparison` (mask minus box, with region "both"), `agreement` summary with >= 2 detectors, versions incl. `transformers`/`timm`, resolved `config`), optional `depth.npz` (plus `semantic_labels_<name>` on the depth-map grid and `semantic_classes_<name>` per segmenter).
+Per run: `video.mp4`, `detections.csv` (one row per box; task_0001 columns then `source`, `raw_label`, `n_sources`, `sources`, `source_scores`, `raw_labels` — the last three `|`-joined, best member per detector — then `used_mask`, `mask_px`, `mask_erode`, `box_distance_m`, then `mask_source`, `mask_score`, then `track_id`, `distance_smooth_m`, `distance_smooth_std_m`, `rel_speed_mps`, `rel_speed_std_mps` (empty without tracking/smoothing; `distance_m` stays raw), then the 16 `motion_*` columns (`MOTION_FIELDS`: model, x/z and stds, vx/vz, speed and std, heading and std, yaw rate and std, abs speed, NIS, n_updates; empty without motion); no semantic column; 61 columns), `trajectories.jsonl` (with motion: one JSON line per frame x instance with its estimate and predicted trajectory), `metrics.json` (`components` incl. `refiners`/`semantic`/`tracker`, `pipeline` incl. `agreement`, `region`, `mask_erode`, `exclude_semantic`, `smoothing` and `motion` policy (motion models, classes, measurement, prediction, ego-motion with `clamped_frames`), focal, timings incl. `det.<name>`, `agree`, `aggregate`, `refine(.<name>)`, `track`, `semantic(.<name>)`, `smooth`, `motion`, `tracks` (with a tracker: per-track summary — label mode and changes, sources, span, coverage, gaps, distance range, raw/smoothed jitter, relative-speed percentiles and, with motion, a per-track `motion` entry: model, speed percentiles, mean NIS, restarts; tracks shorter than 1 s only counted), `detections_by_source`, `detections_by_n_sources`, `distance_regions`, `frame_intrinsics` (frame K given to the depth model or null), `camera` (`{}` without calibration; calibration, rescaling, lens check, undistortion, focal cross-check), `video.transform`, `mask_sources`, `refined` (targets/filled per refiner), `semantic` (with segmenters: per-map class fractions and excluded fraction, plus the excluded fraction of the union), `region_comparison` (mask minus box, with region "both"), `agreement` summary with >= 2 detectors, versions incl. `transformers`/`timm`, resolved `config`), optional `depth.npz` (plus `semantic_labels_<name>` on the depth-map grid and `semantic_classes_<name>` per segmenter).
 
 ## 5. Architecture Patterns
 
@@ -174,6 +178,30 @@ Per run: `video.mp4`, `detections.csv` (one row per box; task_0001 columns then 
   std `max(std_scale * box std, rel_floor * distance)`; state dropped after
   `reset_after_s` without a measurement. Smoothing needs tracking
   (`ConfigError` otherwise).
+- Motion (task_0009, `motion/`, pure numpy): optional stage after
+  smoothing; needs tracking (`ConfigError` otherwise). `build_motion` (the
+  CLI's composition root) builds every named model through the registry
+  family "motion" (`MotionModel`, stateless, like `Aggregator`; `cv`
+  constant velocity, `ctrv` EKF with a cv warm-up of `warmup_s` because at
+  v ~ 0 the CTRV Jacobian cannot see lateral motion) and the optional
+  ego-motion provider (family "ego_motion", `csv`: t, x, y, yaw on the video
+  clock, linear interpolation, edge pose with zero velocity and one warning
+  outside the data). `MotionEstimator` keeps one `MotionFilter` per track id
+  (the `TrackSmoother` idiom): model fixed at the track's birth from its
+  canonical label (`classes`, then `default`), the box reference point
+  back-projected with the depth-map intrinsics into a position measurement
+  (x, z) with covariance (`distance_sigma` + pixel std), Joseph-form update,
+  restart when the NIS exceeds `nis_gate`, prediction-only frames without a
+  distance, state dropped after `reset_after_s`. With ego-motion the filter
+  runs in the world (REP-103) and the outputs go back to the current camera
+  frame (relative velocity = d/dt of the camera-frame position, abs speed
+  over ground). `rollout` predicts the trajectory on a copy of the filter.
+  Without ego-motion everything is relative to the camera (own turns read as
+  object motion), so the example uses cv for every class and a ctrv model
+  without ego-motion warns. Sinks draw the trajectory (projected with the
+  depth-map intrinsics and `MapGeometry`), an optional BEV inset, and write
+  `trajectories.jsonl`; `MetricsSink` re-reads `Pipeline.describe()` at close
+  for counters only final after the last frame.
 - Mask refiners (D9 hierarchy): `MaskRefiner` (core, the only contract the
   pipeline knows: target selection `missing`/`all`, merge where an empty
   refined mask never replaces one, `mask_source`/`mask_score`) ->
@@ -295,6 +323,11 @@ README; the task_0001 flags were replaced without aliases.
   negative = approaching). The DA3 noise is correlated in time, so
   smoothing removes jitter much more than level error, and speed beyond
   ~30 m is unreliable.
+- **Motion / trajectory**: an object's position on the camera plane
+  (lateral x, forward z) from its box's ground-contact point, its velocity,
+  heading and turn rate, and its predicted positions over the next seconds
+  with their uncertainty, under a motion model chosen by class. Without
+  ego-motion it is motion relative to the (possibly turning) camera.
 
 ## 9. Security Model
 
@@ -337,7 +370,7 @@ implementation. See `AGENTS.md` for the mandatory rules.
 ## 13. What This Project Does NOT Have
 
 - No TensorRT/ONNX path, no batching, no real-time optimisation.
-- No fusion of masks across models (a fused instance keeps one member's mask) and no fusion of semantic maps (each segmenter keeps its own map); no FastSAM (not one-mask-per-box), no native `sam3` package (the SAM 3 tracker is used through `transformers`); no semantic CSV columns or video colour legend; no appearance-based (ReID) or ultralytics tracker, no 3D association and no per-track colour in the video. Instance masks are never saved to disk (semantic labels are, on the depth-map grid, with `save_depth`).
+- No fusion of masks across models (a fused instance keeps one member's mask) and no fusion of semantic maps (each segmenter keeps its own map); no FastSAM (not one-mask-per-box), no native `sam3` package (the SAM 3 tracker is used through `transformers`); no semantic CSV columns or video colour legend; no appearance-based (ReID) or ultralytics tracker, no 3D association (the tracker still matches by image IoU) and no per-track colour in the video. Motion: no IMM (one model per track), no learned trajectory predictor, no map/lane constraints and no visual ego-motion (only a CSV provider). Instance masks are never saved to disk (semantic labels are, on the depth-map grid, with `save_depth`).
 - No score calibration across detectors (fusion weights are fixed per detector); no new dependency for fusion (no `ensemble-boxes`, `torchvision.ops` or `scipy` in the core).
 - No interactive reference annotation tool (reference YAML is edited by hand), no per-frame intrinsics for stabilisation, no focal from the 35 mm equivalent, no `opencv-contrib`; no `pandas` in evaluation.
 - No CI, no Docker, no git remote, no web UI or API.

@@ -4,6 +4,92 @@ Todas as mudancas relevantes do det-depth-distance serao documentadas neste arqu
 
 ---
 
+## [2026-10-23] Movimento por trilha e previsao de trajetoria
+
+Ate aqui o pipeline media so a distancia de cada objeto e, com a suavizacao,
+a taxa de variacao dessa distancia. Um veiculo cruzando a frente a distancia
+constante aparecia como parado, todas as classes usavam o mesmo filtro e
+nada previa onde o objeto estaria nos proximos segundos. A task_0009 cria o
+estagio opcional `motion`: para cada trilha ele mede a posicao do objeto no
+plano (lateral e a frente, em metros), estima velocidade, rumo e taxa de
+giro com as incertezas, escolhe o modelo de movimento pela classe e preve a
+trajetoria. A trajetoria aparece no video, num painel de vista superior e
+num arquivo novo. Sem a secao `motion` as saidas sao as de antes.
+
+### Novo: Estagio `motion` (pacote `motion/`, numpy puro)
+
+- **Medida no plano:** o ponto de referencia da caixa (centro da base) e
+  retroprojetado com as intrinsecas do mapa de profundidade e a distancia da
+  instancia; a covariancia combina a incerteza da distancia e a do pixel.
+- **Modelos por classe:** `cv` (velocidade constante) e `ctrv` (velocidade e
+  taxa de giro constantes, EKF com aquecimento em `cv`), registrados e
+  listados em `--list-models`; `classes` mapeia o rotulo canonico
+  (`vehicle`, `person`, ...) para um modelo nomeado.
+- **Previsao:** um ponto a cada `step_s` ate `horizon_s`, cada um com
+  covariancia.
+- **Reinicio:** troca de ID ou salto (NIS acima de `nis_gate`) reinicia o
+  filtro; trilha sem medida por `reset_after_s` recomeca.
+- **Ego-motion opcional:** provedor `csv` (`t,x,y,yaw` no relogio do
+  video); com ele o filtro roda no mundo e a velocidade sobre o chao vai
+  para `motion_abs_speed_mps`. Fora do intervalo do arquivo vale a pose da
+  borda, com um aviso e a contagem `clamped_frames`.
+
+### Novo: Saidas
+
+- **`detections.csv`:** 16 colunas `motion_*` no fim (61 no total), vazias
+  sem o estagio.
+- **`trajectories.jsonl`:** uma linha por quadro e instancia com a
+  trajetoria prevista e as covariancias.
+- **`metrics.json`:** `pipeline.motion` e, por trilha, `motion` (modelo,
+  percentis de velocidade, NIS medio, reinicios); tempo `motion`.
+- **Video:** `v <m/s>` no rotulo, trajetoria a partir da base da caixa com
+  opacidade decrescente e elipses de incerteza no chao, painel BEV opcional
+  (`render.bev_inset`) e linha de HUD com os modelos e o horizonte.
+
+### Novo: Exemplo `configs/rfdetr_da3_motion.yaml`
+
+- Rastreamento e suavizacao de `rfdetr_da3_track.yaml`, mapa de rotulos
+  COCO para obter `vehicle`, `cv` para todas as classes (sem ego-motion o
+  giro do carro proprio aparece como movimento dos objetos), layout
+  `overlay` com painel BEV.
+
+### Novo: Exemplo `configs/rfdetr_sam2_lanes_motion_da3.yaml`
+
+- Stack completa no servidor GPU: RF-DETR + mascaras SAM 2.1 + DA3 +
+  TwinLiteNet+ `lanes` (faixas pintadas fora da distancia) + rastreamento,
+  Kalman, `motion` e painel BEV. Primeira execucao nos videos da Raspberry
+  Pi (`RPI_0000`/`RPI_0001`, 1296x972 a 25 fps).
+
+### Como usar
+
+1. Ligar com os padroes: `--set motion={}` (exige `tracking`).
+2. Ou rodar o exemplo: `uv run --extra infer python -m det_depth_distance --config configs/rfdetr_da3_motion.yaml`.
+3. Com ego-motion: `--set 'motion.ego_motion={type: csv, path: ego.csv}'`.
+
+### Detalhes tecnicos
+
+- `rel_floor` 2 % e `nis_gate` 30 foram medidos nas trilhas da task_0001
+  (Passo 0): NIS medio ~2 no video em linha reta e 3 a 6 vezes menos
+  reinicios do que com o gate de qui-quadrado 99,9 % (13,8).
+- `temporal.py` ganhou `distance_sigma` e `white_accel_cov`, extraidos sem
+  mudanca de comportamento; o `MetricsSink` rele `Pipeline.describe()` no
+  fechamento para registrar contadores finais.
+
+### Observacoes importantes
+
+- Sem ego-motion tudo e relativo a camera; a estimacao do movimento proprio
+  pelo video fica para uma task futura (task_0011).
+- Validado no servidor GPU (`utils/gpu_pending.sh` passo `20-motion` e
+  smoke `gpu`); a conferencia visual dos videos segue pendente.
+
+### O que nao muda
+
+- `smoothing`, o rastreador IoU e as colunas e o rotulo da suavizacao.
+- Execucoes sem `motion`: colunas `motion_*` vazias, sem
+  `trajectories.jsonl` e sem `motion` no resumo por trilha.
+
+---
+
 ## [2026-10-15] Configuracao leve da stack completa para GPU de 4 GB
 
 Os exemplos de `configs/` usam modelos grandes, pensados para o servidor

@@ -3,18 +3,19 @@
 Stages: detectors -> (agreement) -> aggregation -> mask refiners ->
 tracker -> depth -> semantic segmenters (in config order) -> pixel
 eligibility (not sky, not in the union of excluded "<segmenter>.<class>"
-labels) -> per-instance distance -> per-track temporal smoothing.
+labels) -> per-instance distance -> per-track temporal smoothing ->
+per-track motion estimation.
 
 Depends only on the abstract components; timings are measured here around
 each stage so components stay stateless per call. `describe()` keeps
 component descriptions ("components") apart from pipeline policy
 ("pipeline"). Distance uses each instance's mask or box according to the
 `region` policy (see distance.instance_depth_stats). Without refiners,
-semantic segmenters, tracker and smoothing every output is the one of the
-detector-only pipeline.
+semantic segmenters, tracker, smoothing and motion every output is the one of
+the detector-only pipeline.
 
 Import direction: this module may import configuration dataclasses from
-`config`, `temporal`, `camera` and `io.source`; those modules never import
+`config`, `temporal`, `motion`, `camera` and `io.source`; those modules never import
 `core.pipeline`. `core.types` and `core.components` stay contract-only.
 """
 
@@ -60,6 +61,7 @@ from det_depth_distance.distance import (
     map_eligibility,
 )
 from det_depth_distance.io.source import FrameSource
+from det_depth_distance.motion import MotionEstimator
 from det_depth_distance.temporal import SmoothingConfig, TrackSmoother
 
 T = TypeVar("T")
@@ -86,8 +88,9 @@ def _timed(fn: Callable[..., T], *args: Any) -> tuple[T, float]:
 
 class Pipeline:
     """Runs N detectors, the aggregator, the mask refiners, the tracker, the depth
-    model, the semantic segmenters, the distance statistics and the temporal
-    smoothing on each frame; orchestrates, never decodes or writes."""
+    model, the semantic segmenters, the distance statistics, the temporal
+    smoothing and the motion estimation on each frame; orchestrates, never
+    decodes or writes."""
 
     def __init__(
         self,
@@ -106,23 +109,27 @@ class Pipeline:
         exclude_semantic: str | Sequence[str] = (),
         tracker: Tracker | None = None,
         smoothing: SmoothingConfig | None = None,
+        motion: MotionEstimator | None = None,
     ) -> None:
         """Raises ConfigError for no detectors, duplicate component names, an
         invalid semantic segmenter name, an unknown `region` policy, aggregator
         settings naming unknown detectors (`bind_sources`), an
         `exclude_semantic` label whose prefix names no semantic segmenter, or
-        `smoothing` without a `tracker` (it filters per track id).
+        `smoothing` or `motion` without a `tracker` (both filter per track id).
 
         `agreement` takes effect only when enabled and with two or more detectors.
         `refiners` run in order (each sees the previous one's masks);
         `exclude_semantic` holds "<segmenter>.<class>" labels, as a sequence or a
         comma-separated string (classes are checked by `load`). The `tracker`
-        runs after the refiners; `smoothing` filters each track's distance.
+        runs after the refiners; `smoothing` filters each track's distance and
+        `motion` (built by the CLI, motion.build_motion) its position on the plane.
         """
         if not detectors:
             raise ConfigError("detectors: at least one detector is required")
         if smoothing is not None and tracker is None:
             raise ConfigError("smoothing: needs tracking (set the tracking section)")
+        if motion is not None and tracker is None:
+            raise ConfigError("motion: needs tracking (set the tracking section)")
         bad = [
             s.name for s in semantic if not re.fullmatch(SEMANTIC_NAME_PATTERN, s.name)
         ]
@@ -152,6 +159,7 @@ class Pipeline:
         self.tracker = tracker
         self.smoothing = smoothing
         self._smoother: TrackSmoother | None = None  # created by load()
+        self.motion = motion
         self.aggregator = aggregator
         self.distance = distance
         self.region = region
@@ -191,7 +199,7 @@ class Pipeline:
     def load(self, source: FrameSource, info: SetupInfo) -> None:
         """Load every detector, the depth model, the refiners, the semantic
         segmenters and the tracker (in that order) for `source`'s frame size,
-        start a fresh track smoother, then resolve the excluded semantic
+        start a fresh track smoother and motion estimator, then resolve the excluded semantic
         classes against each segmenter's class names.
 
         Raises:
@@ -201,12 +209,15 @@ class Pipeline:
         for detector in self.detectors:
             detector.load(ctx)
         self._warn_disjoint_labels()
+        self._warn_unknown_motion_classes()
         self.depth.load(ctx)
         for component in (*self.refiners, *self.semantic, *self._trackers):
             component.load(ctx)
         self._smoother = (
             TrackSmoother(self.smoothing) if self.smoothing is not None else None
         )
+        if self.motion is not None:
+            self.motion.reset()
         self._exclude_ids = {}
         for segmenter in self.semantic:
             classes = self._exclude[segmenter.name]
@@ -241,6 +252,20 @@ class Pipeline:
                     file=sys.stderr,
                 )
 
+    def _warn_unknown_motion_classes(self) -> None:
+        # A motion.classes key that no detector emits never selects its model
+        # (e.g. "vehicle" with a COCO detector and no label map).
+        if self.motion is None:
+            return
+        labels = frozenset().union(*(d.output_labels for d in self.detectors))
+        for label in self.motion.cfg.classes:
+            if label not in labels:
+                print(
+                    f"[warn] motion.classes.{label}: no detector emits this label "
+                    "(set label maps (labels) or fix the class name)",
+                    file=sys.stderr,
+                )
+
     def setup(self, source: FrameSource) -> SetupInfo:
         """Resolve camera intrinsics if the depth model needs them, then load all models.
 
@@ -262,7 +287,8 @@ class Pipeline:
         agreement is computed), "aggregate", "refine" (sum) and "refine.<name>"
         (only with refiners), "track" (only with a tracker), "depth", "semantic"
         (sum) and "semantic.<name>" (only with semantic segmenters), "dist"
-        (eligibility included), "smooth" (only with smoothing).
+        (eligibility included), "smooth" (only with smoothing), "motion" (only
+        with motion).
         """
         parts: list[Instances] = []
         det_ms: dict[str, float] = {}
@@ -300,6 +326,11 @@ class Pipeline:
             temporal, timings["smooth"] = _timed(
                 self._smoother.update, frame.t, instances.track_id, stats
             )
+        motion = None
+        if self.motion is not None:
+            motion, timings["motion"] = _timed(
+                self.motion.update, frame.t, instances, stats, depth
+            )
         return FrameResult(
             frame,
             instances,
@@ -310,6 +341,7 @@ class Pipeline:
             box_stats,
             maps,
             temporal=temporal,
+            motion=motion,
         )
 
     def _agreement_of(self, parts: Sequence[Instances]) -> FrameAgreement:
@@ -391,6 +423,7 @@ class Pipeline:
                 "smoothing": (
                     asdict(self.smoothing) if self.smoothing is not None else None
                 ),
+                "motion": self.motion.describe() if self.motion is not None else None,
             },
         }
 

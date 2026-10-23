@@ -1,6 +1,7 @@
 """Annotated-frame rendering: translucent semantic layers, translucent instance
 masks, boxes, label pills, HUD and an optional side-by-side metric depth panel
-with a legend in metres.
+with a legend in metres; with motion, predicted trajectories (polyline with
+fading opacity and n-sigma ground ellipses) and an optional top-view (BEV) inset.
 
 Ported from rf-detr's infer_video.py Renderer and depth-anything-3's
 run_test.py colorize_metric/metric_legend. Everything is RGB; OpenCV
@@ -159,11 +160,13 @@ def format_label(
     *,
     track_id: int | None = None,
     rel_speed: float | None = None,
+    motion_speed: float | None = None,
 ) -> str:
-    """Box label, e.g. "#12 truck 94% · 12.3 m ± 0.4 · -1.2 m/s": optional track
-    id prefix, agreeing detectors (×N) after the score, spread after the
-    distance and relative speed (negative = approaching) at the end, only when
-    finite. Without a distance: "truck 94% · n/a"."""
+    """Box label, e.g. "#12 truck 94% · 12.3 m ± 0.4 · -1.2 m/s · v 2.6 m/s":
+    optional track id prefix, agreeing detectors (×N) after the score, spread
+    after the distance, relative speed (negative = approaching) and the motion
+    stage's speed on the plane ("v") at the end, only when finite. Without a
+    distance: "truck 94% · n/a"."""
     head = f"{class_name} {score:.0%}" + (f" ×{n_sources}" if n_sources > 1 else "")
     if track_id is not None:
         head = f"#{track_id} {head}"
@@ -175,7 +178,94 @@ def format_label(
             text += f" ± {spread:.1f}"
     if rel_speed is not None and math.isfinite(rel_speed):
         text += f" · {rel_speed:+.1f} m/s"
+    if motion_speed is not None and math.isfinite(motion_speed):
+        text += f" · v {motion_speed:.1f} m/s"
     return text
+
+
+@dataclass(frozen=True, slots=True)
+class PathAnnotation:
+    """Predicted trajectory of one box, ready to draw."""
+
+    points: np.ndarray  # (K + 1, 2) frame px; first = the box reference point
+    # (K + 1, 2) frame px, n-sigma half-axes (horizontal, vertical) of each
+    # point's uncertainty on the ground; 0 for the first
+    radii: np.ndarray
+
+
+@dataclass(frozen=True, slots=True)
+class BevTrack:
+    """One track in the top-view inset (camera plane, metres)."""
+
+    key: str  # colour key (same as the box)
+    label: str  # e.g. "#12"
+    xz: tuple[float, float]  # current position
+    path: np.ndarray  # (K, 2) predicted positions
+    cov: np.ndarray  # (K, 2, 2) their covariances
+
+
+def _ellipse_polygon(
+    center: np.ndarray, cov: np.ndarray, n_sigma: float, n: int = 24
+) -> np.ndarray:
+    """(n, 2) points of the n-sigma ellipse of a 2D Gaussian."""
+    values, vectors = np.linalg.eigh(cov)
+    axes = vectors * (n_sigma * np.sqrt(np.clip(values, 0.0, None)))
+    angles = np.linspace(0.0, 2 * np.pi, n, endpoint=False)
+    return center + np.stack([np.cos(angles), np.sin(angles)], axis=1) @ axes.T
+
+
+def render_bev(
+    tracks: Sequence[BevTrack],
+    *,
+    size_px: int,
+    range_m: float,
+    width_m: float,
+    n_sigma: float,
+    font: ImageFont.FreeTypeFont | ImageFont.ImageFont,
+) -> np.ndarray:
+    """Top view of the camera plane: camera at the bottom centre, z up to
+    `range_m`, x over `width_m`, a 5 m grid, each track's position, predicted
+    path and n-sigma ellipses in its box colour. (size_px, size_px, 3) RGB."""
+
+    def to_px(xz: np.ndarray) -> np.ndarray:
+        xz = np.asarray(xz, dtype=np.float64).reshape(-1, 2)
+        return np.stack(
+            [
+                (xz[:, 0] / width_m + 0.5) * size_px,
+                (1.0 - xz[:, 1] / range_m) * size_px,
+            ],
+            axis=1,
+        )
+
+    image = Image.new("RGBA", (size_px, size_px), (16, 18, 24, 255))
+    d = ImageDraw.Draw(image)
+    grid = (70, 75, 90, 255)
+    for z in np.arange(5.0, range_m, 5.0):
+        y = float(to_px([[0.0, z]])[0, 1])
+        d.line([(0, y), (size_px, y)], fill=grid, width=1)
+    half = width_m / 2
+    for x in np.arange(-(half // 5) * 5, half + 1e-9, 5.0):
+        px = float(to_px([[x, 0.0]])[0, 0])
+        d.line([(px, 0), (px, size_px)], fill=grid, width=1)
+    cx, s = size_px / 2, max(4, size_px // 40)
+    d.polygon(
+        [(cx, size_px - 2 * s), (cx - s, size_px), (cx + s, size_px)], fill=(255,) * 4
+    )
+    overlay = Image.new("RGBA", image.size, (0, 0, 0, 0))
+    o = ImageDraw.Draw(overlay)
+    for track in tracks:
+        color = color_for(track.key)
+        for mean, cov in zip(track.path, track.cov, strict=True):
+            ring = to_px(_ellipse_polygon(mean, cov, n_sigma))
+            o.polygon(
+                [tuple(p) for p in ring], outline=color + (110,), fill=color + (25,)
+            )
+        line = to_px(np.vstack([track.xz, track.path]))
+        o.line([tuple(p) for p in line], fill=color + (230,), width=2)
+        (x, y), r = to_px(track.xz)[0], max(3, size_px // 60)
+        o.ellipse([x - r, y - r, x + r, y + r], fill=color + (255,))
+        o.text((x + r + 2, y - r - 2), track.label, font=font, fill=color + (255,))
+    return np.asarray(Image.alpha_composite(image, overlay).convert("RGB"))
 
 
 @dataclass(frozen=True, slots=True)
@@ -192,6 +282,8 @@ class BoxAnnotation:
     color_key: str | None = None
     # (H, W) bool instance mask at frame resolution, tinted with the box colour
     mask: np.ndarray | None = None
+    # predicted trajectory, drawn under the boxes in the box colour
+    path: PathAnnotation | None = None
 
     @property
     def key(self) -> str:
@@ -200,7 +292,9 @@ class BoxAnnotation:
 
 class Renderer:
     """Draws boxes, label pills and a translucent HUD with PIL (anti-aliased text,
-    alpha blending), optionally next to a colourised depth panel and legend."""
+    alpha blending), optionally next to a colourised depth panel and legend,
+    and an optional top-view (BEV) inset in the frame panel's bottom-right
+    corner (bev_size_px > 0, clamped to fit the frame)."""
 
     def __init__(
         self,
@@ -215,6 +309,11 @@ class Renderer:
         font_path: Path | None = None,
         mask_alpha: float = 0.35,
         semantic_alpha: float = 0.4,
+        trajectory_alpha: float = 0.8,
+        bev_size_px: int = 0,
+        bev_range_m: float = 40.0,
+        bev_width_m: float = 20.0,
+        n_sigma: float = 2.0,
     ) -> None:
         if layout not in ("overlay", "side-by-side"):
             raise ValueError(f"unknown layout {layout!r}")
@@ -222,6 +321,10 @@ class Renderer:
             raise ValueError(f"mask_alpha must be in [0, 1], got {mask_alpha}")
         if not 0.0 <= semantic_alpha <= 1.0:
             raise ValueError(f"semantic_alpha must be in [0, 1], got {semantic_alpha}")
+        if not 0.0 <= trajectory_alpha <= 1.0:
+            raise ValueError(
+                f"trajectory_alpha must be in [0, 1], got {trajectory_alpha}"
+            )
         try:
             self._cmap = getattr(cv2, f"COLORMAP_{cmap.upper()}")
         except AttributeError:
@@ -233,13 +336,22 @@ class Renderer:
         self.show_hud = show_hud
         self.mask_alpha = mask_alpha
         self.semantic_alpha = semantic_alpha
+        self.trajectory_alpha = trajectory_alpha
+        self.bev_range_m, self.bev_width_m = bev_range_m, bev_width_m
+        self.n_sigma = n_sigma
         self._luts: dict[tuple[str, ...], np.ndarray] = {}  # by class_names
         scale = frame_h / 1080
         self.box_width = max(2, round(3 * scale))
         self.font = load_font(font_path, max(14, round(22 * scale)))
         self.hud_title_font = load_font(font_path, max(16, round(26 * scale)))
+        self.bev_font = load_font(font_path, max(10, round(16 * scale)))
         self.pad = max(4, round(7 * scale))
         self.radius = max(4, round(8 * scale))
+        # The inset sits inside the frame panel with a 2 * pad margin; its size
+        # comes from the frame height, so on portrait or tiny frames it is
+        # clamped to fit (0 = no inset).
+        margin = 2 * self.pad
+        self.bev_size_px = max(0, min(bev_size_px, frame_w - margin, frame_h - margin))
         self._legend = (
             metric_legend(frame_h, max_depth, self._cmap)
             if layout == "side-by-side"
@@ -260,17 +372,22 @@ class Renderer:
         depth_m: np.ndarray | None = None,
         *,
         semantic: Sequence[tuple[np.ndarray, Sequence[str]]] = (),
+        bev: Sequence[BevTrack] = (),
     ) -> np.ndarray:
         """Annotated frame of size `output_size()`; `depth_m` is required for side-by-side.
 
         `semantic` holds layers (labels (H, W), class_names) in drawing order (the
         last one on top), drawn on the frame panel only, under masks and boxes.
+        `bev` holds the tracks of the top-view inset (drawn, possibly empty,
+        when bev_size_px > 0).
         """
         image = frame_rgb
         if self.semantic_alpha > 0:
             for labels, class_names in semantic:
                 image = self._blend_semantic(image, labels, tuple(class_names))
         left = self._draw(image, boxes, hud_lines if self.show_hud else None)
+        if self.bev_size_px > 0:
+            left = self._paste_bev(left, bev)
         if self._legend is None:
             return left
         if depth_m is None:
@@ -282,6 +399,42 @@ class Renderer:
         )
         return np.hstack([left, self._draw(panel, boxes, None), self._legend])
 
+    def _paste_bev(self, image_rgb: np.ndarray, bev: Sequence[BevTrack]) -> np.ndarray:
+        size = self.bev_size_px
+        inset = render_bev(
+            bev,
+            size_px=size,
+            range_m=self.bev_range_m,
+            width_m=self.bev_width_m,
+            n_sigma=self.n_sigma,
+            font=self.bev_font,
+        )
+        out = image_rgb.copy()
+        m = 2 * self.pad
+        y0, x0 = self.frame_h - size - m, self.frame_w - size - m
+        out[y0 : y0 + size, x0 : x0 + size] = inset
+        return out
+
+    def _draw_path(self, d: ImageDraw.ImageDraw, box: BoxAnnotation) -> None:
+        """Polyline from the reference point, opacity fading to 0 at the
+        horizon, with the uncertainty ellipse at about three points (every
+        point would bury the frame) including the last."""
+        points, radii = box.path.points, box.path.radii
+        color = color_for(box.key)
+        n = len(points) - 1
+        every = max(1, n // 3)
+        for k in range(n):
+            alpha = round(255 * self.trajectory_alpha * (1 - k / n))
+            (xa, ya), (xb, yb) = points[k], points[k + 1]
+            d.line([(xa, ya), (xb, yb)], fill=color + (alpha,), width=self.box_width)
+            rx, ry = radii[k + 1]
+            if (k + 1) % every == 0 or k + 1 == n:
+                d.ellipse(
+                    [xb - rx, yb - ry, xb + rx, yb + ry],
+                    outline=color + (max(alpha, 60),),
+                    width=1,
+                )
+
     def _draw(
         self,
         image_rgb: np.ndarray,
@@ -291,6 +444,9 @@ class Renderer:
         base = Image.fromarray(self._blend_masks(image_rgb, boxes)).convert("RGBA")
         overlay = Image.new("RGBA", base.size, (0, 0, 0, 0))
         d = ImageDraw.Draw(overlay)
+        for box in boxes:  # trajectories under every box and label
+            if box.path is not None and len(box.path.points) > 1:
+                self._draw_path(d, box)
         # low-confidence boxes first so the strongest end up on top
         for box in sorted(boxes, key=lambda b: b.score):
             x1, y1, x2, y2 = box.xyxy
