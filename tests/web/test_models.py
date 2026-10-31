@@ -5,6 +5,7 @@ import json
 import os
 import subprocess
 import sys
+import threading
 import time
 from pathlib import Path
 
@@ -444,3 +445,132 @@ def test_create_app_and_server_refuse_overlapping_weights_root(monkeypatch, tmp_
     server.main([*argv, "--weights-root", str(tmp_path / "w-flag")])
     assert rq.weights_root() == tmp_path / "w-flag"
     assert len(ran) == 2
+
+
+# -- fix round 1: unknown sources (I1) and redaction (I2) -----------------------
+
+UNKNOWN_CASES = {
+    "depth": (
+        {"depth": {"type": "da3", "model": "someone/da3metric-fork"}},
+        ("depth", None),
+    ),
+    "hf_sam": (
+        {"refiners": [{"type": "sam2", "model": "someone/sam-fork"}]},
+        ("refiners", 0),
+    ),
+    "segformer": (
+        {"semantic": [{"type": "segformer", "name": "s", "model": "someone/seg-fork"}]},
+        ("semantic", 0),
+    ),
+}
+
+
+@pytest.fixture
+def hf_calls(monkeypatch):
+    """Hugging Face source stand-in: records the repo, downloads nothing."""
+    from det_depth_distance.core.provision import sources
+
+    calls = []
+
+    def fake(self, asset, root, progress, cancel):
+        calls.append(asset.repo)
+        raise sources.ProvisionError(f"offline: cannot download {asset.repo}")
+
+    monkeypatch.setattr(sources.HuggingFaceSource, "prepare", fake)
+    return calls
+
+
+@pytest.mark.parametrize("case", sorted(UNKNOWN_CASES))
+def test_unknown_hf_repo_is_refused_by_the_web_and_preparable_by_the_cli(
+    case,
+    api,
+    fake_models,  # noqa: F811
+    tmp_path,
+    hf_calls,
+):
+    from det_depth_distance.core.provision import prepare
+    from det_depth_distance.web import models
+
+    extra, (stage, index) = UNKNOWN_CASES[case]
+    cfg = {**gate_config(tmp_path, "a"), **extra}
+    (fake_models.root / "gate").mkdir(parents=True)
+    (fake_models.root / "gate/a.bin").write_bytes(b"x")
+    row = by_key(status_of(api, cfg))[(stage, index)]
+    assert row["state"] == "missing"
+    assert row["message"] == "unknown source: prepare it from the CLI (--prepare)"
+    # Named explicitly: 422; nothing queued.
+    resp = api.post(
+        "/api/models/prepare",
+        json={"config": cfg, "models": [{"stage": stage, "index": index}]},
+    )
+    assert resp.status_code == 422
+    assert (
+        "unknown source: prepare it from the CLI (--prepare)" in resp.json()["detail"]
+    )
+    # "all": the known models are prepared, the unknown one is reported.
+    job = api.post("/api/models/prepare", json={"config": cfg, "models": "all"}).json()
+    assert [(s["stage"], s["index"]) for s in job["skipped"]] == [(stage, index)]
+    assert job["skipped"][0]["message"].startswith("unknown source")
+    assert (stage, index) not in {(m["stage"], m["index"]) for m in job["models"]}
+    assert wait_prepare(api, job["id"])["status"] == "done"
+    assert hf_calls == []  # the web never asked the hub for it
+    # The CLI path (engine) still prepares any repo the user typed.
+    rows = {r.key: r for r in models.config_rows(cfg)}
+    status = prepare(
+        rows[(stage, index)].req,
+        fake_models.root,
+        lambda *a: None,
+        threading.Event(),
+    )
+    assert hf_calls == [extra_repo(extra)]
+    assert status.state == "failed"
+
+
+def extra_repo(extra) -> str:
+    spec = next(iter(extra.values()))
+    spec = spec[0] if isinstance(spec, list) else spec
+    return spec["model"]
+
+
+def test_known_hf_repo_is_prepared_by_the_web(api, fake_models, tmp_path, hf_calls):  # noqa: F811
+    cfg = {
+        **gate_config(tmp_path, "a"),
+        "refiners": [{"type": "sam2"}],  # facebook/sam2.1-hiera-large (HF_FACTS)
+    }
+    row = by_key(status_of(api, cfg))[("refiners", 0)]
+    assert row["state"] == "missing" and not row["message"].startswith("unknown")
+    job = api.post(
+        "/api/models/prepare",
+        json={"config": cfg, "models": [{"stage": "refiners", "index": 0}]},
+    ).json()
+    done = wait_prepare(api, job["id"])
+    assert hf_calls == ["facebook/sam2.1-hiera-large"]
+    assert done["status"] == "failed" and "offline" in done["error"]
+    assert job["skipped"] == []
+
+
+def test_redact_relative_root_and_sibling_folders(tmp_path, monkeypatch):
+    from det_depth_distance.web.models import redact
+
+    monkeypatch.chdir(tmp_path)
+    abs_root = tmp_path / "weights"
+    rel = Path("weights")  # `--weights-root weights`, as in the README
+    assert redact(f"weights: {abs_root}/ultralytics/x.pt not found", rel) == (
+        "weights: <weights root>/ultralytics/x.pt not found"
+    )
+    assert redact("weights: offline or unreachable", rel) == (
+        "weights: offline or unreachable"
+    )
+    text = (
+        f"a {abs_root}-old/x, b {abs_root}/y, c '{abs_root}', d {abs_root}. "
+        f"e {abs_root}.bak f {tmp_path}/weightsX"
+    )
+    assert redact(text, abs_root) == (
+        f"a {abs_root}-old/x, b <weights root>/y, c '<weights root>', "
+        f"d <weights root>. e {abs_root}.bak f {tmp_path}/weightsX"
+    )
+    # A symlinked root is redacted in both spellings.
+    link = tmp_path / "link"
+    link.symlink_to(abs_root, target_is_directory=True)
+    abs_root.mkdir()
+    assert redact(f"{link}/a {abs_root}/b", link) == "<weights root>/a <weights root>/b"

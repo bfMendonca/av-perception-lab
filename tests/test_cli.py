@@ -320,3 +320,78 @@ def test_cli_prepare_ctrl_c_exits_130_and_keeps_part(tmp_path, monkeypatch, caps
     err = capsys.readouterr().err
     assert "cancelled" in err and "Traceback" not in err
     assert part.read_bytes() == b"half"
+
+
+# ------------------------------------------------- run gate (task_0022 fix round 1)
+
+
+def _gated_config(tmp_path, monkeypatch):
+    """A config whose only declared requirement is the fake detector's file:
+    DA3 points its cache outside the weights root (nothing declared) and the
+    focal is given; packages count as installed."""
+    from det_depth_distance.core import registry
+    from det_depth_distance.core.requirements import UrlAsset
+
+    root = tmp_path / "weights"
+    monkeypatch.setenv("DDD_WEIGHTS_ROOT", str(root))
+    monkeypatch.setattr("det_depth_distance.core.requirements._top_level_present", bool)
+    registry.load_adapters()
+    asset = UrlAsset(
+        key="ckpt", target="fake/ckpt.bin", url="https://example.invalid/c"
+    )
+    monkeypatch.setitem(
+        registry._REGISTRY["detector"], "needs_weights", _fake_detector(asset)
+    )
+    monkeypatch.setattr(
+        source_module,
+        "probe",
+        lambda path: VideoInfo(path, 64, 48, 10.0, "10/1", 10, False, 0),
+    )
+    video = tmp_path / "clip.mov"
+    video.touch()
+    path = tmp_path / "gated.yaml"
+    path.write_text(
+        yaml.safe_dump(
+            {
+                "source": {"video": str(video)},
+                "detectors": [{"type": "needs_weights", "name": "fake"}],
+                "depth": {"type": "da3", "hf_cache": str(tmp_path / "elsewhere")},
+                "camera": {"focal_px": 100.0, "estimate": None},
+                "output": {"out_root": str(tmp_path / "out")},
+            }
+        )
+    )
+    return root, path
+
+
+def test_run_refuses_not_ready_models_before_any_load(tmp_path, monkeypatch, capsys):
+    root, path = _gated_config(tmp_path, monkeypatch)
+    loads = []
+    monkeypatch.setattr(cli.Pipeline, "load", lambda *a, **k: loads.append(a))
+    monkeypatch.setattr(
+        cli.Pipeline, "resolve_intrinsics", lambda *a, **k: loads.append(a)
+    )
+    assert main(["--config", str(path)]) == 2
+    err = capsys.readouterr().err
+    assert loads == []  # stopped before any model was loaded
+    assert "1 model(s) not ready" in err
+    assert "detectors[0] fake (needs_weights): ckpt: fake/ckpt.bin not found" in err
+    assert "--prepare" in err
+    assert str(root) not in err  # root-relative
+    assert not (tmp_path / "out").exists()  # no run folder either
+
+
+def test_run_gate_passes_once_prepared(tmp_path, monkeypatch, capsys):
+    from det_depth_distance.config import load_config
+
+    root, path = _gated_config(tmp_path, monkeypatch)
+    cfg = load_config(path, [], None)
+    with pytest.raises(cli.ConfigError, match="--prepare"):
+        cli.require_ready(cfg)
+    (root / "fake").mkdir(parents=True)
+    (root / "fake/ckpt.bin").write_bytes(b"x")
+    cli.require_ready(cfg)  # ready: no error
+    # An explicit DA3 cache outside the root is not tracked (ready by design),
+    # and --prepare itself is not gated.
+    assert main(["--config", str(path), "--prepare"]) == 0
+    assert "needs_weights  ready" in capsys.readouterr().out

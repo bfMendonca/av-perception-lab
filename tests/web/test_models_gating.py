@@ -118,3 +118,17 @@ def test_ultralytics_weights_outside_asset_roots_still_refused(tmp_path, monkeyp
     problems = security.path_problems(cfg, paths)
     assert [p["path"] for p in problems] == ["detectors[0].weights"]
     assert "--asset-root" in problems[0]["message"]
+
+
+def test_submit_run_409_for_unknown_hf_repo(api, fake_models, tmp_path):  # noqa: F811
+    cfg = {
+        **gate_config(tmp_path, "a"),
+        "semantic": [{"type": "segformer", "name": "s", "model": "someone/seg-fork"}],
+    }
+    (fake_models.root / "gate").mkdir(parents=True)
+    (fake_models.root / "gate/a.bin").write_bytes(b"x")
+    resp = api.post("/api/runs", json={"config": cfg})
+    assert resp.status_code == 409
+    [row] = resp.json()["models_not_ready"]
+    assert (row["stage"], row["index"]) == ("semantic", 0)
+    assert row["message"] == "unknown source: prepare it from the CLI (--prepare)"

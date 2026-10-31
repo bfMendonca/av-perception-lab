@@ -36,6 +36,8 @@ from det_depth_distance.core.provision import prepare
 from det_depth_distance.core.requirements import (
     ModelStatus,
     Requirements,
+    check,
+    redact_root,
     weights_root,
 )
 from det_depth_distance.io.sinks import (
@@ -121,8 +123,9 @@ def run(
     just before it is written (progress and previews); None changes nothing.
 
     Raises:
-        ConfigError: invalid component specs, unusable calibration, missing
-            intrinsics, or no frames.
+        ConfigError: invalid component specs, a model that is not ready
+            (`require_ready`), unusable calibration, missing intrinsics, or
+            no frames.
     """
     # Every component is built (options validated) before the video is probed
     # and before any model is loaded; the camera (calibration file, lens check)
@@ -170,6 +173,9 @@ def run(
         smoothing=cfg.smoothing,
         motion=motion,
     )
+    # Every configuration error comes first; then every declared model must be
+    # present before any of them (the focal model included) is loaded.
+    require_ready(cfg)
     monitor = DeviceMonitor(cfg.device)
     with pipeline, ExitStack() as sinks_stack:
         info = pipeline.resolve_intrinsics(source)
@@ -275,6 +281,29 @@ def config_requirements(
             req = str(exc)
         rows.append(("camera.estimate", estimate.model, "da3", req))
     return rows
+
+
+def require_ready(cfg: RunConfig, root: Path | None = None) -> None:
+    """Raise ConfigError naming `--prepare` when a model of `cfg` is not ready
+    under the weights root (what is missing, root-relative). Files at explicit
+    paths outside the root are not declared, so they are not checked here (the
+    adapter checks them when it loads)."""
+    root = weights_root() if root is None else Path(root)
+    problems = []
+    for path, name, type_name, req in config_requirements(cfg):
+        if isinstance(req, str):
+            problems.append(f"{path} {name} ({type_name}): {req}")
+            continue
+        status = check(req, root)
+        if status.state != "ready":
+            why = status.message or ", ".join(status.missing) or status.state
+            problems.append(f"{path} {name} ({type_name}): {why}")
+    if problems:
+        details = "\n  ".join(redact_root(p, root) for p in problems)
+        raise ConfigError(
+            f"{len(problems)} model(s) not ready under the weights root:\n  "
+            f"{details}\nrun `det-depth-distance --config <yaml> --prepare` first"
+        )
 
 
 def _progress_printer(min_interval_s: float = 1.0):

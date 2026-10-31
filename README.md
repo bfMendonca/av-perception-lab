@@ -1083,6 +1083,10 @@ file is an error naming `--prepare`.
 | YOLO / Ultralytics SAM (`weights`) | a bare file name in `weights` resolves under `weights/ultralytics/`; a path with a directory part keeps its usual meaning (relative to the working directory) | `ultralytics/assets` v8.4.0 for published names (YOLO26 COCO and Objects365, SAM, SAM 2.x, MobileSAM; AGPL-3.0 YOLO weights); any other file is *user-provided* |
 | TwinLiteNet+ (`repo`) | `weights/_code/TwinLiteNetPlus` (pinned clone @ `90f1b86`) | git clone; `pretrained/<variant>.pth` is *user-provided* (upstream Google Drive) |
 
+A run (without `--prepare`) whose declared models are not all ready stops
+before loading anything, with exit code 2 and a list of what is missing
+(paths relative to the weights root) naming `--prepare`.
+
 An explicit path in the YAML overrides the default and behaves as before
 (`hf_cache` relative to the working directory; an absolute or `~` YOLO path;
 `repo: ~/dev/TwinLiteNetPlus`; RF-DETR `weights:` a checkpoint such as an
@@ -1117,6 +1121,12 @@ uv run --extra infer --extra web det-depth-distance-web --weights-root weights  
   ready (a partial file is never counted).
 - A run whose models are not all ready is refused with 409
   `{models_not_ready: [...]}`.
+- From the web, Prepare only downloads sources the adapters vouch for: a
+  Hugging Face repo typed in `depth.model`, `refiners[].model` or
+  `semantic[].model` that the project does not ship reads "unknown source:
+  prepare it from the CLI (--prepare)" (422 when named; `models: "all"`
+  prepares the rest and lists it under `skipped`). Run
+  `det-depth-distance --config X.yaml --prepare` on the server for it.
 - The client only names models: URLs and target folders come from the
   adapters' code, downloads land only under the weights root, and messages
   show `<weights root>` instead of the server's absolute path. The weights

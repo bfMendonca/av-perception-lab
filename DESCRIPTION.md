@@ -300,7 +300,12 @@ and `--list-models`; `--config run.yaml --prepare` builds the components
 pinned code under the weights root (`DDD_WEIGHTS_ROOT`, default `weights/`;
 also the focal model of `camera.estimate`),
 prints a status table and exits 0 only when every component is ready (1
-otherwise, 2 for configuration errors). Plus two auxiliary console scripts:
+otherwise, 2 for configuration errors). A run without `--prepare` checks the
+same requirements after every configuration error and before any model is
+loaded (`cli.require_ready`): a model that is not ready is a ConfigError
+(exit 2) listing each one with what is missing (root-relative) and naming
+`--prepare`; files at explicit paths outside the weights root are not
+declared, so not checked. Plus two auxiliary console scripts:
 `det-depth-distance-calibrate calibrate|board|inspect` and
 `det-depth-distance-evaluate --refs REFS.yaml RUN [RUN ...]`. The YAML schema (sections source, detectors, depth,
 camera, aggregation, refiners, semantic, tracking, smoothing, agreement, distance, render, output, device) is documented in the
@@ -413,7 +418,16 @@ once the engine notices between chunks, its model stays not ready). One
 `core.provision.prepare` in a worker thread (progress marshalled with
 `call_soon_threadsafe`); nothing is persisted (the 20 latest finished jobs are
 kept in memory). Messages name the weights root `<weights root>`, never its
-absolute path. `POST /api/runs` and rerun answer 409 `{models_not_ready:
+absolute path (`core.requirements.redact_root`: absolute and resolved forms
+only, at a path boundary, one pass). Known sources only (fix round 1):
+`Asset.known` (default True) is set by the adapter's code; `hf_asset` sets it
+to `repo in HF_FACTS`, so a Hugging Face repo typed in `depth.model`,
+`refiners[i].model` or `semantic[i].model` that is not in the table is
+`known=False`. From the web such a model reads `missing` with the message
+"unknown source: prepare it from the CLI (--prepare)"; naming it in
+`/api/models/prepare` is a 422; `models: "all"` prepares the other models and
+lists it in the job's `skipped` (`[{stage, index, type, name, message}]`; 422
+only when every model is skipped). The CLI `--prepare` downloads any repo. `POST /api/runs` and rerun answer 409 `{models_not_ready:
 [status rows]}` when a model is not `ready` (after the 422 checks).
 `--weights-root` (else `DDD_WEIGHTS_ROOT`, else `weights/`) is set with
 `set_weights_root`; it may not be, contain or lie inside the library or

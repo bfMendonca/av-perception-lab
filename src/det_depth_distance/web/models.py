@@ -39,7 +39,13 @@ from typing import Any, Literal
 
 from det_depth_distance import cli, config
 from det_depth_distance.core.provision import prepare
-from det_depth_distance.core.requirements import ModelStatus, Requirements, check
+from det_depth_distance.core.requirements import (
+    Asset,
+    ModelStatus,
+    Requirements,
+    check,
+    redact_root,
+)
 
 log = logging.getLogger(__name__)
 
@@ -48,6 +54,7 @@ RECENT_FINISHED = 20
 PROGRESS_INTERVAL_S = 0.2  # at most one progress event per item and interval
 TERMINAL = ("done", "failed", "cancelled")
 SHUTDOWN_ERROR = "the server shut down"
+UNKNOWN_SOURCE = "unknown source: prepare it from the CLI (--prepare)"
 _INDEXED = re.compile(r"^(?P<stage>.+)\[(?P<index>\d+)\]$")
 
 Key = tuple[str, int | None]
@@ -55,6 +62,12 @@ Key = tuple[str, int | None]
 
 class UnknownModel(KeyError):
     """A model key that is not one of the config's models."""
+
+
+class UnknownSource(ValueError):
+    """A model whose missing files come from a source its adapter does not
+    vouch for (`Asset.known` False, e.g. a Hugging Face repo typed in the
+    config): the web server never downloads it."""
 
 
 @dataclass(frozen=True)
@@ -109,13 +122,24 @@ def config_rows(data: dict[str, Any]) -> list[ModelRow]:
 
 
 def redact(text: str | None, root: Path) -> str | None:
-    """`text` with the weights root's absolute path replaced by `<weights root>`."""
-    if not text:
-        return text
-    forms = {str(root), str(root.resolve()), root.as_posix(), root.resolve().as_posix()}
-    for form in sorted((f for f in forms if f not in ("", ".", "/")), key=len)[::-1]:
-        text = text.replace(form, ROOT_LABEL)
-    return text
+    """`core.requirements.redact_root` with this module's label."""
+    return redact_root(text, root, ROOT_LABEL)
+
+
+def unknown_sources(req: Requirements, root: Path) -> list[Asset]:
+    """Assets of `req` that are not ready and whose source the adapter does
+    not vouch for (`known` False)."""
+    out = []
+    for asset in req.assets:
+        if asset.known:
+            continue
+        try:
+            ready = asset.present(root).state == "ready"
+        except (OSError, RuntimeError, ValueError):
+            ready = False
+        if not ready:
+            out.append(asset)
+    return out
 
 
 def status_view(status: ModelStatus, root: Path) -> dict[str, Any]:
@@ -142,7 +166,10 @@ def status_row(row: ModelRow, root: Path) -> dict[str, Any]:
             "size_bytes": None,
             "message": redact(row.error, root),
         }
-    return {**row.head(), **status_view(check(row.req, root), root)}
+    view = status_view(check(row.req, root), root)
+    if view["state"] != "failed" and unknown_sources(row.req, root):
+        view["state"], view["message"] = "missing", UNKNOWN_SOURCE
+    return {**row.head(), **view}
 
 
 def report(statuses: list[dict[str, Any]]) -> dict[str, Any]:
@@ -200,6 +227,9 @@ class PrepareJob:
     cancel_event: threading.Event = field(default_factory=threading.Event, repr=False)
     changed: asyncio.Event = field(default_factory=asyncio.Event, repr=False)
     current: ModelProgress | None = field(default=None, repr=False)
+    # models of a `models: "all"` request left out: {stage, index, type,
+    # name, message} (an unknown source)
+    skipped: list[dict[str, Any]] = field(default_factory=list)
 
     def to_dict(self, position: int | None = None) -> dict[str, Any]:
         return {
@@ -210,6 +240,7 @@ class PrepareJob:
             "created": self.created,
             "cancel_requested": self.cancel_requested,
             "models": [m.to_dict() for m in self.models],
+            "skipped": [dict(s) for s in self.skipped],
         }
 
 
@@ -231,14 +262,29 @@ class PrepareQueue:
         """Queue a Prepare of `models` (keys from the status rows) or of every
         model of the config (call from the running event loop).
 
+        A model with an unknown source (`unknown_sources`) is never queued:
+        named explicitly it raises `UnknownSource`; with "all" it is left out
+        and listed in the job's `skipped`.
+
         Raises:
             ConfigError: the configuration is invalid.
             UnknownModel: a key is not one of the config's models.
+            UnknownSource: a named model (or, with "all", every model that
+                is not ready) has an unknown source.
             ValueError: no model selected.
         """
         rows = config_rows(data)
+        skipped: list[dict[str, Any]] = []
         if models == "all":
-            chosen = rows
+            chosen = []
+            for row in rows:
+                if row.req is not None and unknown_sources(row.req, self.root):
+                    skipped.append({**row.head(), "message": UNKNOWN_SOURCE})
+                else:
+                    chosen.append(row)
+            if skipped and not chosen:
+                names = ", ".join(f"{_where_of(s)} {s['name']}" for s in skipped)
+                raise UnknownSource(f"{names}: {UNKNOWN_SOURCE}")
         else:
             by_key = {row.key: row for row in rows}
             chosen, seen = [], set()
@@ -248,12 +294,16 @@ class PrepareQueue:
                     stage, index = key
                     where = stage if index is None else f"{stage}[{index}]"
                     raise UnknownModel(f"{where} is not a model of this config")
+                row = by_key[key]
+                if row.req is not None and unknown_sources(row.req, self.root):
+                    raise UnknownSource(f"{_where(row)} {row.name}: {UNKNOWN_SOURCE}")
                 if key not in seen:
                     seen.add(key)
-                    chosen.append(by_key[key])
+                    chosen.append(row)
         if not chosen:
             raise ValueError("no model to prepare")
         job = PrepareJob(uuid.uuid4().hex[:12], [ModelProgress(r) for r in chosen])
+        job.skipped = skipped
         job.created = datetime.now().astimezone().isoformat(timespec="seconds")
         self._jobs[job.id] = job
         self._append(job, {"event": "queued"})
@@ -384,7 +434,7 @@ class PrepareQueue:
             except asyncio.CancelledError:
                 raise
             except Exception as exc:  # noqa: BLE001 - a bug must not stall the queue
-                job.error = f"{type(exc).__name__}: {exc}"
+                job.error = redact(f"{type(exc).__name__}: {exc}", self.root)
                 self._finish(job)
 
     async def _execute(self, job: PrepareJob) -> None:
@@ -466,3 +516,8 @@ class PrepareQueue:
 
 def _where(row: ModelRow) -> str:
     return row.stage if row.index is None else f"{row.stage}[{row.index}]"
+
+
+def _where_of(head: dict[str, Any]) -> str:
+    stage, index = head["stage"], head["index"]
+    return stage if index is None else f"{stage}[{index}]"

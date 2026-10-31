@@ -65,6 +65,10 @@ class Asset:
 
     Subclasses are registered with `register_asset_kind` and implement
     `present`; `downloadable` is False for kinds the engine must never fetch.
+    `known` is set by the adapter's code: True when the source is one the
+    adapter vouches for (a table in its code), False when it was derived from
+    a user option (e.g. any Hugging Face repo id typed in the YAML). The CLI
+    prepares both; the web server only prepares known sources.
     """
 
     kind_name: ClassVar[str] = ""  # set by register_asset_kind
@@ -75,6 +79,7 @@ class Asset:
     size_bytes: int | None = None
     license: str | None = None
     gated: bool = False
+    known: bool = True
 
     def path(self, root: Path) -> Path:
         """Absolute, confined location of `target`."""
@@ -336,6 +341,29 @@ def weights_root() -> Path:
     if env:
         return Path(env)
     return Path(__file__).resolve().parents[3] / "weights"
+
+
+# A path ends at the end of the text, a separator or a delimiter (a "." only
+# when it ends a sentence); it starts at the beginning or after a delimiter.
+_PATH_BEFORE = r"(?<![^\s'\"(\[=:,;])"
+_PATH_AFTER = r"(?=$|[/\s'\"),;:\]]|\.(?:\s|$))"
+
+
+def redact_root(
+    text: str | None, root: Path, label: str = "<weights root>"
+) -> str | None:
+    """`text` with the weights root's absolute path (as given made absolute,
+    and resolved) replaced by `label`: one pass, only where the whole path
+    appears (`/x/weights-old` is not `/x/weights`); a relative form such as
+    the bare word `weights` is never touched."""
+    if not text:
+        return text
+    base = Path(root).expanduser()
+    forms = {str(base.absolute()), str(base.resolve())} - {"/", ""}
+    if not forms:
+        return text
+    alternatives = "|".join(re.escape(f) for f in sorted(forms, key=len, reverse=True))
+    return re.sub(f"{_PATH_BEFORE}(?:{alternatives}){_PATH_AFTER}", label, text)
 
 
 @dataclass(frozen=True, slots=True)

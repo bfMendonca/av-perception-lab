@@ -640,7 +640,7 @@ def create_app(
             job = prepares.submit(keys, body.config)
         except models.UnknownModel as exc:
             raise HTTPException(422, exc.args[0]) from None
-        except ValueError as exc:  # ConfigError, or no model selected
+        except ValueError as exc:  # ConfigError, UnknownSource, nothing selected
             raise HTTPException(422, str(exc)) from None
         return job.to_dict(prepares.position(job))
 

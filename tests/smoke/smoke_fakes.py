@@ -39,6 +39,7 @@ from det_depth_distance.core.components import (
     SemanticSegmenter,
 )
 from det_depth_distance.core.labels import COCO
+from det_depth_distance.core.requirements import Requirements
 from det_depth_distance.core.types import (
     CameraIntrinsics,
     Instances,
@@ -270,3 +271,9 @@ def install_scene_fakes(monkeypatch: pytest.MonkeyPatch, oracle: DepthOracle) ->
     monkeypatch.setattr(cli, "DeviceMonitor", NullDeviceMonitor)
     monkeypatch.setattr(da3, "_load_da3", oracle.loader)
     monkeypatch.setattr(da3.DA3Depth, "_close", lambda self: None)
+    # The fake network needs no checkpoint nor torch: the run's readiness gate
+    # (cli.require_ready) sees DA3 (and the focal model) as ready.
+    monkeypatch.setattr(
+        da3.DA3Depth, "requirements", classmethod(lambda cls, options: Requirements())
+    )
+    monkeypatch.setattr(cli, "da3_requirements", lambda model, hf_cache: Requirements())

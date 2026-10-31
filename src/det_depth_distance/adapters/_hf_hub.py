@@ -12,7 +12,8 @@ also fetches duplicate .pt/.bin files).
 `HuggingFaceAsset` in that cache layout, so an existing `weights/hf` cache
 counts as ready unchanged. Sizes and licences of the repos the project ships
 (read from the Hugging Face API, task_0021) are in `HF_FACTS`; any other repo
-is declared without them. Local checkpoint directories are not declared.
+is declared without them and with `known=False` (the web server does not
+download it; the CLI does). Local checkpoint directories are not declared.
 """
 
 from pathlib import Path
@@ -87,6 +88,8 @@ def hf_asset(
     if target is None:
         return None
     size, licence, gated = HF_FACTS.get(repo, (None, None, False))
+    # Only the repos of HF_FACTS are vouched for; any other id came from a
+    # user option (prepared by the CLI, refused by the web server).
     return HuggingFaceAsset(
         key=key,
         target=target,
@@ -96,6 +99,7 @@ def hf_asset(
         size_bytes=size,
         license=licence,
         gated=gated,
+        known=repo in HF_FACTS,
     )
 
 

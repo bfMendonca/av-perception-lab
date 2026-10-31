@@ -33,8 +33,22 @@ missing ones on request and refuses runs that would fail on missing weights
   Ultralytics SAM weight names resolve under `<weights root>/ultralytics/`, so
   every shipped config passes them.
 
+- `det-depth-distance --config X.yaml` (without `--prepare`) stops with exit
+  code 2 before loading any model when a declared model is not ready, listing
+  what is missing and naming `--prepare`.
+
+### Fixed
+
+- Messages sent to web clients no longer garble when the weights root is
+  relative (`--weights-root weights`) and no longer rewrite sibling folders
+  such as `weights-old`: only the absolute root, at a path boundary.
+
 ### Security
 
+- From the web, Prepare only downloads sources the adapters vouch for
+  (`Asset.known`; Hugging Face repos of `HF_FACTS`). Any other repo typed in a
+  config reads "unknown source: prepare it from the CLI (--prepare)": 422 when
+  named, skipped (and reported) by `models: "all"`. The CLI is unchanged.
 - Model request bodies refuse unknown fields (no client URL or path);
   sources and targets come from the adapters' code and stay inside the weights
   root; messages sent to clients show `<weights root>` instead of its absolute
