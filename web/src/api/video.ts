@@ -36,6 +36,11 @@ export interface JobInfo {
   run_id: string | null;
   frames: number;
   log_tail: string[];
+  /** When it was submitted (ISO 8601); absent in older servers. */
+  created?: string;
+  video_id?: string | null;
+  /** Name of the video it runs (the library name when it has one). */
+  video?: string | null;
 }
 
 /** One server-sent event of a job (`queued`, `running`, `started`, `frame`, `done`, `error`, `end`, ...). */
@@ -95,8 +100,10 @@ export interface VideoApi {
   gpuFreeMiB(): Promise<number | null>;
   submitRun(config: ConfigDict, videoId?: string): Promise<string>;
   getJob(id: string): Promise<JobInfo>;
+  /** This server's unfinished jobs and its latest finished ones, newest first. */
+  listJobs(): Promise<JobInfo[]>;
   cancelJob(id: string): Promise<JobInfo>;
-  /** Subscribe to a job's events (replayed from the start); returns the unsubscribe. */
+  /** Subscribe to a job's events (replayed from the start; a reconnect resumes after the last one); returns the unsubscribe. */
   jobEvents(id: string, onEvent: (event: JobEvent) => void, onError?: () => void): () => void;
   listRuns(): Promise<RunRecord[]>;
   getRun(id: string): Promise<RunRecord>;
@@ -163,6 +170,7 @@ export function createVideoApi(base = "", fetchImpl: typeof fetch = (...a) => fe
       return ((await response.json()) as { job_id: string }).job_id;
     },
     getJob: (id) => call<JobInfo>(`/api/jobs/${enc(id)}`),
+    listJobs: () => call<JobInfo[]>("/api/jobs"),
     cancelJob: (id) => call<JobInfo>(`/api/jobs/${enc(id)}`, { method: "DELETE" }),
     jobEvents: (id, onEvent, onError) => {
       const source = new EventSource(`${base}/api/jobs/${enc(id)}/events`);

@@ -847,6 +847,64 @@ Para dicas de interface (rótulo, unidade, faixa) use
 `field(default=..., metadata={"ui": {...}})` no campo. Checklist para novos
 modelos, estágios e visões em `docs/web_extending.md`.
 
+### Interface web: segurança, rede local e desligamento
+
+A `task_0018` endurece o servidor (continua sem autenticação):
+
+- **Host e Origin**: só responde aos nomes `127.0.0.1`, `localhost`, `[::1]`,
+  ao `--host` (se não for `0.0.0.0`/`::`) e a cada `--allowed-host NOME`
+  (repetível; o endereço ou nome que outras máquinas usam no navegador);
+  outro `Host` dá 400 (barra *DNS rebinding*). POST/PUT/PATCH/DELETE com
+  `Origin` de outro site (ou `Sec-Fetch-Site: cross-site`) dá 403; sem
+  `Origin` (curl) passa; `--dev-origin URL` (repetível) libera um front-end
+  servido em outra origem.
+- **Vídeo**: sem `video_id`, o `source.video` precisa estar numa `--data-root`
+  ou ser o original de um vídeo da biblioteca (resolvido, symlink seguido);
+  senão 422 com a mesma mensagem exista o arquivo ou não.
+- **Outros caminhos** do YAML (`weights`, `labels`, `repo`, `hf_cache`,
+  `camera.calibration.path`, `render.font`, e qualquer campo `Path` futuro:
+  descobertos pelas anotações dos esquemas) não podem cair na biblioteca nem
+  em `--out-root` (pastas que o cliente escreve). Com `--asset-root PASTA`
+  (repetível) todos precisam estar dentro de uma delas — inclusive os
+  padrões, como o `~/dev/TwinLiteNetPlus` do TwinLiteNet. Com `--host` fora do
+  loopback e sem `--asset-root` (ou sem `--allowed-host` em `0.0.0.0`) o
+  servidor avisa na partida. Na rede local, use as três flags, por exemplo:
+  `--host 0.0.0.0 --allowed-host 192.168.0.7 --asset-root weights
+  --asset-root configs --asset-root ~/dev`.
+- **Envio**: 413 acima de 8 GiB (pelo `Content-Length`, antes de ler, ou
+  contando), `meta` até 64 MiB, cabeçalho de parte até 8 KiB, até 16
+  cabeçalhos e 8 partes (400), no máximo 2 envios simultâneos (429) e 507
+  sem espaço livre (envio + 256 MiB) no disco da biblioteca. O original
+  enviado guarda o sufixo só se for de vídeo (`.mp4 .m4v .mov .mkv .webm
+  .avi .ts .h264 .264`; senão `original.bin`).
+- **ffprobe/ffmpeg/PyAV** da biblioteca abrem só arquivos locais
+  (`-protocol_whitelist file,pipe`) e só os demuxers aceitos
+  (`-format_whitelist mov,matroska,avi,mpegts,h264,hevc`): listas de
+  reprodução e arquivos concat são recusados. A prévia tem timeout
+  (max(600 s, 10 × duração)); estourado, fica `failed` e vai para o log.
+- **Arquivos servidos** (`/api/videos/{id}/…`, `/api/runs/{id}/…`): tipo
+  explícito, `X-Content-Type-Options: nosniff` e `Content-Security-Policy:
+  sandbox`; fora de vídeo, PNG/JPEG/WebP/GIF, CSV, texto, JSON, NDJSON e YAML
+  o arquivo é baixado (`Content-Disposition: attachment`), nunca aberto como
+  página. Ids de execução começando com `.` não existem (`.web_jobs`).
+- **YAML e corpos**: corpos JSON de POST/PUT/PATCH/DELETE até 1 MiB (413);
+  `POST /api/config/parse` recusa (422) documento que, com os aliases
+  expandidos, passa de 100 000 valores, ou alias recursivo (âncoras comuns,
+  como o `hf_cache` compartilhado dos configs, continuam valendo).
+- **Ctrl-C**: o uvicorn espera no máximo 3 s pelas conexões (um SSE aberto
+  nunca termina), depois fecha e mata o worker; todo job pendente termina
+  `cancelled` ("the server shut down") no registro e no `web_run.json`. Um
+  registro deixado `running`/`queued` por um servidor morto (kill -9) vira
+  `failed`/`cancelled` ("interrupted…") na partida seguinte.
+- **Jobs após recarregar**: `GET /api/jobs` lista os jobs não terminados e os
+  20 últimos terminados (mesmo formato de `GET /api/jobs/{id}`, mais
+  `created`, `video_id` e `video`); a página volta a seguir os não terminados.
+  O SSE numera os eventos (`id:`) e uma reconexão com `Last-Event-ID`
+  continua dali (o progresso não regride); um job que o servidor reiniciado
+  não conhece mais (404) é encerrado no painel.
+- **Histórico**: execuções de vídeos da biblioteca levam o nome do vídeo
+  (não `original.mp4`).
+
 ### Interface web: front-end e editor de pipeline
 
 A `task_0015` cria o front-end em `web/` (React 18 + TypeScript + Vite,
@@ -878,8 +936,10 @@ npm run build          # tsc -b + vite build -> web/dist
 cd ..
 export UV_PROJECT_ENVIRONMENT=_testbed/venv-infer
 uv run --extra infer --extra web det-depth-distance-web --port 8000   # http://127.0.0.1:8000
-# rede local: --host 0.0.0.0 (sem autenticação); outro build: --static-dir DIR
-# desenvolvimento: `cd web && npm run dev` (proxy de /api para DDD_API, padrão http://127.0.0.1:8000)
+# rede local: --host 0.0.0.0 --allowed-host 192.168.0.7 --asset-root weights ... (ver "segurança" abaixo)
+# outro build: --static-dir DIR
+# desenvolvimento: `cd web && npm run dev` (proxy de /api para DDD_API, padrão http://127.0.0.1:8000;
+#   o proxy repassa o Host do navegador; outro front-end: --dev-origin http://localhost:5173)
 ```
 
 O editor:
@@ -943,8 +1003,8 @@ A `task_0016` liga o **Process**. Acima do editor fica o painel de vídeo:
   ("65 frames · ~33 s at 2 fps"). O player repete o trecho.
 - **Process** (barra superior ou painel) envia `POST /api/runs` com o YAML do
   editor mais `source.video` (caminho do original no servidor),
-  `source.start`, `source.duration`, `source.stride`, `output.tag` único e
-  `video_id`; **Process entire video** usa `start = 0` e `duration = 0`. Com
+  `source.start`, `source.duration`, `source.stride` e `video_id` (o servidor
+  define `output.out_root` e um `output.tag` único); **Process entire video** usa `start = 0` e `duration = 0`. Com
   menos de 4000 MiB livres na GPU (`GET /api/gpu`) pede confirmação. Vários
   cliques entram na fila.
 - **Jobs**: posição na fila, progresso (quadros / esperados), último quadro

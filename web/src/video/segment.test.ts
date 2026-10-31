@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { buildRunConfig, estimateSeconds, expectedFrames, formatDuration, formatTime, segmentToSource, uniqueTag } from "./segment";
+import { buildRunConfig, estimateSeconds, expectedFrames, formatDuration, formatTime, segmentToSource } from "./segment";
 
 describe("segment math", () => {
   it("segmentToSource clamps duration to the video end", () => {
@@ -32,15 +32,14 @@ describe("segment math", () => {
     expect(formatDuration(120)).toBe("~2 min");
   });
 
-  it("buildRunConfig fills the source and a tag, keeping everything else", () => {
+  it("buildRunConfig fills the source, keeping everything else (output too)", () => {
     const config = { source: { video: "old.mp4", max_frames: 5 }, output: { out_root: "x" }, detectors: [{ type: "a" }] };
-    const built = buildRunConfig(config, "/lib/v.mkv", { start: 1, duration: 3, stride: 2 }, "t1");
+    const built = buildRunConfig(config, "/lib/v.mkv", { start: 1, duration: 3, stride: 2 });
     expect(built).toEqual({
       source: { video: "/lib/v.mkv", max_frames: 5, start: 1, duration: 3, stride: 2 },
-      output: { out_root: "x", tag: "t1" },
+      output: { out_root: "x" },
       detectors: [{ type: "a" }],
     });
     expect(config.source.video).toBe("old.mp4");
-    expect(uniqueTag(1)).not.toBe(uniqueTag(1));
   });
 });

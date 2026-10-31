@@ -51,6 +51,7 @@ function fakeVideoApi(): FakeVideoApi {
       return id;
     },
     getJob: async (id) => jobs.get(id) ?? Promise.reject(new Error("unknown")),
+    listJobs: async () => [],
     cancelJob: async (id) => ({ ...(jobs.get(id) as JobInfo), status: "cancelled" }),
     jobEvents: (id, onEvent) => {
       listeners.set(id, onEvent);
@@ -77,7 +78,7 @@ async function renderStudio(api: FakeVideoApi) {
 }
 
 describe("Process", () => {
-  it("Process builds config with source.video, start, duration, stride and unique output.tag", async () => {
+  it("Process builds config with source.video, start, duration and stride (the server sets output.tag)", async () => {
     const api = fakeVideoApi();
     const { deck } = await renderStudio(api);
     const start = within(deck).getByRole("spinbutton", { name: "Start" });
@@ -102,9 +103,8 @@ describe("Process", () => {
     expect(first.config.source).toEqual({ video: record.original, stride: 3, start: 4, duration: 3 });
     // the rest of the editor's pipeline goes through untouched
     expect(first.config.detectors).toEqual([{ type: "alpha", threshold: 0.5, variant: "large", weights: null }]);
-    const tag = (c: ConfigDict) => (c.output as { tag: string }).tag;
-    expect(tag(first.config)).toBeTruthy();
-    expect(tag(first.config)).not.toBe(tag(second.config));
+    expect((first.config.output as ConfigDict | undefined)?.tag).toBeUndefined();
+    expect(second.config.source).toEqual(first.config.source);
     expect(entire.config.source).toEqual({ video: record.original, stride: 3, start: 0, duration: 0 });
 
     // the jobs panel shows the queue

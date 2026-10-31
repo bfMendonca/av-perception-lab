@@ -2,10 +2,9 @@
 // frames that is and roughly how long it takes.
 import type { ConfigDict } from "../api/types";
 
-// The run contract of `cli.run` (config.RunConfig), not pipeline stages: the
-// input section and the output section the server forces under its out_root.
+// The run contract of `cli.run` (config.RunConfig), not a pipeline stage: the
+// input section (the server forces the output section under its out_root).
 export const SOURCE_KEY = "source";
-export const OUTPUT_KEY = "output";
 
 /** Measured throughput of the recommended pipeline (frames per second). */
 export const PROCESSING_FPS = 2;
@@ -62,20 +61,15 @@ export function formatDuration(seconds: number): string {
   return `~${Math.floor(t / 3600)} h ${Math.round((t % 3600) / 60)} min`;
 }
 
-/** A tag no other submission of this page shares (the server adds its own job id too). */
-export function uniqueTag(now: number = Date.now()): string {
-  const random = Math.floor(Math.random() * 36 ** 4).toString(36).padStart(4, "0");
-  return `ui-${now.toString(36)}-${random}`;
-}
-
-/** The pipeline config of the editor with the video and the segment filled in. */
-export function buildRunConfig(config: ConfigDict, videoPath: string, segment: SourceSegment, tag: string = uniqueTag()): ConfigDict {
+/**
+ * The pipeline config of the editor with the video and the segment filled in.
+ * `output` is left as it is: the server sets the run folder and its tag.
+ */
+export function buildRunConfig(config: ConfigDict, videoPath: string, segment: SourceSegment): ConfigDict {
   const source = config[SOURCE_KEY];
-  const output = config[OUTPUT_KEY];
   const asRecord = (v: unknown) => (v && typeof v === "object" && !Array.isArray(v) ? (v as ConfigDict) : {});
   return {
     ...config,
     [SOURCE_KEY]: { ...asRecord(source), video: videoPath, start: segment.start, duration: segment.duration, stride: segment.stride },
-    [OUTPUT_KEY]: { ...asRecord(output), tag },
   };
 }

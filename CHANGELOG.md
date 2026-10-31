@@ -4,6 +4,46 @@ Todas as mudancas relevantes do det-depth-distance serao documentadas neste arqu
 
 ---
 
+## [2026-10-31] Endurecimento da interface web, desligamento e jobs
+
+Onda final de correcoes da revisao do branch da interface web (task_0018).
+
+### Seguranca
+
+- **Host/Origin**: so nomes de loopback, `--host` e `--allowed-host` sao
+  atendidos; POST/PUT/PATCH/DELETE de outra origem dao 403 (`--dev-origin`
+  libera um front-end de desenvolvimento).
+- **`source.video` sem `video_id`** precisa estar numa `--data-root` ou ser
+  original da biblioteca (422 sem revelar se o caminho existe).
+- **Campos `Path` do YAML** (pesos, rotulos, repo, cache HF, calibracao,
+  fonte; descobertos pelos esquemas) nao podem apontar para a biblioteca nem
+  para as saidas; `--asset-root` restringe a pastas do servidor, com aviso ao
+  ouvir fora do loopback sem ela.
+- **Envio**: 413 (tamanho, `Content-Length`, `meta` de 64 MiB), limites de
+  cabecalho e partes (400), 429 para mais de 2 envios, 507 sem disco; sufixo
+  guardado so de video (`.bin` para o resto).
+- **ffprobe/ffmpeg/PyAV**: so arquivos locais e demuxers de video aceitos;
+  timeout na previa.
+- **Arquivos servidos** com tipo explicito, `nosniff`, `CSP: sandbox` e
+  download fora dos tipos de midia; YAML com expansao de aliases limitada;
+  corpos JSON ate 1 MiB; ids de execucao com `.` inicial nao resolvem.
+
+### Corrigido
+
+- Ctrl-C com SSE aberto nao trava mais (3 s); jobs pendentes terminam
+  `cancelled` e registros orfaos viram interrompidos na partida.
+- Recarregar a pagina mantem os jobs (`GET /api/jobs`, reassinatura,
+  `Last-Event-ID`; job desconhecido apos reinicio e encerrado).
+- O historico mostra o nome do video da biblioteca, nao `original.mp4`.
+
+### Alterado
+
+- `uniqueTag` removido do front-end (o servidor define `output.tag`);
+  `JOBS_DIR`/`VIDEO_ID_ENV` em `web/paths.py`; teste de nomes fixos tambem
+  cobre `web/src`.
+
+---
+
 ## [2026-10-31] Historico e comparacao de execucoes na interface web
 
 Quinta e ultima entrega da interface web (task_0017): resultados de cada

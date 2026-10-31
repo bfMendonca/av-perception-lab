@@ -25,6 +25,10 @@ nomeia um modelo ou um estágio (o teste
    parágrafo da docstring da classe vira a descrição do módulo.
 
 Nada mais: o modelo aparece em `catalog["modules"][família][tipo]`.
+Um campo de arquivo/pasta anotado como `Path` (ou `Path | None`) entra
+sozinho na política de caminhos do servidor (`web.security.path_problems`:
+nunca na biblioteca nem em `out_root`; dentro de `--asset-root` quando
+passado); um caminho guardado como `str` escapa dela, então use `Path`.
 
 ## (b) Novo estágio do pipeline
 
@@ -76,6 +80,12 @@ import { registerArtifactView } from "./runs/artifactViews";
 
 registerArtifactView((a) => a.name.endsWith(".parquet"), ParquetTable);
 ```
+
+Arquivos de tipo ativo (HTML, SVG, JS, XML…) são servidos como download
+(`Content-Disposition: attachment`, `nosniff`, `CSP: sandbox`): uma visão
+própria de um tipo novo deve buscar o conteúdo (`fetch`) em vez de embutir a
+URL num `iframe`. Só vídeo, PNG/JPEG/WebP/GIF, CSV, texto, JSON, NDJSON e
+YAML abrem no navegador (`web.security.INLINE_MEDIA`).
 
 O predicado recebe `{name, size, media_type, role, url}`; o registro mais
 recente vence os embutidos (árvore JSON, imagem, MP4) e a função devolvida o

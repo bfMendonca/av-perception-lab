@@ -95,7 +95,7 @@ det-depth-distance/
 │   ├── calibration.py       # TargetSpec, CalibrationTarget (ChessboardTarget, CharucoTarget), detect_views, select_views, coverage, calibrate_views, focal_px_from_35mm
 │   ├── evaluation/          # references.py (ReferenceSet), run_data.py (RunData, load_run), matching.py, stats.py (ErrorStats, summarize), evaluate.py, report.py
 │   ├── tools/               # calibrate.py (det-depth-distance-calibrate), evaluate.py (det-depth-distance-evaluate)
-│   ├── web/                 # web backend (extra `web`, torch-free): paths.py (WebPaths, safe_join), stages.py (stage list from core.registry), schema.py (options_schema, module_catalog, validate_config), app.py (create_app), jobs.py (JobQueue), worker.py, history.py (scan_runs, load_run, job_data), compare.py (run_summary, distance_series, config_diff, compare_runs, list_artifacts, effective_config), gpu.py (free_memory_mib), library.py (Library, VideoRecord, probe, .h264 remux, background preview), uploads.py (streaming multipart reader), server.py (det-depth-distance-web); app.py also serves web/dist at / with an SPA fallback
+│   ├── web/                 # web backend (extra `web`, torch-free): paths.py (WebPaths, safe_join), stages.py (stage list from core.registry), schema.py (options_schema, module_catalog, validate_config), app.py (create_app), jobs.py (JobQueue), worker.py, history.py (scan_runs, load_run, job_data), compare.py (run_summary, distance_series, config_diff, compare_runs, list_artifacts, effective_config), gpu.py (free_memory_mib), library.py (Library, VideoRecord, probe, .h264 remux, background preview), uploads.py (streaming multipart reader, bounded headers/parts/fields), security.py (Host/Origin/body-size middlewares, path policy, served-file headers), server.py (det-depth-distance-web: --allowed-host, --dev-origin, --asset-root); app.py also serves web/dist at / with an SPA fallback
 │   ├── config.py            # RunConfig + sections, load_config, config_from_mapping, apply_overrides (--set); registers the built-in pipeline stages
 │   ├── distance.py          # pure numpy: box -> map pixels -> robust stats -> distance
 │   ├── temporal.py          # pure numpy: SmoothingConfig, distance_sigma, white_accel_cov, KalmanFilter1D / EmaFilter / MedianFilter (FILTERS), TrackSmoother
@@ -339,6 +339,38 @@ player looping the segment, two-handle segment bar with start/length/stride
 and a live estimate at 2 fps, Process and Process entire video, a GPU
 confirmation below 4000 MiB free, a job panel with queue position, progress,
 live `preview.jpg`, cancel, failure log tail) and the runs view (below) that a finished job opens.
+
+Hardening (task_0018, `web/security.py`): `TrustedHostMiddleware` answers
+only loopback names, the bound `--host` and `--allowed-host` values (400
+otherwise); unsafe methods (POST/PUT/PATCH/DELETE) with a foreign `Origin`
+(or `Sec-Fetch-Site: cross-site`) get 403 unless the origin is a
+`--dev-origin`; JSON bodies of unsafe methods are capped at 1 MiB (413).
+`POST /api/runs` without `video_id` requires `source.video` to resolve inside
+a `--data-root` or to be a library original (422, same message whether it
+exists or not); every other `Path`-typed field of the config (sections and
+adapter options, nested specs included, discovered by
+`schema.config_paths` from the annotations) must not resolve inside the
+library or `out_root`, and with `--asset-root` (repeatable) must resolve
+inside one (a non-loopback `--host` without it prints a startup warning).
+Uploads: 413 over 8 GiB (Content-Length checked up front) or 64 MiB `meta`,
+400 for a part header > 8 KiB, > 16 headers or > 8 parts, 429 beyond 2
+concurrent uploads, 507 without free disk; stored suffix allow-listed
+(`.mp4 .m4v .mov .mkv .webm .avi .ts .h264 .264`, else `.bin`). Library
+ffprobe/ffmpeg/PyAV use `-protocol_whitelist file,pipe` and `-format_whitelist
+mov,matroska,avi,mpegts,h264,hevc`; the preview encode times out after
+max(600 s, 10x duration). Served files carry an explicit type, `nosniff` and
+`CSP: sandbox`, and are attachments outside video/png/jpeg/webp/gif/csv/
+text/json/ndjson/yaml. `/api/config/parse` refuses YAML expanding to > 100k
+nodes or with recursive aliases (422). Run ids starting with `.` do not
+resolve. Shutdown: `uvicorn.run(..., timeout_graceful_shutdown=3)`;
+`JobQueue.aclose()` ends unfinished jobs `cancelled` ("the server shut
+down") and a new queue settles leftover `running`/`queued` records
+(`failed`/`cancelled`, "interrupted"). `GET /api/jobs` (unfinished + 20
+latest finished, newest first; job dicts also carry `created`, `video_id`,
+`video`), SSE events carry `id:` and honour `Last-Event-ID`; the front-end
+re-subscribes after a reload and settles a 404 job. History titles runs of
+library videos with the library name. `JOBS_DIR`/`VIDEO_ID_ENV` live in
+`web/paths.py`; `WebPaths.asset_roots`.
 
 Results and comparison (task_0017, `web/compare.py`): `GET
 /api/runs/{id}/summary` (`{summary, metrics}`), `GET /api/compare?a=ID&b=ID`

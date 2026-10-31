@@ -1,13 +1,17 @@
-// Jobs submitted from this page: status from the job's SSE stream, queue
-// position polled while it waits, and a throttled tick that refreshes the
-// live preview.jpg on `frame` events.
+// Jobs of this page: status from the job's SSE stream, queue position polled
+// while it waits, and a throttled tick that refreshes the live preview.jpg on
+// `frame` events. On mount the server's unfinished jobs are followed again
+// (a reload, or another browser), and a job the server no longer knows (it
+// restarted) is settled instead of staying "running".
 import { useCallback, useEffect, useRef, useState } from "react";
+import { ApiError } from "../api/client";
 import type { ConfigDict } from "../api/types";
-import type { JobEvent, JobStatus, VideoApi } from "../api/video";
+import type { JobEvent, JobInfo, JobStatus, VideoApi } from "../api/video";
 
 const POSITION_POLL_MS = 1500;
 const PREVIEW_REFRESH_MS = 600;
 const TERMINAL: JobStatus[] = ["done", "failed", "cancelled"];
+export const LOST_ERROR = "the server no longer knows this job (it restarted): see Runs";
 
 export interface SessionJob {
   id: string;
@@ -70,18 +74,22 @@ export function useJobs(api: VideoApi, options: JobsOptions = {}) {
         const known = jobsRef.current.find((j) => j.id === id);
         const done = known ? settle(known) : null;
         if (done && done.status === "done" && done.runId) onDone.current?.(done.runId, done);
-      } catch {
-        // the job record is gone (server restart): keep what the stream said
+      } catch (exc) {
+        // The server restarted (404): the job cannot still be running.
+        if (exc instanceof ApiError && exc.status === 404) {
+          patch(id, (j) => (isActive(j) ? { status: "failed", position: null, error: j.error ?? LOST_ERROR } : {}));
+        }
       }
     },
-    [api],
+    [api, patch],
   );
 
   const onEvent = useCallback(
     (id: string, event: JobEvent) => {
       switch (event.event) {
         case "queued":
-          patch(id, () => ({ status: "queued" }));
+          // a replay from the start never moves a running job back
+          patch(id, (j) => (j.status === "running" ? {} : { status: "queued" }));
           break;
         case "running":
           patch(id, () => ({ status: "running", position: null }));
@@ -93,7 +101,7 @@ export function useJobs(api: VideoApi, options: JobsOptions = {}) {
           const now = Date.now();
           const fresh = now - (lastTick.current.get(id) ?? 0) >= PREVIEW_REFRESH_MS;
           if (fresh) lastTick.current.set(id, now);
-          patch(id, (j) => ({ frames: typeof event.n === "number" ? event.n : j.frames + 1, status: "running", position: null, ...(fresh ? { previewTick: now } : {}) }));
+          patch(id, (j) => ({ frames: typeof event.n === "number" ? Math.max(j.frames, event.n) : j.frames + 1, status: "running", position: null, ...(fresh ? { previewTick: now } : {}) }));
           break;
         }
         case "error":
@@ -125,28 +133,49 @@ export function useJobs(api: VideoApi, options: JobsOptions = {}) {
     [api, finish, onEvent],
   );
 
-  /** Follow a job queued elsewhere (e.g. a rerun from the runs view). */
+  const known = useRef(new Set<string>());
+
+  /** Follow a job queued elsewhere (e.g. a rerun from the runs view, or one the server lists after a reload). */
   const track = useCallback(
-    (id: string, meta: { label: string; expected: number }) => {
-      if (jobsRef.current.some((j) => j.id === id)) return;
+    (id: string, meta: { label: string; expected: number }, info?: JobInfo) => {
+      if (known.current.has(id) || jobsRef.current.some((j) => j.id === id)) return;
+      known.current.add(id);
       const job: SessionJob = {
         id,
         label: meta.label,
-        status: "queued",
-        position: null,
-        frames: 0,
+        status: info?.status ?? "queued",
+        position: info?.position ?? null,
+        frames: info?.frames ?? 0,
         expected: meta.expected,
-        runId: null,
-        error: null,
-        logTail: [],
-        previewTick: 0,
-        submittedAt: Date.now(),
+        runId: info?.run_id ?? null,
+        error: info?.error ?? null,
+        logTail: info?.log_tail ?? [],
+        previewTick: info?.run_id && info.frames > 0 ? Date.now() : 0,
+        submittedAt: info?.created ? Date.parse(info.created) || Date.now() : Date.now(),
       };
       setJobs((list) => [job, ...list]);
       subscribe(id);
     },
     [subscribe],
   );
+
+  // A reloaded page (or another browser) follows the server's unfinished jobs.
+  useEffect(() => {
+    let live = true;
+    api
+      .listJobs()
+      .then((list) => {
+        if (!live) return;
+        [...list].reverse().forEach((info) => {
+          if (TERMINAL.includes(info.status)) return;
+          track(info.id, { label: info.video ?? `job ${info.id}`, expected: 0 }, info);
+        });
+      })
+      .catch(() => undefined); // an older server without the listing
+    return () => {
+      live = false;
+    };
+  }, [api, track]);
 
   const submit = useCallback(
     async (config: ConfigDict, videoId: string | undefined, meta: { label: string; expected: number }) => {
