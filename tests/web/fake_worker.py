@@ -1,8 +1,10 @@
 """Stand-in for det_depth_distance.web.worker in JobQueue tests (no models).
 
-Usage: python fake_worker.py CONFIG.yaml. The config's `fake` mapping picks
-the behaviour: mode ok | sleep | crash, `mark` (file that records start/end),
-`pid_file`, `name`.
+Usage: python fake_worker.py [--mode MODE] CONFIG.yaml. The config's `fake`
+mapping picks the behaviour: mode ok | sleep | crash, `mark` (file that
+records start/end), `pid_file`, `name`. Validated configs cannot carry a
+`fake` key: API tests pick the mode with `--mode` in their `worker_argv`.
+Like the real worker, web_run.json records the video id of DDD_WEB_VIDEO_ID.
 """
 
 import json
@@ -19,10 +21,12 @@ def emit(**event):
 
 
 def main() -> int:
-    cfg = yaml.safe_load(Path(sys.argv[1]).read_text())
-    # Validated configs cannot carry a `fake` key: output.tag picks the mode then.
-    tag = (cfg.get("output") or {}).get("tag")
-    fake = cfg.get("fake") or ({"mode": tag} if tag in ("sleep", "crash") else {})
+    args = sys.argv[1:]
+    mode_arg = None
+    if args[:1] == ["--mode"]:
+        mode_arg, args = args[1], args[2:]
+    cfg = yaml.safe_load(Path(args[0]).read_text())
+    fake = cfg.get("fake") or ({"mode": mode_arg} if mode_arg else {})
     name = fake.get("name", "job")
     mode = fake.get("mode", "ok")
     if fake.get("pid_file"):
@@ -38,7 +42,9 @@ def main() -> int:
     out = cfg["output"]
     run_dir = Path(out["out_root"]) / f"20260101_000000_{name}_{out['tag']}"
     run_dir.mkdir(parents=True, exist_ok=True)
-    (run_dir / "web_run.json").write_text(json.dumps({"status": "running"}))
+    video_id = os.environ.get("DDD_WEB_VIDEO_ID") or None
+    status = {"video_id": video_id}
+    (run_dir / "web_run.json").write_text(json.dumps({"status": "running", **status}))
     emit(
         event="started",
         run_dir=str(run_dir.with_name("foreign") if mode == "wrongstart" else run_dir),
@@ -55,7 +61,7 @@ def main() -> int:
         time.sleep(60)
     time.sleep(float(fake.get("seconds", 0.2)))
     emit(event="frame", n=2)
-    (run_dir / "web_run.json").write_text(json.dumps({"status": "done"}))
+    (run_dir / "web_run.json").write_text(json.dumps({"status": "done", **status}))
     if fake.get("mark"):
         with open(fake["mark"], "a") as fh:
             fh.write(f"end {name}\n")

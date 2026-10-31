@@ -32,7 +32,7 @@ async def wait_for(predicate, timeout=15.0):
 
 
 async def collect(queue, job_id):
-    return [e async for e in queue.events(job_id)]
+    return [e async for _, e in queue.events(job_id)]
 
 
 def test_second_job_waits_for_first(tmp_path):
@@ -247,3 +247,98 @@ def test_cancel_before_started_leaves_a_cancelled_history_entry(tmp_path):
     job = asyncio.run(scenario())
     (rec,) = scan_runs(tmp_path / "out")
     assert (rec.id, rec.status, rec.complete) == (f"job-{job.id}", "cancelled", False)
+
+
+def test_aclose_ends_running_and_queued_jobs(tmp_path):
+    # Server shutdown: no record (nor run folder) stays running/queued.
+    pid_file = tmp_path / "pid"
+
+    async def scenario():
+        queue = make_queue(tmp_path)
+        running = queue.submit(
+            {"fake": {"mode": "sleep", "name": "x", "pid_file": str(pid_file)}}
+        )
+        queued = queue.submit({"fake": {"name": "y"}})
+        await wait_for(lambda: running.frames == 1)
+        await queue.aclose()
+        events = await collect(queue, running.id)  # subscribers are woken
+        return running, queued, events
+
+    running, queued, events = asyncio.run(scenario())
+    assert events[-1] == {
+        "event": "end",
+        "status": "cancelled",
+        "error": "the server shut down",
+    }
+    records = tmp_path / "out" / ".web_jobs"
+    for job in (running, queued):
+        record = json.loads((records / f"{job.id}.json").read_text())
+        assert record["status"] == "cancelled"
+        assert record["error"] == "the server shut down"
+    meta = json.loads((Path(running.run_dir) / "web_run.json").read_text())
+    assert meta["status"] == "cancelled"
+    with pytest.raises(ProcessLookupError):
+        os.kill(int(pid_file.read_text()), 0)
+
+
+def test_leftover_unfinished_records_are_settled_on_start(tmp_path):
+    # A server killed before aclose ran (kill -9, power loss).
+    records = tmp_path / "out" / ".web_jobs"
+    records.mkdir(parents=True)
+    run_dir = tmp_path / "out" / "20260101_000000_x_web-r1"
+    run_dir.mkdir()
+    (run_dir / "web_run.json").write_text(json.dumps({"status": "running"}))
+    rows = {
+        "r1": {"id": "r1", "status": "running", "run_dir": str(run_dir)},
+        "q1": {"id": "q1", "status": "queued"},
+        "d1": {"id": "d1", "status": "done"},
+    }
+    for job_id, row in rows.items():
+        (records / f"{job_id}.json").write_text(json.dumps(row))
+    make_queue(tmp_path)
+    read = {k: json.loads((records / f"{k}.json").read_text()) for k in rows}
+    assert read["r1"]["status"] == "failed" and "interrupted" in read["r1"]["error"]
+    assert read["q1"]["status"] == "cancelled" and "interrupted" in read["q1"]["error"]
+    assert read["d1"] == rows["d1"]
+    meta = json.loads((run_dir / "web_run.json").read_text())
+    assert meta["status"] == "failed"
+
+
+def test_recent_lists_unfinished_and_latest_finished(tmp_path, monkeypatch):
+    from det_depth_distance.web import jobs as jobs_module
+
+    monkeypatch.setattr(jobs_module, "RECENT_FINISHED", 1)
+
+    async def scenario():
+        queue = make_queue(tmp_path)
+        try:
+            a = queue.submit({"fake": {"name": "a"}})
+            b = queue.submit({"fake": {"name": "b"}})
+            await collect(queue, a.id)
+            await collect(queue, b.id)
+            c = queue.submit({"fake": {"mode": "sleep", "name": "c"}})
+            listed = [j.id for j in queue.recent()]
+            queue.cancel(c.id)
+            return listed, (a.id, b.id, c.id)
+        finally:
+            await queue.aclose()
+
+    listed, (_a, b, c) = asyncio.run(scenario())
+    assert listed == [c, b]  # newest first; only the latest finished one
+
+
+def test_events_resume_after_an_index(tmp_path):
+    async def scenario():
+        queue = make_queue(tmp_path)
+        try:
+            job = queue.submit({"fake": {"name": "a"}})
+            every = [i for i, _ in [x async for x in queue.events(job.id)]]
+            later = [x async for x in queue.events(job.id, 3)]
+            return every, later, job
+        finally:
+            await queue.aclose()
+
+    every, later, job = asyncio.run(scenario())
+    assert every == list(range(len(job.events)))
+    assert [i for i, _ in later] == every[3:]
+    assert [e for _, e in later] == job.events[3:]

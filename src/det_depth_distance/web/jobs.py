@@ -8,7 +8,10 @@ client sees the whole history. Cancel kills the worker's process group with
 SIGKILL (the same lesson as the ffmpeg decoder: SIGTERM can hang on a full
 pipe). A crashed worker ends the job as `failed` with the log tail. The run
 folder of a job that did not finish is flagged in its `web_run.json`.
-The server process never imports torch; only the worker does.
+On shutdown (`aclose`) every unfinished job ends `cancelled`; a record left
+`running`/`queued` by a server that died anyway is settled as interrupted when
+the next queue starts. The server process never imports torch; only the
+worker does.
 """
 
 import asyncio
@@ -28,11 +31,12 @@ from typing import Any
 
 import yaml
 
-from det_depth_distance.web.paths import WebPaths
+from det_depth_distance.web.paths import JOBS_DIR, VIDEO_ID_ENV, WebPaths
 
 LOG_TAIL_LINES = 30
-JOBS_DIR = ".web_jobs"  # under out_root: one JSON record per job (see history)
-VIDEO_ID_ENV = "DDD_WEB_VIDEO_ID"
+RECENT_FINISHED = 20  # finished jobs `recent()` returns besides the unfinished
+SHUTDOWN_ERROR = "the server shut down"
+INTERRUPTED_ERROR = "interrupted: the server stopped before the job ended"
 _VIDEO_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")
 TERMINAL = ("done", "failed", "cancelled")
 
@@ -71,7 +75,16 @@ class Job:
             "run_id": Path(self.run_dir).name if self.run_dir else None,
             "frames": self.frames,
             "log_tail": list(self.log_tail),
+            "created": self.created,
+            "video_id": self.video_id,
+            "video": self.video_name(),
         }
+
+    def video_name(self) -> str | None:
+        """Base name of the run's source.video (None when it has none)."""
+        source = self.config.get("source")
+        video = source.get("video") if isinstance(source, dict) else None
+        return Path(video).name if isinstance(video, str) and video else None
 
 
 class JobQueue:
@@ -86,6 +99,7 @@ class JobQueue:
         self._waiting: list[Job] = []
         self._wake = asyncio.Event()
         self._runner: asyncio.Task[None] | None = None
+        self._settle_leftovers()
 
     # -- public API ---------------------------------------------------------
 
@@ -123,6 +137,14 @@ class JobQueue:
         """The job, or KeyError."""
         return self._jobs[job_id]
 
+    def recent(self) -> list[Job]:
+        """Unfinished jobs plus the `RECENT_FINISHED` latest finished ones,
+        newest first."""
+        jobs = list(self._jobs.values())[::-1]
+        finished = [j for j in jobs if j.status in TERMINAL][:RECENT_FINISHED]
+        keep = {id(j) for j in finished}
+        return [j for j in jobs if j.status not in TERMINAL or id(j) in keep]
+
     def position(self, job: Job) -> int | None:
         """Place in the waiting line (0 = starts next); None once started."""
         return self._waiting.index(job) if job in self._waiting else None
@@ -143,10 +165,13 @@ class JobQueue:
             if job.proc is not None:
                 _kill(job.proc)
 
-    async def events(self, job_id: str) -> AsyncIterator[dict[str, Any]]:
-        """Every event of the job from the start; ends after its `end` event."""
+    async def events(
+        self, job_id: str, start: int = 0
+    ) -> AsyncIterator[tuple[int, dict[str, Any]]]:
+        """`(index, event)` of every event of the job from `start` (0 = the
+        first); ends after its `end` event."""
         job = self._jobs[job_id]
-        seen = 0
+        seen = max(0, min(start, len(job.events)))
         while True:
             async with job.cond:
                 await job.cond.wait_for(
@@ -154,21 +179,61 @@ class JobQueue:
                 )
                 batch = job.events[seen:]
                 done = job.closed
-            for event in batch:
-                yield event
+            for i, event in enumerate(batch, seen):
+                yield i, event
             seen += len(batch)
             if done and seen >= len(job.events):
                 return
 
     async def aclose(self) -> None:
-        """Stop the runner and kill the running worker (server shutdown)."""
+        """Server shutdown: stop the runner (which kills the running worker's
+        process group) and end every unfinished job as `cancelled`, so no
+        record or run folder stays `running`/`queued`."""
         if self._runner is not None:
             self._runner.cancel()
             with contextlib.suppress(asyncio.CancelledError):
                 await self._runner
             self._runner = None
+        self._waiting.clear()
+        for job in list(self._jobs.values()):
+            if job.proc is not None and job.proc.returncode is None:
+                _kill(job.proc)
+            if job.closed:
+                continue
+            if job.status not in TERMINAL:
+                job.cancel_requested = True
+                job.status, job.error = "cancelled", job.error or SHUTDOWN_ERROR
+            self._flag_run(job)
+            await self._close(job)
 
     # -- internals ----------------------------------------------------------
+
+    def _settle_leftovers(self) -> None:
+        """Records a previous server left `running`/`queued` (killed before
+        `aclose` ran): a running job is `failed`, a queued one `cancelled`,
+        both with `INTERRUPTED_ERROR`, and so is the run folder's status."""
+        folder = self.paths.out_root / JOBS_DIR
+        if not folder.is_dir():
+            return
+        for path in folder.glob("*.json"):
+            try:
+                record = json.loads(path.read_text())
+            except (OSError, ValueError):
+                continue
+            if not isinstance(record, dict):
+                continue
+            status = record.get("status")
+            if status not in ("running", "queued"):
+                continue
+            record["status"] = "failed" if status == "running" else "cancelled"
+            record["error"] = record.get("error") or INTERRUPTED_ERROR
+            with contextlib.suppress(OSError):
+                tmp = path.with_suffix(".tmp")
+                tmp.write_text(json.dumps(record))
+                os.replace(tmp, path)
+            run_dir = record.get("run_dir")
+            if isinstance(run_dir, str) and run_dir:
+                _set_run_status(Path(run_dir), record["status"], only_unfinished=True)
 
     def _ensure_runner(self) -> None:
         if self._runner is None or self._runner.done():
@@ -319,11 +384,21 @@ class JobQueue:
         """Mark the job's run folder `failed`/`cancelled` in its web_run.json."""
         if job.status not in ("failed", "cancelled") or not job.run_dir:
             return
-        meta = Path(job.run_dir) / "web_run.json"
-        with contextlib.suppress(OSError, ValueError):
-            data = json.loads(meta.read_text()) if meta.is_file() else {}
-            data["status"] = job.status
-            meta.write_text(json.dumps(data))
+        _set_run_status(Path(job.run_dir), job.status)
+
+
+def _set_run_status(run_dir: Path, status: str, only_unfinished: bool = False) -> None:
+    """Write `status` into the run folder's web_run.json (with
+    `only_unfinished`, only over a `running`/`queued` one)."""
+    meta = run_dir / "web_run.json"
+    with contextlib.suppress(OSError, ValueError):
+        data = json.loads(meta.read_text()) if meta.is_file() else {}
+        if not isinstance(data, dict):
+            return
+        if only_unfinished and data.get("status") not in ("running", "queued"):
+            return
+        data["status"] = status
+        meta.write_text(json.dumps(data))
 
 
 def _kill(proc: asyncio.subprocess.Process) -> None:

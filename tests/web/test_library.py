@@ -205,7 +205,9 @@ def test_record_lists_preview_none_until_ready(web_paths, video_factory, monkeyp
     gate = __import__("threading").Event()
     real = library._make_preview
     monkeypatch.setattr(
-        library, "_make_preview", lambda src, dst: (gate.wait(30), real(src, dst))
+        library,
+        "_make_preview",
+        lambda src, dst, *a: (gate.wait(30), real(src, dst, *a)),
     )
     lib = Library(web_paths.library_root)
     try:

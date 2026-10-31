@@ -7,6 +7,9 @@ accepts. UI hints are dataclass field metadata
 advanced/help, all optional) and travel unchanged as the field's `hint`.
 `module_catalog` is a pure function of the registries (adapters, stages).
 `validate_config` returns every problem it can find as dotted-path errors.
+`config_paths` lists every filesystem path a configuration names, found from
+the `Path` annotations of the sections and of the adapters' options (no list
+of field names here, so a new path option is covered by itself).
 """
 
 import dataclasses
@@ -19,7 +22,7 @@ from typing import Any, Literal, Union
 
 from det_depth_distance import config
 from det_depth_distance.core import registry
-from det_depth_distance.core.options import ConfigError
+from det_depth_distance.core.options import ConfigError, from_mapping
 from det_depth_distance.web import stages
 
 CATALOG_VERSION = 1
@@ -211,3 +214,70 @@ def _copy(value: Any) -> Any:
     if isinstance(value, list):
         return [_copy(v) for v in value]
     return value
+
+
+def config_paths(data: dict[str, Any]) -> list[tuple[str, Path]]:
+    """`(dotted path, value)` of every `Path` a run configuration holds,
+    defaults included: the fields of its sections and of every adapter spec
+    (by its stage's family, or, for a spec nested in a section, by every
+    family that registers its `type`).
+
+    Raises:
+        ConfigError: the configuration is invalid (see `validate_config`).
+    """
+    cfg = config.config_from_mapping(_copy(data))
+    kinds = {s.yaml_key: s.kind for s in registry.stages() if s.kind is not None}
+    found: list[tuple[str, Path]] = []
+    for f in dataclasses.fields(cfg):
+        value = getattr(cfg, f.name)
+        kind = kinds.get(f.name)
+        if kind is not None and isinstance(value, list | tuple):
+            for i, spec in enumerate(value):
+                _spec_paths(spec, f"{f.name}[{i}]", found, (kind,))
+        elif kind is not None and isinstance(value, Mapping):
+            _spec_paths(value, f.name, found, (kind,))
+        else:
+            _walk_paths(value, f.name, found)
+    return found
+
+
+def _walk_paths(value: Any, path: str, found: list[tuple[str, Path]]) -> None:
+    if isinstance(value, Path):
+        found.append((path, value))
+    elif dataclasses.is_dataclass(value) and not isinstance(value, type):
+        for f in dataclasses.fields(value):
+            _walk_paths(getattr(value, f.name), f"{path}.{f.name}", found)
+    elif isinstance(value, Mapping):
+        if isinstance(value.get("type"), str):
+            families = tuple(
+                kind
+                for kind, classes in registry.available().items()
+                if value["type"] in classes
+            )
+            if families:
+                _spec_paths(value, path, found, families)
+                return
+        for key, item in value.items():
+            _walk_paths(item, f"{path}.{key}", found)
+    elif isinstance(value, list | tuple):
+        for i, item in enumerate(value):
+            _walk_paths(item, f"{path}[{i}]", found)
+
+
+def _spec_paths(
+    spec: Any, path: str, found: list[tuple[str, Path]], families: tuple[str, ...]
+) -> None:
+    """Paths of an adapter spec `{type, name?, **options}` (its options as
+    parsed for each family that has the type; an invalid spec has none)."""
+    if not isinstance(spec, Mapping):
+        return
+    options = {k: v for k, v in spec.items() if k not in ("type", "name")}
+    for kind in families:
+        cls = registry.available(kind)[kind].get(spec.get("type"))
+        if cls is None:
+            continue
+        try:
+            opts = from_mapping(cls.Options, _copy(options), path)
+        except ConfigError:
+            continue
+        _walk_paths(opts, path, found)

@@ -8,6 +8,7 @@ import pytest
 
 pytest.importorskip("fastapi")
 
+from conftest import LOCAL
 from fastapi.testclient import TestClient
 from run_folders import NEW_HEADER, OLD_HEADER, make_run
 
@@ -25,7 +26,7 @@ CONFIG_A = {**CONFIG, "output": {"tag": "web-a"}}  # every web job gets a tag
 @pytest.fixture
 def api(web_paths):
     app = create_app(web_paths, lambda p: [sys.executable, str(FAKE), str(p)])
-    with TestClient(app) as client:
+    with TestClient(base_url=LOCAL, app=app) as client:
         yield client
 
 

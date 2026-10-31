@@ -20,12 +20,17 @@ those timestamps (an approximation: per-frame jitter is lost).
 
 Server-path imports must resolve (symlinks followed) inside one of the
 allowed `data_roots`. Only `ffprobe`/`ffmpeg` (and PyAV) are used: no torch.
+Every one of them opens its input with `INPUT_GUARD`: local files only and
+only the video demuxers the library accepts (a playlist or concat file could
+otherwise make ffmpeg open other files or hosts). An upload's stored suffix
+is one of `VIDEO_SUFFIXES` (anything else is stored as `.bin`).
 """
 
 import concurrent.futures
 import contextlib
 import hashlib
 import json
+import logging
 import os
 import re
 import shutil
@@ -53,6 +58,34 @@ _SENSOR_TS = re.compile(r'"SensorTimestamp":\s*(\d+)\s*[,}\n]')  # remux_vfr.py
 PROBE_TIMEOUT_S = 60.0
 DECODE_TIMEOUT_S = 120.0
 REMUX_TIMEOUT_S = 900.0
+# The preview encode may take this long, or 10x the video's duration.
+PREVIEW_TIMEOUT_MIN_S = 600.0
+PREVIEW_TIMEOUT_PER_S = 10.0
+# Demuxers of the accepted containers (mov covers mp4/m4v/3gp, matroska webm).
+ACCEPTED_DEMUXERS = "mov,matroska,avi,mpegts,h264,hevc"
+INPUT_GUARD = [
+    "-protocol_whitelist",
+    "file,pipe",
+    "-format_whitelist",
+    ACCEPTED_DEMUXERS,
+]
+AV_INPUT_GUARD = {"protocol_whitelist": "file,pipe", "format_whitelist": "h264"}
+# Suffixes an upload keeps; the media type each one is served with.
+VIDEO_MEDIA_TYPES = {
+    ".mp4": "video/mp4",
+    ".m4v": "video/mp4",
+    ".mov": "video/quicktime",
+    ".mkv": "video/x-matroska",
+    ".webm": "video/webm",
+    ".avi": "video/x-msvideo",
+    ".ts": "video/mp2t",
+    ".h264": "video/h264",
+    ".264": "video/h264",
+}
+VIDEO_SUFFIXES = tuple(VIDEO_MEDIA_TYPES)
+UNKNOWN_SUFFIX = ".bin"
+
+log = logging.getLogger(__name__)
 
 
 class InvalidVideo(ValueError):
@@ -150,6 +183,7 @@ def probe(path: Path) -> ProbeInfo:
             "ffprobe",
             "-v",
             "error",
+            *INPUT_GUARD,
             "-select_streams",
             "v:0",
             "-show_entries",
@@ -200,8 +234,8 @@ def probe(path: Path) -> ProbeInfo:
 def _check_decodes(path: Path, at: float, which: str) -> None:
     """One frame at `at` seconds decodes (a truncated file fails near its end)."""
     proc = _run(
-        ["ffmpeg", "-v", "error", "-nostdin", "-xerror", "-ss", f"{at:.3f}"]
-        + ["-i", str(path), "-map", "0:v:0", "-frames:v", "1"]
+        ["ffmpeg", "-v", "error", "-nostdin", "-xerror", *INPUT_GUARD]
+        + ["-ss", f"{at:.3f}", "-i", str(path), "-map", "0:v:0", "-frames:v", "1"]
         + ["-f", "rawvideo", "-pix_fmt", "gray", "-s", "8x8", "pipe:1"],
         DECODE_TIMEOUT_S,
     )
@@ -213,7 +247,8 @@ def _check_decodes(path: Path, at: float, which: str) -> None:
 
 def _thumbnail(src: Path, dst: Path, at: float) -> None:
     proc = _run(
-        ["ffmpeg", "-v", "error", "-nostdin", "-y", "-ss", f"{at:.3f}", "-i", str(src)]
+        ["ffmpeg", "-v", "error", "-nostdin", "-y", *INPUT_GUARD]
+        + ["-ss", f"{at:.3f}", "-i", str(src)]
         + ["-map", "0:v:0", "-frames:v", "1", "-q:v", "4"]
         + ["-vf", f"scale='min({THUMB_WIDTH},iw)':-2", str(dst)],
         DECODE_TIMEOUT_S,
@@ -226,12 +261,18 @@ _PREVIEW_PROCS: set[subprocess.Popen[bytes]] = set()
 _PREVIEW_LOCK = threading.Lock()
 
 
-def _make_preview(src: Path, dst: Path) -> None:
+def preview_timeout_s(duration_s: float) -> float:
+    """How long the preview encode of a `duration_s` video may take."""
+    return max(PREVIEW_TIMEOUT_MIN_S, PREVIEW_TIMEOUT_PER_S * max(duration_s, 0.0))
+
+
+def _make_preview(src: Path, dst: Path, timeout: float = PREVIEW_TIMEOUT_MIN_S) -> None:
     """Browser-playable H.264 MP4 (longest side <= PREVIEW_MAX_SIDE, source
     timestamps kept so segment times match the original), atomically.
 
     Raises:
-        RuntimeError: ffmpeg failed.
+        RuntimeError: ffmpeg failed or ran longer than `timeout` seconds
+            (it is killed, so a hung encode does not hold later previews).
     """
     side = PREVIEW_MAX_SIDE
     scale = (
@@ -240,7 +281,7 @@ def _make_preview(src: Path, dst: Path) -> None:
     )
     tmp = dst.with_name(f".{dst.stem}.tmp.mp4")
     cmd = ["nice", "-n", "10"] if shutil.which("nice") else []
-    cmd += ["ffmpeg", "-v", "error", "-nostdin", "-y", "-i", str(src)]
+    cmd += ["ffmpeg", "-v", "error", "-nostdin", "-y", *INPUT_GUARD, "-i", str(src)]
     cmd += ["-map", "0:v:0", "-an", "-sn", "-dn", "-vf", scale]
     cmd += ["-c:v", "libx264", "-preset", "veryfast", "-crf", "26", "-g", "30"]
     cmd += ["-pix_fmt", "yuv420p", "-fps_mode", "passthrough"]
@@ -249,7 +290,15 @@ def _make_preview(src: Path, dst: Path) -> None:
     with _PREVIEW_LOCK:
         _PREVIEW_PROCS.add(proc)
     try:
-        _, err = proc.communicate()
+        try:
+            _, err = proc.communicate(timeout=timeout)
+        except subprocess.TimeoutExpired:
+            proc.kill()
+            proc.communicate()
+            tmp.unlink(missing_ok=True)
+            raise RuntimeError(
+                f"the preview encode timed out after {timeout:.0f} s"
+            ) from None
     finally:
         with _PREVIEW_LOCK:
             _PREVIEW_PROCS.discard(proc)
@@ -303,7 +352,7 @@ def remux_h264(src: Path, meta: Path, dst: Path) -> None:
 
 def _remux_h264_av(av: Any, src: Path, pts_us: list[int], dst: Path) -> None:
     base = Fraction(1, 1_000_000)
-    inp = av.open(str(src), format="h264")
+    inp = av.open(str(src), format="h264", options=AV_INPUT_GUARD)
     try:
         out = av.open(str(dst), "w", format="matroska")
         try:
@@ -333,8 +382,9 @@ def _remux_h264_cli(src: Path, pts_us: list[int], dst: Path) -> None:
     """Fallback without PyAV: the CLI cannot set per-packet times, so the
     frames that have a timestamp are muxed at the timestamps' mean rate."""
     proc = _run(
-        ["ffprobe", "-v", "error", "-f", "h264", "-count_packets", "-select_streams"]
-        + ["v:0", "-show_entries", "stream=nb_read_packets", "-of", "csv=p=0"]
+        ["ffprobe", "-v", "error", *INPUT_GUARD, "-f", "h264", "-count_packets"]
+        + ["-select_streams", "v:0", "-show_entries", "stream=nb_read_packets"]
+        + ["-of", "csv=p=0"]
         + [str(src)],
         REMUX_TIMEOUT_S,
     )
@@ -348,8 +398,8 @@ def _remux_h264_cli(src: Path, pts_us: list[int], dst: Path) -> None:
     step_s = (pts_us[n - 1] - pts_us[0]) / max(n - 1, 1) / 1e6 or 1 / 25
     ts = f"round(N*{step_s:.9f}/TB)"  # N = packet index (no B-frames, as rpicam)
     proc = _run(
-        ["ffmpeg", "-v", "error", "-nostdin", "-y", "-f", "h264", "-i", str(src)]
-        + ["-map", "0:v:0", "-frames:v", str(n), "-c", "copy"]
+        ["ffmpeg", "-v", "error", "-nostdin", "-y", *INPUT_GUARD, "-f", "h264"]
+        + ["-i", str(src), "-map", "0:v:0", "-frames:v", str(n), "-c", "copy"]
         + ["-bsf:v", f"setts=pts={ts}:dts={ts}", str(dst)],
         REMUX_TIMEOUT_S,
     )
@@ -387,8 +437,15 @@ def display_name(filename: str) -> str:
 
 
 def _suffix(filename: str) -> str:
+    """The stored suffix of an upload: a video suffix, else `.bin` (a client
+    name never picks how the file is served)."""
     suffix = Path(display_name(filename)).suffix.lower()
-    return suffix if re.fullmatch(r"\.[a-z0-9]{1,8}", suffix) else ""
+    return suffix if suffix in VIDEO_SUFFIXES else UNKNOWN_SUFFIX
+
+
+def video_media_type(path: Path) -> str:
+    """Media type a library video is served with (octet-stream when unknown)."""
+    return VIDEO_MEDIA_TYPES.get(path.suffix.lower(), "application/octet-stream")
 
 
 def _is_raw(filename: str) -> bool:
@@ -679,12 +736,15 @@ class Library:
             return
         folder = self.root / video_id
         try:
-            _make_preview(record.original, folder / PREVIEW)
+            _make_preview(
+                record.original, folder / PREVIEW, preview_timeout_s(record.duration_s)
+            )
             status, error = "ready", None
         except Exception as exc:  # noqa: BLE001 - recorded on the entry
             if self._closed:
                 return  # killed by close(): resume on the next start
             status, error = "failed", str(exc)
+            log.warning("preview of video %s failed: %s", video_id, error)
         with self._lock:
             path = folder / RECORD
             with contextlib.suppress(OSError, ValueError):

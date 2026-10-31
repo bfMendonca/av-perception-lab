@@ -1,10 +1,16 @@
-"""FastAPI application: thin routes over `schema` and `paths` (no torch)."""
+"""FastAPI application: thin routes over `schema` and `paths` (no torch).
 
+Request guards (`web.security`): only the allowed `Host` names are answered,
+state-changing requests from another origin are refused, JSON bodies are
+capped, and served files are never sniffed nor run as pages of the app.
+"""
+
+import asyncio
 import dataclasses
 import json
 import shutil
 import sys
-from collections.abc import AsyncIterator, Callable
+from collections.abc import AsyncIterator, Callable, Collection, Sequence
 from contextlib import asynccontextmanager
 from pathlib import Path, PurePosixPath
 from typing import Any
@@ -14,16 +20,18 @@ from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from pydantic import BaseModel
 from starlette.concurrency import run_in_threadpool
+from starlette.middleware.trustedhost import TrustedHostMiddleware
 from starlette.requests import ClientDisconnect
 
 from det_depth_distance import config
-from det_depth_distance.web import compare, gpu, history, schema, uploads
+from det_depth_distance.web import compare, gpu, history, schema, security, uploads
 from det_depth_distance.web.jobs import Job, JobQueue, valid_video_id
 from det_depth_distance.web.library import (
     InvalidVideo,
     Library,
     OutsideRoots,
     VideoRecord,
+    video_media_type,
 )
 from det_depth_distance.web.paths import WebPaths, safe_join
 
@@ -54,6 +62,65 @@ class ImportBody(BaseModel):
 
 
 VIDEO_FILES = ("file", "preview", "thumb")
+UPLOAD_PATH = "/api/videos"
+MAX_META_BYTES = 64 << 20  # the `.meta.json` part of an upload (read whole)
+MAX_CONCURRENT_UPLOADS = 2
+DISK_MARGIN_BYTES = 256 << 20  # free space kept on the library disk
+MAX_YAML_CHARS = 1 << 20
+MAX_YAML_NODES = 100_000  # after alias expansion (a config has a few hundred)
+VIDEO_OUTSIDE_ROOTS = (
+    "only videos of the library (send video_id) or of an import folder "
+    "(--data-root) can be processed"
+)
+
+
+def yaml_expanded_nodes(text: str) -> int:
+    """Nodes of a YAML document once its aliases are expanded (each alias
+    counts its whole target, as the JSON reply repeats it); anchors and
+    aliases stay usable (the shipped configs share `hf_cache` with one).
+
+    Raises:
+        yaml.YAMLError: not YAML.
+        ValueError: a recursive alias (cannot be sent as JSON).
+    """
+    memo: dict[int, int] = {}
+    active: set[int] = set()
+
+    def size(node: yaml.Node) -> int:
+        key = id(node)
+        if key in memo:
+            return memo[key]
+        if key in active:
+            raise ValueError("a YAML alias refers to itself")
+        active.add(key)
+        total = 1
+        if isinstance(node, yaml.SequenceNode):
+            total += sum(size(child) for child in node.value)
+        elif isinstance(node, yaml.MappingNode):
+            total += sum(size(k) + size(v) for k, v in node.value)
+        active.discard(key)
+        memo[key] = total
+        return total
+
+    root = yaml.compose(text, Loader=yaml.SafeLoader)
+    return 0 if root is None else size(root)
+
+
+def _free_bytes(path: Path) -> int:
+    """Free space of the disk `path` (or its nearest existing parent) is on."""
+    for folder in (path, *path.resolve().parents):
+        if folder.exists():
+            return shutil.disk_usage(folder).free
+    return 0
+
+
+def _file(path: Path, media_type: str) -> FileResponse:
+    """A served file with `security.file_headers`."""
+    return FileResponse(
+        path,
+        media_type=media_type,
+        headers=security.file_headers(media_type, path.name),
+    )
 
 
 def default_worker_argv(config_path: Path) -> list[str]:
@@ -71,6 +138,8 @@ def create_app(
     paths: WebPaths,
     worker_argv: Callable[[Path], list[str]] = default_worker_argv,
     static_dir: Path = DEFAULT_STATIC_DIR,
+    allowed_hosts: Sequence[str] = security.LOOPBACK_HOSTS,
+    dev_origins: Collection[str] = (),
 ) -> FastAPI:
     """Build the application: catalog, config, videos, runs, jobs and history.
 
@@ -78,9 +147,13 @@ def create_app(
     `static_dir` is the built front-end, served at `/` (any path outside
     `/api` that is not a file falls back to its `index.html`); it is looked
     up per request, so a build made after start-up is picked up.
+    `allowed_hosts` are the `Host` names answered (`security.allowed_hosts`);
+    `dev_origins` are other origins whose state-changing requests pass (the
+    Vite dev server).
     """
     jobs = JobQueue(paths, worker_argv)
     library = Library(paths.library_root, paths.data_roots)
+    upload_slots = asyncio.Semaphore(MAX_CONCURRENT_UPLOADS)
 
     @asynccontextmanager
     async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
@@ -89,6 +162,10 @@ def create_app(
         library.close()  # and a running preview encode
 
     app = FastAPI(title="det-depth-distance", lifespan=lifespan)
+    # The last added runs first: Host, then Origin, then the body cap.
+    app.add_middleware(security.BodyLimit, exempt=(UPLOAD_PATH,))
+    app.add_middleware(security.OriginGuard, dev_origins=dev_origins)
+    app.add_middleware(TrustedHostMiddleware, allowed_hosts=list(allowed_hosts))
     app.state.paths = paths
     app.state.jobs = jobs
     app.state.library = library
@@ -117,6 +194,38 @@ def create_app(
                 404, f"unknown run {' or '.join(repr(r) for r in run_ids)}"
             ) from None
 
+    def titled(record: history.RunRecord) -> dict[str, Any]:
+        """A history entry, titled by its library video's name when it has
+        one (uploads are stored as `original.<ext>`)."""
+        data = record.to_dict()
+        if record.video_id is not None:
+            try:
+                data["video"] = library.get(record.video_id).name
+            except KeyError:
+                pass
+        return data
+
+    def job_view(job: Job) -> dict[str, Any]:
+        data = job.to_dict(jobs.position(job))
+        if job.video_id is not None:
+            try:
+                data["video"] = library.get(job.video_id).name
+            except KeyError:
+                pass
+        return data
+
+    def video_problem(video: str) -> tuple[Path | None, str | None]:
+        """(resolved path, None) when a bare `source.video` may be processed:
+        it resolves inside an import folder or is a library original; else
+        (None, why). The reason never tells whether a path outside exists."""
+        real = security.resolve(video)
+        originals = {r.original.resolve() for r in library.list()}
+        if not (security.within(real, library.allowed_roots()) or real in originals):
+            return None, VIDEO_OUTSIDE_ROOTS
+        if not real.is_file():
+            return None, f"{Path(video).name} does not exist on the server"
+        return real, None
+
     def run_folder_or_404(run_id: str) -> Path:
         try:
             return history.run_folder(paths.out_root, run_id)
@@ -133,10 +242,21 @@ def create_app(
 
     @app.post("/api/config/parse")
     def parse(body: ParseBody) -> dict[str, Any]:
+        if len(body.yaml) > MAX_YAML_CHARS:
+            raise HTTPException(413, f"YAML longer than {MAX_YAML_CHARS >> 10} KiB")
         try:
+            nodes = yaml_expanded_nodes(body.yaml)
+            if nodes > MAX_YAML_NODES:
+                raise HTTPException(
+                    422,
+                    f"the YAML expands to more than {MAX_YAML_NODES} values "
+                    "(aliases repeating large anchors?)",
+                )
             data = yaml.safe_load(body.yaml) or {}
         except yaml.YAMLError as exc:
             raise HTTPException(422, f"invalid YAML: {exc}") from None
+        except (ValueError, RecursionError) as exc:
+            raise HTTPException(422, f"unsupported YAML: {exc}") from None
         if not isinstance(data, dict):
             raise HTTPException(422, "the top level must be a mapping")
         known = _known_keys()
@@ -163,8 +283,28 @@ def create_app(
             "cwd": str(Path.cwd().resolve()),
         }
 
-    @app.post("/api/videos")
+    @app.post(UPLOAD_PATH)
     async def upload_video(request: Request) -> dict[str, Any]:
+        # Too large (413), no room on the library disk (507), too many at once
+        # (429): refused before anything is read.
+        try:
+            declared = int(request.headers.get("content-length", "0"))
+        except ValueError:
+            declared = 0
+        limit = uploads.MAX_UPLOAD_BYTES
+        if declared > limit + (1 << 20):  # + the multipart framing
+            raise HTTPException(413, f"upload larger than {limit >> 20} MiB")
+        free = await run_in_threadpool(_free_bytes, paths.library_root)
+        if free < declared + DISK_MARGIN_BYTES:
+            raise HTTPException(507, "not enough free space on the library disk")
+        if upload_slots.locked():
+            raise HTTPException(
+                429, "too many uploads at once: wait for the others to finish"
+            )
+        async with upload_slots:
+            return await receive_upload(request, limit)
+
+    async def receive_upload(request: Request, limit: int) -> dict[str, Any]:
         # Streamed to the library's disk part by part (uploads.receive_files);
         # whatever is left in the staging folder is removed in any case.
         stage = await run_in_threadpool(library.staging_dir)
@@ -175,9 +315,11 @@ def create_app(
                     request.stream(),
                     stage,
                     ("file", "meta"),
+                    max_bytes=limit,
+                    field_limits={"meta": MAX_META_BYTES},
                 )
             except uploads.UploadError as exc:
-                raise HTTPException(400, str(exc)) from None
+                raise HTTPException(exc.status, str(exc)) from None
             except ClientDisconnect:
                 raise HTTPException(400, "the client disconnected") from None
             if "file" not in parts:
@@ -218,18 +360,37 @@ def create_app(
         record = video_or_404(video_id)
         if name not in VIDEO_FILES:
             raise HTTPException(404, f"unknown video file {name!r}")
-        files = {"file": record.original, "preview": record.preview}
-        path = files.get(name, record.thumb)
-        if path is None:
-            raise HTTPException(404, "the preview is not ready")
-        if not path.is_file():
-            raise HTTPException(404, f"{name} not available")
-        return FileResponse(path)
+        if name == "file":
+            # A missing/changed original, or an import whose folder is no
+            # longer an import root (or now resolves elsewhere), is not served.
+            if record.missing:
+                raise HTTPException(404, "the original is missing or changed")
+            if record.origin == "import" and not security.within(
+                record.original.resolve(), library.allowed_roots()
+            ):
+                raise HTTPException(404, "the original is outside the import folders")
+            return _file(record.original, video_media_type(record.original))
+        if name == "preview":
+            if record.preview is None:
+                raise HTTPException(404, "the preview is not ready")
+            if not record.preview.is_file():
+                raise HTTPException(404, "preview not available")
+            return _file(record.preview, "video/mp4")
+        if not record.thumb.is_file():
+            raise HTTPException(404, "thumb not available")
+        return _file(record.thumb, "image/jpeg")
 
     def submit_run(config: dict[str, Any], video_id: str | None) -> Any:
         """Validate and queue a run (`POST /api/runs` and rerun): 422 with
         `errors` when the config or the video id is invalid."""
         errors: list[dict[str, str]] = []
+        source = config.get("source")
+        video = source.get("video") if isinstance(source, dict) else None
+        if video_id is None and isinstance(video, str) and video:
+            # A client path reaches ffmpeg: only the library and import folders.
+            _real, problem = video_problem(video)
+            if problem is not None:
+                errors.append({"path": "source.video", "message": problem})
         if video_id is not None:
             try:
                 if not valid_video_id(video_id):
@@ -251,7 +412,10 @@ def create_app(
                 source = config.get("source")
                 source = source if isinstance(source, dict) else {}
                 config = {**config, "source": {**source, "video": str(record.original)}}
-        errors += schema.validate_config(config)
+        problems = schema.validate_config(config)
+        if not problems:  # paths are only discoverable in a valid config
+            problems = security.path_problems(config, paths)
+        errors += problems
         if errors:
             return JSONResponse({"errors": errors}, status_code=422)
         job = jobs.submit(config, video_id)
@@ -261,18 +425,29 @@ def create_app(
     async def start_run(body: RunBody) -> Any:
         return submit_run(body.config, body.video_id)
 
+    @app.get("/api/jobs")
+    def list_jobs() -> list[dict[str, Any]]:
+        # This server's unfinished jobs and its latest finished ones (a
+        # reloaded page re-subscribes to them).
+        return [job_view(job) for job in jobs.recent()]
+
     @app.get("/api/jobs/{job_id}")
     async def get_job(job_id: str) -> dict[str, Any]:
-        job = job_or_404(job_id)
-        return job.to_dict(jobs.position(job))
+        return job_view(job_or_404(job_id))
 
     @app.get("/api/jobs/{job_id}/events")
-    async def job_events(job_id: str) -> StreamingResponse:
+    async def job_events(job_id: str, request: Request) -> StreamingResponse:
         job_or_404(job_id)
+        # An EventSource reconnect sends the id of the last event it got:
+        # resume after it instead of replaying (and rewinding) everything.
+        try:
+            start = int(request.headers.get("last-event-id", "")) + 1
+        except ValueError:
+            start = 0
 
         async def stream() -> AsyncIterator[str]:
-            async for event in jobs.events(job_id):
-                yield f"data: {json.dumps(event)}\n\n"
+            async for index, event in jobs.events(job_id, start):
+                yield f"id: {index}\ndata: {json.dumps(event)}\n\n"
 
         return StreamingResponse(
             stream(),
@@ -284,16 +459,16 @@ def create_app(
     async def cancel_job(job_id: str) -> dict[str, Any]:
         job = job_or_404(job_id)
         jobs.cancel(job_id)
-        return job.to_dict(jobs.position(job))
+        return job_view(job)
 
     @app.get("/api/runs")
     def list_runs() -> list[dict[str, Any]]:
-        return [r.to_dict() for r in history.scan_runs(paths.out_root)]
+        return [titled(r) for r in history.scan_runs(paths.out_root)]
 
     @app.get("/api/runs/{run_id}")
     def get_run(run_id: str) -> dict[str, Any]:
         try:
-            return history.load_run(paths.out_root, run_id).to_dict()
+            return titled(history.load_run(paths.out_root, run_id))
         except (ValueError, FileNotFoundError):
             raise HTTPException(404, f"unknown run {run_id!r}") from None
 
@@ -323,7 +498,7 @@ def create_app(
         path = results(
             lambda: compare.artifact_path(paths.out_root, run_id, rel), run_id
         )
-        return FileResponse(path, media_type=compare.media_type(path.name))
+        return _file(path, compare.media_type(path.name))
 
     def recorded_config(run_id: str) -> tuple[dict[str, Any], str]:
         found = results(
@@ -358,19 +533,16 @@ def create_app(
         video = source.get("video") if isinstance(source, dict) else None
         if not isinstance(video, str) or not video:
             raise HTTPException(409, f"run {run_id} recorded no source video")
-        real = (Path.cwd() / video).resolve()
-        roots = library.allowed_roots()
-        if not any(real == r or real.is_relative_to(r) for r in roots):
+        _real, problem = video_problem(video)
+        if problem == VIDEO_OUTSIDE_ROOTS:
             raise HTTPException(
                 409,
                 f"{Path(video).name} is not in the video library nor in an import "
                 "folder: import it (or start the server with --data-root on its "
                 "folder) and process it from the editor",
             )
-        if not real.is_file():
-            raise HTTPException(
-                409, f"{Path(video).name} no longer exists on the server"
-            )
+        if problem is not None:
+            raise HTTPException(409, problem)
         return submit_run(config, None)
 
     @app.get("/api/runs/{run_id}/{name}")
@@ -381,7 +553,7 @@ def create_app(
         path = folder / history.RUN_FILES[name]
         if not path.is_file():
             raise HTTPException(404, f"{history.RUN_FILES[name]} not available")
-        return FileResponse(path)
+        return _file(path, compare.media_type(path.name))
 
     @app.get("/api/gpu")
     def gpu_state() -> dict[str, int | None]:

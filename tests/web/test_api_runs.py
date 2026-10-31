@@ -2,12 +2,14 @@
 
 import json
 import sys
+import time
 from pathlib import Path
 
 import pytest
 
 pytest.importorskip("fastapi")
 
+from conftest import LOCAL
 from fastapi.testclient import TestClient
 
 from det_depth_distance.web import gpu
@@ -24,7 +26,7 @@ VALID = {
 def api(web_paths):
     # A context-managed client keeps one event loop alive (queue runner, SSE).
     app = create_app(web_paths, lambda p: [sys.executable, str(FAKE), str(p)])
-    with TestClient(app) as client:
+    with TestClient(base_url=LOCAL, app=app) as client:
         yield client
 
 
@@ -61,7 +63,7 @@ def test_start_past_end_surfaces_readable_error(web_paths):
         "sys.exit(2)\n"
     )
     app = create_app(web_paths, lambda p: [sys.executable, str(script)])
-    with TestClient(app) as api:
+    with TestClient(base_url=LOCAL, app=app) as api:
         job_id = api.post("/api/runs", json={"config": VALID}).json()["job_id"]
         events = events_of(api, job_id)
         job = api.get(f"/api/jobs/{job_id}").json()
@@ -96,12 +98,25 @@ def test_run_lifecycle_history_and_files(api, web_paths, video_factory):
     assert api.get(f"/api/runs/{job['run_id']}/other").status_code == 404
 
 
-def test_cancel_endpoint_and_unknown_job(api):
-    job_id = api.post(
-        "/api/runs", json={"config": {**VALID, "output": {"tag": "sleep"}}}
-    ).json()["job_id"]
+def test_cancel_endpoint_and_unknown_job(web_paths):
+    # The first worker started sleeps (60 s), the second is an ok run.
+    modes = iter(["sleep", "ok"])
+    app = create_app(
+        web_paths, lambda p: [sys.executable, str(FAKE), "--mode", next(modes), str(p)]
+    )
+    with TestClient(base_url=LOCAL, app=app) as api:
+        _cancel_scenario(api)
+
+
+def _cancel_scenario(api):
+    job_id = api.post("/api/runs", json={"config": VALID}).json()["job_id"]
     second = api.post("/api/runs", json={"config": VALID}).json()["job_id"]
     assert api.get(f"/api/jobs/{second}").json()["position"] == 0
+    job = api.app.state.jobs.get(job_id)
+    deadline = time.monotonic() + 15
+    while job.frames < 1:  # the worker really is in its sleep
+        assert time.monotonic() < deadline, "the worker never started"
+        time.sleep(0.02)
     assert api.delete(f"/api/jobs/{job_id}").json()["status"] == "cancelled"
     assert events_of(api, job_id)[-1]["status"] == "cancelled"
     assert events_of(api, second)[-1]["status"] == "done"

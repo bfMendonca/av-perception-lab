@@ -14,7 +14,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
-from det_depth_distance.web.paths import safe_join
+from det_depth_distance.web.paths import JOBS_DIR, safe_join
 
 RUN_FILES = {
     "video": "video.mp4",
@@ -24,9 +24,6 @@ RUN_FILES = {
     "metrics": "metrics.json",
 }
 _MARKERS = ("detections.csv", "metrics.json", "web_run.json", "video.mp4")
-JOBS_DIR = (
-    ".web_jobs"  # same folder as web.jobs.JOBS_DIR (history must not import jobs)
-)
 _STAMP = "%Y%m%d_%H%M%S"
 
 
@@ -170,7 +167,8 @@ def run_folder(out_root: Path, run_id: str) -> Path:
             absolute path, or a symlink leading outside `out_root`).
         FileNotFoundError: no such run.
     """
-    if not run_id or run_id in (".", "..") or "/" in run_id or "\\" in run_id:
+    # A leading dot: hidden folders (the job records, staging) are no runs.
+    if not run_id or run_id.startswith(".") or "/" in run_id or "\\" in run_id:
         raise ValueError(f"invalid run id {run_id!r}")
     folder = safe_join(out_root, run_id)
     if not folder.is_dir():

@@ -32,9 +32,9 @@ import yaml
 from det_depth_distance import cli
 from det_depth_distance.config import load_config
 from det_depth_distance.core.options import ConfigError
+from det_depth_distance.web.paths import VIDEO_ID_ENV
 
 PREVIEW_PERIOD_S = 0.5
-VIDEO_ID_ENV = "DDD_WEB_VIDEO_ID"
 
 
 def _folders(out_root: Path) -> set[Path]:

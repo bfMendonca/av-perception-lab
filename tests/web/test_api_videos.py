@@ -9,6 +9,7 @@ import pytest
 
 pytest.importorskip("fastapi")
 
+from conftest import LOCAL
 from fastapi.testclient import TestClient
 
 from det_depth_distance.web.app import create_app
@@ -20,7 +21,7 @@ VALID = {"detectors": [{"type": "rfdetr"}], "depth": {"type": "da3"}}
 @pytest.fixture
 def api(web_paths):
     app = create_app(web_paths, lambda p: [sys.executable, str(FAKE), str(p)])
-    with TestClient(app) as client:
+    with TestClient(base_url=LOCAL, app=app) as client:
         yield client
 
 

@@ -3,6 +3,7 @@ the pipeline code appear in the catalog with no change under web/."""
 
 import ast
 import dataclasses
+import re
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -137,3 +138,25 @@ def test_web_package_has_no_hardcoded_adapter_names():
     for path in WEB_SRC.glob("*.py"):
         clash = _string_literals(path) & names
         assert not clash, f"{path.name} hard-codes adapter names {sorted(clash)}"
+
+
+# The run contract of cli.run (config.RunConfig input/output), not stages.
+RUN_CONTRACT_KEYS = {"source", "output"}
+FRONT_END_SRC = WEB_SRC.parents[2] / "web" / "src"
+_TS_STRING = re.compile(r"""(["'`])([A-Za-z0-9_.\-]+)\1""")
+
+
+def test_front_end_has_no_hardcoded_stage_or_model_names():
+    names = {t for classes in registry.available().values() for t in classes}
+    keys = {s.yaml_key for s in registry.stages()} - RUN_CONTRACT_KEYS
+    assert "rfdetr" in names and "detectors" in keys
+    sources = [
+        p
+        for p in FRONT_END_SRC.rglob("*.ts*")
+        if ".test." not in p.name and "test" not in p.relative_to(FRONT_END_SRC).parts
+    ]
+    assert sources, f"no front-end sources under {FRONT_END_SRC}"
+    for path in sources:
+        literals = {m.group(2) for m in _TS_STRING.finditer(path.read_text())}
+        clash = literals & (names | keys)
+        assert not clash, f"{path.name} hard-codes {sorted(clash)}"

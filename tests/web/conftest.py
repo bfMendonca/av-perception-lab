@@ -13,6 +13,9 @@ from det_depth_distance.web.app import create_app
 from det_depth_distance.web.paths import WebPaths
 
 REPO = Path(__file__).resolve().parents[2]
+# The server answers loopback Host names only (TrustedHostMiddleware), not
+# TestClient's default "testserver".
+LOCAL = "http://127.0.0.1"
 
 
 @pytest.fixture
@@ -22,7 +25,7 @@ def web_paths(tmp_path: Path) -> WebPaths:
 
 @pytest.fixture
 def client(web_paths: WebPaths) -> TestClient:
-    return TestClient(create_app(web_paths))
+    return TestClient(base_url=LOCAL, app=create_app(web_paths))
 
 
 @pytest.fixture
