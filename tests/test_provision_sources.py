@@ -35,10 +35,17 @@ DATA = bytes(range(256)) * 2048  # 512 KiB, several CHUNKs
 SHA = hashlib.sha256(DATA).hexdigest()
 
 
+ETAG = '"v1"'
+
+
 class _Server(http.server.ThreadingHTTPServer):
     daemon_threads = True
-    range_support = True
+    range_support = True  # honour Range (and If-Range) on /file.bin
+    range_mode = "ok"  # "ok", "bad_start" (206 from 0) or "416"
+    short_once = False  # /short: first answer cut in half
+    etag = ETAG
     ranges: list[str | None]
+    if_ranges: list[str | None]
     slow_stop: threading.Event
 
 
@@ -48,13 +55,21 @@ class _Handler(http.server.BaseHTTPRequestHandler):
     def log_message(self, *args) -> None:  # keep pytest output clean
         pass
 
+    def _redirect(self, location: str) -> None:
+        self.send_response(302)
+        self.send_header("Location", location)
+        self.send_header("Content-Length", "0")
+        self.end_headers()
+
     def do_GET(self) -> None:
-        self.server.ranges.append(self.headers.get("Range"))
+        srv = self.server
+        srv.ranges.append(self.headers.get("Range"))
+        srv.if_ranges.append(self.headers.get("If-Range"))
         if self.path == "/slow":
             self.send_response(200)
             self.send_header("Content-Length", str(1 << 30))
             self.end_headers()
-            while not self.server.slow_stop.is_set():
+            while not srv.slow_stop.is_set():
                 try:
                     self.wfile.write(b"x" * 4096)
                     self.wfile.flush()
@@ -62,22 +77,44 @@ class _Handler(http.server.BaseHTTPRequestHandler):
                     return
                 time.sleep(0.01)
             return
-        if self.path != "/file.bin":
+        if self.path == "/to-file":
+            return self._redirect("file:///etc/hostname")
+        if self.path == "/to-ftp":
+            return self._redirect("ftp://127.0.0.1/file.bin")
+        if self.path == "/to-ok":
+            return self._redirect("/file.bin")
+        if self.path == "/nolength":  # HTTP/1.0: the body ends when the socket closes
+            self.send_response(200)
+            self.end_headers()
+            self.wfile.write(DATA)
+            return
+        if self.path not in ("/file.bin", "/short"):
             self.send_error(404)
             return
         start = 0
         header = self.headers.get("Range")
-        if header and self.server.range_support:
+        if_range = self.headers.get("If-Range")
+        if header and srv.range_support and if_range in (None, srv.etag):
+            if srv.range_mode == "416":
+                self.send_error(416)
+                return
             start = int(header.removeprefix("bytes=").split("-")[0])
+            sent = 0 if srv.range_mode == "bad_start" else start
             self.send_response(206)
             self.send_header(
-                "Content-Range", f"bytes {start}-{len(DATA) - 1}/{len(DATA)}"
+                "Content-Range", f"bytes {sent}-{len(DATA) - 1}/{len(DATA)}"
             )
+            start = sent
         else:
             self.send_response(200)
         body = DATA[start:]
         self.send_header("Content-Length", str(len(body)))
+        self.send_header("ETag", srv.etag)
         self.end_headers()
+        if self.path == "/short" and srv.short_once:
+            srv.short_once = False
+            self.wfile.write(body[: len(body) // 2])  # then the socket closes
+            return
         self.wfile.write(body)
 
 
@@ -85,6 +122,7 @@ class _Handler(http.server.BaseHTTPRequestHandler):
 def server():
     srv = _Server(("127.0.0.1", 0), _Handler)
     srv.ranges = []
+    srv.if_ranges = []
     srv.slow_stop = threading.Event()
     thread = threading.Thread(target=srv.serve_forever, daemon=True)
     thread.start()
@@ -125,23 +163,119 @@ def test_url_source_downloads_atomically_and_verifies_sha(tmp_path, server):
     assert check(Requirements(assets=(asset,)), tmp_path).state == "ready"
 
 
+def _half_part(tmp_path: Path, etag: str | None = ETAG) -> tuple[Path, int]:
+    """A `.part` holding the first half of DATA, with its validator sidecar."""
+    part = tmp_path / "fam/model/w.bin.part"
+    part.parent.mkdir(parents=True, exist_ok=True)
+    half = len(DATA) // 2
+    part.write_bytes(DATA[:half])
+    if etag is not None:
+        (tmp_path / "fam/model/w.bin.part.meta").write_text(etag)
+    return part, half
+
+
+def _prepare(asset: UrlAsset, root: Path):
+    return prepare(Requirements(assets=(asset,)), root, _no_progress, threading.Event())
+
+
 @pytest.mark.parametrize("range_support", [True, False])
 def test_url_source_resumes_from_part_file(tmp_path, server, range_support):
     server.range_support = range_support
-    part = tmp_path / "fam/model/w.bin.part"
-    part.parent.mkdir(parents=True)
-    half = len(DATA) // 2
-    part.write_bytes(DATA[:half])
+    part, half = _half_part(tmp_path)
     asset = _asset(server)
     assert check(Requirements(assets=(asset,)), tmp_path).state == "missing"
-    status = prepare(
-        Requirements(assets=(asset,)), tmp_path, _no_progress, threading.Event()
-    )
+    status = _prepare(asset, tmp_path)
     assert status.state == "ready", status.message
     assert server.ranges == [f"bytes={half}-"]
+    assert server.if_ranges == [ETAG]
     # With Range support only the tail was sent; without it the file restarted.
     assert (tmp_path / "fam/model/w.bin").read_bytes() == DATA
     assert not part.exists()
+    assert not (tmp_path / "fam/model/w.bin.part.meta").exists()
+
+
+def test_resume_with_changed_remote_restarts(tmp_path, server):
+    _, half = _half_part(tmp_path, etag='"v0"')  # the remote is now "v1"
+    status = _prepare(_asset(server), tmp_path)
+    assert status.state == "ready", status.message
+    assert server.ranges == [f"bytes={half}-"] and server.if_ranges == ['"v0"']
+    assert (tmp_path / "fam/model/w.bin").read_bytes() == DATA
+
+
+def test_part_without_validator_or_integrity_is_not_resumed(tmp_path, server):
+    _half_part(tmp_path, etag=None)  # no sidecar: never trusted
+    assert _prepare(_asset(server), tmp_path).state == "ready"
+    _half_part(tmp_path / "b")  # sidecar, but nothing to verify the result
+    asset = _asset(server, sha256=None, size_bytes=None)
+    assert _prepare(asset, tmp_path / "b").state == "ready"
+    assert server.ranges == [None, None]
+
+
+@pytest.mark.parametrize("mode", ["bad_start", "416"])
+def test_wrong_range_answer_restarts_from_zero(tmp_path, server, mode):
+    server.range_mode = mode
+    _, half = _half_part(tmp_path)
+    status = _prepare(_asset(server), tmp_path)
+    assert status.state == "ready", status.message
+    assert server.ranges == [f"bytes={half}-", None]
+    assert (tmp_path / "fam/model/w.bin").read_bytes() == DATA
+
+
+def test_body_shorter_than_content_length_is_kept_and_resumed(tmp_path, server):
+    server.short_once = True
+    asset = _asset(server, "/short")
+    first = _prepare(asset, tmp_path)
+    assert first.state == "failed" and "interrupted" in (first.message or "")
+    assert not (tmp_path / "fam/model/w.bin").exists()
+    part = tmp_path / "fam/model/w.bin.part"
+    assert part.stat().st_size == len(DATA) // 2
+    second = _prepare(asset, tmp_path)
+    assert second.state == "ready", second.message
+    assert server.ranges == [None, f"bytes={len(DATA) // 2}-"]
+    assert (tmp_path / "fam/model/w.bin").read_bytes() == DATA
+
+
+def test_short_body_without_content_length_or_sha_is_never_ready(tmp_path, server):
+    server.short_once = True
+    asset = _asset(server, "/short", sha256=None)  # Content-Length still sent
+    assert "interrupted" in (_prepare(asset, tmp_path).message or "")
+    assert not (tmp_path / "fam/model/w.bin").exists()
+
+
+def test_unverifiable_download_fails_and_leaves_no_file(tmp_path, server):
+    asset = _asset(server, "/nolength", sha256=None)
+    status = _prepare(asset, tmp_path)
+    assert status.state == "failed"
+    assert src.UNVERIFIABLE in (status.message or "")
+    assert not (tmp_path / "fam/model/w.bin").exists()
+    assert not (tmp_path / "fam/model/w.bin.part").exists()
+    # A declared size (or sha256) makes the same answer acceptable.
+    sized = _asset(server, "/nolength", sha256=None, size_bytes=len(DATA))
+    assert _prepare(sized, tmp_path).state == "ready"
+
+
+@pytest.mark.parametrize("path", ["/to-file", "/to-ftp"])
+def test_redirect_outside_http_is_refused(tmp_path, server, path):
+    status = _prepare(_asset(server, path), tmp_path)
+    assert status.state == "failed"
+    assert "refused redirect" in (status.message or "")
+    assert not (tmp_path / "fam/model/w.bin").exists()
+
+
+def test_http_redirect_is_followed(tmp_path, server):
+    assert _prepare(_asset(server, "/to-ok"), tmp_path).state == "ready"
+    assert server.ranges == [None, None]
+
+
+def test_https_to_http_redirect_is_refused():
+    import email.message
+    import io
+
+    request = src.urllib.request.Request("https://example.org/w.bin")
+    headers = email.message.Message()
+    headers["Location"] = "http://example.org/w.bin"
+    with pytest.raises(ProvisionError, match="downgrade"):
+        src._SafeRedirect().http_error_302(request, io.BytesIO(), 302, "Found", headers)
 
 
 def test_url_sha_mismatch_ends_failed_and_removes_part(tmp_path, server):
@@ -159,6 +293,7 @@ def test_stale_part_with_wrong_bytes_is_restarted_not_accepted(tmp_path, server)
     part = tmp_path / "fam/model/w.bin.part"
     part.parent.mkdir(parents=True)
     part.write_bytes(b"\xff" * 1000)  # a resumed prefix that is not the file
+    (tmp_path / "fam/model/w.bin.part.meta").write_text(ETAG)
     req = Requirements(assets=(_asset(server),))
     first = prepare(req, tmp_path, _no_progress, threading.Event())
     assert first.state == "failed" and "sha256 mismatch" in (first.message or "")
@@ -244,7 +379,7 @@ def test_user_provided_never_downloads(tmp_path, server, monkeypatch):
     def no_network(*args, **kwargs):
         raise AssertionError("a user-provided asset triggered a download")
 
-    monkeypatch.setattr(src.urllib.request, "urlopen", no_network)
+    monkeypatch.setattr(src, "_open", no_network)
     asset = UserProvided(
         key="ckpt", target="u/ckpt.pt", option="weights", hint="Put the checkpoint"
     )
@@ -343,16 +478,75 @@ def test_git_unknown_commit_fails_and_cleans_temporary_clone(tmp_path, origin):
     assert not (root / "_code" / "tool.part").exists()
 
 
-def test_git_cancel_kills_the_clone(tmp_path, origin, monkeypatch):
-    repo, first, _ = origin
+def _fake_git(tmp_path: Path, body: str) -> str:
+    """An executable standing in for git (POSIX shell)."""
+    script = tmp_path / "fake-git"
+    script.write_text("#!/bin/sh\n" + body)
+    script.chmod(0o755)
+    return str(script)
+
+
+def test_git_cancel_kills_the_clone(tmp_path, monkeypatch):
+    # The stand-in creates the clone folder (last argument) and then hangs, so
+    # the cancel lands while "git clone" runs; exec keeps one process to kill.
+    monkeypatch.setattr(
+        src,
+        "GIT",
+        _fake_git(
+            tmp_path, 'for a; do last=$a; done\nmkdir -p "$last"\nexec sleep 30\n'
+        ),
+    )
+    root = tmp_path / "weights"
     cancel = threading.Event()
-    cancel.set()  # set before the clone: git is killed at the first poll
-    monkeypatch.setattr(src, "GIT_POLL_S", 0.0001)
+    clone_dir = root / "_code" / "tool.part"
+
+    def progress(done, total):
+        threading.Timer(0.3, cancel.set).start()
+
+    code = CodeRepo(name="tool", url="https://example.invalid/x.git", commit="a" * 40)
+    started = time.monotonic()
+    with pytest.raises(ProvisionCancelled):
+        src.GitSource().prepare(code, root, progress, cancel)
+    assert time.monotonic() - started < 10
+    assert not clone_dir.exists()
+    assert not (root / "_code" / "tool").exists()
+
+
+def test_git_command_times_out(tmp_path, monkeypatch):
+    monkeypatch.setattr(src, "GIT", _fake_git(tmp_path, "exec sleep 30\n"))
+    monkeypatch.setattr(src, "GIT_TIMEOUT_S", 0.3)
+    started = time.monotonic()
+    with pytest.raises(ProvisionError, match="timed out after 0.3 s"):
+        src._git(["status"], threading.Event(), "git status")
+    assert time.monotonic() - started < 10
+
+
+@pytest.mark.parametrize("pin", ["-x", "--upload-pack=touch", "main"])
+def test_git_pin_that_is_not_a_hex_commit_is_refused(pin):
+    with pytest.raises(ValueError, match="hex"):
+        CodeRepo(name="tool", url="x", commit=pin)
+
+
+def test_git_arguments_end_options_before_the_commit(tmp_path, origin, monkeypatch):
+    repo, first, _ = origin
+    calls = []
+    real = src._git
+
+    def spy(args, cancel, what):
+        calls.append(args)
+        return real(args, cancel, what)
+
+    monkeypatch.setattr(src, "_git", spy)
     code = CodeRepo(name="tool", url=str(repo), commit=first)
     root = tmp_path / "weights"
-    status = prepare(Requirements(code=(code,)), root, _no_progress, cancel)
-    assert (status.message or "").startswith("cancelled")
-    assert not (root / "_code" / "tool").exists()
+    status = prepare(Requirements(code=(code,)), root, _no_progress, threading.Event())
+    assert status.state == "ready", status.message
+    assert calls
+    for args in calls:
+        if first in " ".join(args):
+            commit_at = next(i for i, a in enumerate(args) if first in a)
+            assert "--end-of-options" in args[:commit_at], args
+    assert any("switch" in args for args in calls)
 
 
 # --------------------------------------------------------------- Hugging Face

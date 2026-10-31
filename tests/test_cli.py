@@ -239,7 +239,7 @@ def test_cli_prepare_exit_code_and_table(tmp_path, monkeypatch, capsys):
     def offline(*args, **kwargs):
         raise sources.urllib.error.URLError("no network")
 
-    monkeypatch.setattr(sources.urllib.request, "urlopen", offline)
+    monkeypatch.setattr(sources, "_open", offline)
     assert main(["--config", str(cfg), "--prepare"]) == 1
     out = capsys.readouterr().out
     assert "[prepare] detectors[0] fake (needs_weights)" in out
@@ -276,3 +276,32 @@ def test_cli_existing_invocations_unchanged(tmp_path, config, monkeypatch):
     assert main(["--config", str(config)]) == 0
     assert len(calls) == 1 and calls[0].depth["type"] == "da3"
     assert main(["--list-models"]) == 0
+
+
+def test_cli_prepare_ctrl_c_exits_130_and_keeps_part(tmp_path, monkeypatch, capsys):
+    from det_depth_distance.core import registry
+    from det_depth_distance.core.provision import sources
+    from det_depth_distance.core.requirements import UrlAsset
+
+    root = tmp_path / "weights"
+    monkeypatch.setenv("DDD_WEIGHTS_ROOT", str(root))
+    registry.load_adapters()
+    asset = UrlAsset(
+        key="ckpt", target="fake/ckpt.bin", url="https://example.invalid/c"
+    )
+    monkeypatch.setitem(
+        registry._REGISTRY["detector"], "needs_weights", _fake_detector(asset)
+    )
+    part = root / "fake/ckpt.bin.part"
+
+    def interrupted(self, asset, root, progress, cancel):
+        part.parent.mkdir(parents=True, exist_ok=True)
+        part.write_bytes(b"half")
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr(sources.UrlSource, "prepare", interrupted)
+    cfg = _prepare_config(tmp_path, "needs_weights")
+    assert main(["--config", str(cfg), "--prepare"]) == 130
+    err = capsys.readouterr().err
+    assert "cancelled" in err and "Traceback" not in err
+    assert part.read_bytes() == b"half"

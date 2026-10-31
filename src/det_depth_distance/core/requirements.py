@@ -106,6 +106,9 @@ def asset_kinds() -> dict[str, type[Asset]]:
 
 
 _REVISION_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]*")
+# A pin is a commit id (abbreviated or full; SHA-1 or SHA-256): a branch or tag
+# moves, and a leading "-" would be read as a git option.
+_COMMIT_RE = re.compile(r"[0-9a-fA-F]{7,64}")
 
 
 def _check_revision(value: str, what: str = "revision") -> None:
@@ -249,7 +252,8 @@ class HuggingFaceAsset(Asset):
 
 @dataclass(frozen=True, kw_only=True)
 class CodeRepo:
-    """A git clone pinned to `commit` at `<root>/_code/<name>`."""
+    """A git clone pinned to `commit` (7-64 hex characters) at
+    `<root>/_code/<name>`."""
 
     name: str
     url: str
@@ -266,6 +270,11 @@ class CodeRepo:
             or PurePath(n).is_absolute()
         ):
             raise UnsafePathError(f"unsafe code folder name {n!r}: one plain component")
+        if not _COMMIT_RE.fullmatch(self.commit):
+            raise UnsafePathError(
+                f"code {n}: commit {self.commit!r} must be 7-64 hex characters "
+                "(a pinned commit id, not a branch or tag)"
+            )
 
     def path(self, root: Path) -> Path:
         return contained(root, f"{CODE_DIR}/{self.name}")

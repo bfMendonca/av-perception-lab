@@ -17,13 +17,22 @@ Obtain what a model declares (task_0020). Adapters declare nothing yet
   (`register_source`, duplicate kinds raise `ValueError`).
 - Built-in sources: Hugging Face (`snapshot_download` into the `weights/hf`
   cache layout with `allow_patterns`, lazy import; gated, offline and 404
-  messages), URL (`urllib`, `<target>.part`, `Range` resume or clean restart,
-  size/sha256 check that deletes a bad `.part`, atomic rename), git (clone +
-  pinned checkout under `weights/_code/<name>`; an existing clone is moved to
-  the pin, never deleted) and user-provided ("provide this file", never
-  downloads). Every write path is confined to the weights root.
+  messages), URL (`urllib`, `<target>.part`, atomic rename; accepted only when
+  the declared size or sha256 matches or the full `Content-Length` arrived;
+  resume with `Range` + `If-Range` only when size or sha256 is declared;
+  redirects only to http(s), no https -> http), git (clone + pinned checkout
+  under `weights/_code/<name>`, per-command timeout, killed with its helpers
+  on cancel; an existing clone is moved to the pin, never deleted) and
+  user-provided ("provide this file", never downloads). Every write path is
+  confined to the weights root.
+
+### Changed
+
+- `CodeRepo.commit` must be a hex commit id (7-64 characters); branches and
+  tags are refused.
 - CLI flag `--prepare`: prepares every component of the YAML, prints a status
-  table, exit code 0 only when all are ready.
+  table, exit code 0 only when all are ready (130 on Ctrl-C, partial
+  downloads kept for resume).
 
 ---
 

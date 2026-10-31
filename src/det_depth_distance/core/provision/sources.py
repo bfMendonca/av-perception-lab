@@ -9,12 +9,17 @@ leave the weights root. Only the standard library is imported here;
   `<root>/<target>` as a cache dir (the layout `HuggingFaceAsset.present`
   reads), restricted to the declared files/patterns. The hub keeps its own
   `.incomplete` blobs (never ready) and resumes them.
-- `UrlAsset`: streams to `<target>.part`, resumes with a `Range` header when
-  the server answers 206 (a 200 restarts cleanly), checks the size and
-  `sha256` when declared (a mismatch deletes the `.part`, so the next run
-  restarts), then renames atomically. A cancel keeps the `.part` for resume.
-- `CodeRepo`: `git clone --no-checkout` into `<name>.part`, `checkout` of the
-  pinned commit, rename. An existing clone at another commit is fetched and
+- `UrlAsset`: streams to `<target>.part`, then renames atomically. A file is
+  accepted only if the declared size or `sha256` matches, or the server's
+  full length was received; otherwise it fails ("cannot verify download
+  integrity"). A `.part` is resumed (`Range` + `If-Range` with the validator
+  saved in `<target>.part.meta`) only when size or `sha256` is declared and
+  the server answers 206 at the right offset; anything else restarts. A
+  mismatch deletes the `.part`; a cancel keeps it for resume. Redirects go
+  only to http(s), never from https down to http.
+- `CodeRepo`: `git clone --no-checkout` into `<name>.part`, `switch --detach`
+  to the pinned commit (hex only, after `--end-of-options`), rename. Each git
+  command is killed (with its helpers) on cancel or after `GIT_TIMEOUT_S`. An existing clone at another commit is fetched and
   checked out, never deleted; a folder that is not a clone is left alone.
 - `UserProvided`: never downloads; raises with the declared hint.
 
@@ -26,9 +31,12 @@ import hashlib
 import http.client
 import os
 import shutil
+import signal
 import subprocess
 import threading
+import time
 import urllib.error
+import urllib.parse
 import urllib.request
 from pathlib import Path
 
@@ -49,7 +57,9 @@ from det_depth_distance.core.requirements import (
 
 CHUNK = 1 << 16  # bytes per read; the cancel event is checked between reads
 HTTP_TIMEOUT_S = 30.0
-GIT_POLL_S = 0.1
+GIT = "git"  # executable
+GIT_POLL_S = 0.1  # how often a running git checks the cancel event
+GIT_TIMEOUT_S = 900.0  # per git command (a stalled clone or fetch fails)
 
 
 def _check_cancel(cancel: threading.Event) -> None:
@@ -59,22 +69,27 @@ def _check_cancel(cancel: threading.Event) -> None:
 
 # --------------------------------------------------------------- URL
 
+UNVERIFIABLE = (
+    "cannot verify download integrity: declare size_bytes or sha256 for this asset"
+)
 
-def _content_range_start(header: str | None) -> int | None:
-    """Start offset of a `Content-Range: bytes a-b/n` header."""
+
+def _content_range(header: str | None) -> tuple[int | None, int | None]:
+    """(start, total) of a `Content-Range: bytes a-b/n` header."""
     if not header or not header.startswith("bytes "):
-        return None
-    try:
-        return int(header[6:].split("-", 1)[0])
-    except ValueError:
-        return None
+        return None, None
+    span, _, tail = header[6:].partition("/")
+    first = span.split("-", 1)[0]
+    start = int(first) if first.isdigit() else None
+    return start, int(tail) if tail.isdigit() else None
 
 
-def _content_range_total(header: str | None) -> int | None:
-    if not header or "/" not in header:
-        return None
-    tail = header.rsplit("/", 1)[1]
-    return int(tail) if tail.isdigit() else None
+def _validator(headers) -> str | None:
+    """A strong validator usable in `If-Range` (a weak ETag is not)."""
+    etag = headers.get("ETag")
+    if etag and not etag.startswith("W/"):
+        return etag
+    return headers.get("Last-Modified")
 
 
 def _http_reason(exc: Exception, asset: UrlAsset) -> str:
@@ -93,9 +108,45 @@ def _http_reason(exc: Exception, asset: UrlAsset) -> str:
     return f"offline or unreachable: cannot download {asset.url} ({reason})"
 
 
+class _SafeRedirect(urllib.request.HTTPRedirectHandler):
+    """Follow redirects only to http(s), never from https down to http."""
+
+    def http_error_302(self, req, fp, code, msg, headers):
+        location = headers.get("Location") or headers.get("URI")
+        if location:
+            new = urllib.parse.urljoin(req.full_url, location)
+            scheme = urllib.parse.urlsplit(new).scheme.lower()
+            old = urllib.parse.urlsplit(req.full_url).scheme.lower()
+            if scheme not in ("http", "https") or (old == "https" and scheme == "http"):
+                fp.close()
+                raise ProvisionError(
+                    f"refused redirect from {req.full_url} to {new} "
+                    "(only http(s), no https -> http downgrade)"
+                )
+        return super().http_error_302(req, fp, code, msg, headers)
+
+    http_error_301 = http_error_303 = http_error_307 = http_error_308 = http_error_302
+
+
+_OPENER = urllib.request.build_opener(_SafeRedirect)
+
+
+def _open(request: urllib.request.Request):
+    return _OPENER.open(request, timeout=HTTP_TIMEOUT_S)
+
+
 @register_source(UrlAsset)
 class UrlSource:
-    """Plain HTTP(S) download with resume and checksum (stdlib `urllib`)."""
+    """Plain HTTP(S) download with resume and integrity checks (`urllib`).
+
+    A file is accepted only when its integrity is known: the declared
+    `size_bytes` or `sha256` matches, or the server's `Content-Length` (or
+    `Content-Range` total) was received in full. A `.part` is resumed only
+    when `size_bytes` or `sha256` is declared and the server answers 206 at
+    the expected offset to an `If-Range` request carrying the validator
+    (ETag / Last-Modified) saved in `<target>.part.meta` when the `.part` was
+    started; anything else restarts from zero.
+    """
 
     def prepare(
         self,
@@ -108,14 +159,13 @@ class UrlSource:
             raise ProvisionError(f"unsupported URL scheme: {asset.url}")
         target = contained(root, asset.target)
         part = contained(root, asset.target + ".part")
+        meta = contained(root, asset.target + ".part.meta")
         target.parent.mkdir(parents=True, exist_ok=True)
-        if part.is_dir():
+        if part.is_dir() or meta.is_dir():
             raise ProvisionError(f"{part} is a folder, expected a partial file")
         try:
-            self._download(asset, part, progress, cancel)
-        except ProvisionCancelled:
-            raise
-        except ProvisionError:
+            server_total = self._download(asset, part, meta, progress, cancel)
+        except (ProvisionCancelled, ProvisionError):
             raise
         except (urllib.error.URLError, TimeoutError, ConnectionError) as exc:
             raise ProvisionError(_http_reason(exc, asset)) from None
@@ -124,50 +174,76 @@ class UrlSource:
                 f"download of {asset.url} interrupted ({type(exc).__name__}); "
                 "run Prepare again to resume"
             ) from None
-        self._verify(asset, part)
+        self._verify(asset, part, meta, server_total)
         os.replace(part, target)
+        meta.unlink(missing_ok=True)
+
+    @staticmethod
+    def _restart(part: Path, meta: Path) -> None:
+        part.unlink(missing_ok=True)
+        meta.unlink(missing_ok=True)
 
     def _download(
         self,
         asset: UrlAsset,
         part: Path,
+        meta: Path,
         progress: ItemProgress,
         cancel: threading.Event,
-    ) -> None:
+    ) -> int | None:
+        """Fill `part`; returns the full size announced by the server, if any."""
+        resumable = asset.size_bytes is not None or asset.sha256 is not None
         offset = part.stat().st_size if part.is_file() else 0
-        if asset.size_bytes is not None and offset > asset.size_bytes:
-            offset = 0  # longer than the file: stale, restart
+        validator = meta.read_text().strip() if meta.is_file() else ""
+        if offset and (
+            not resumable
+            or not validator
+            or (asset.size_bytes is not None and offset >= asset.size_bytes)
+        ):
+            # Unverifiable, unvalidated or too long: never trust it, restart.
+            self._restart(part, meta)
+            offset = 0
         headers = {"User-Agent": "det-depth-distance"}
         if offset:
             headers["Range"] = f"bytes={offset}-"
+            headers["If-Range"] = validator
         request = urllib.request.Request(asset.url, headers=headers)
         _check_cancel(cancel)
         try:
-            response = urllib.request.urlopen(request, timeout=HTTP_TIMEOUT_S)
+            response = _open(request)
         except urllib.error.HTTPError as exc:
             if exc.code != 416 or not offset:
                 raise
             # Range not satisfiable: the .part is not a prefix we can trust.
-            part.unlink()
-            return self._download(asset, part, progress, cancel)
+            self._restart(part, meta)
+            return self._download(asset, part, meta, progress, cancel)
         with response:
-            mode = "wb"
-            if offset and response.status == 206:
-                start = _content_range_start(response.headers.get("Content-Range"))
-                if start != offset:
+            start, range_total = _content_range(response.headers.get("Content-Range"))
+            if response.status == 206:
+                if not offset or start != offset:
                     # Not the range we asked for: drop the .part, restart.
                     response.close()
-                    part.unlink()
-                    return self._download(asset, part, progress, cancel)
+                    self._restart(part, meta)
+                    if not offset:
+                        raise ProvisionError(
+                            f"server sent a partial answer to a full request: {asset.url}"
+                        )
+                    return self._download(asset, part, meta, progress, cancel)
                 mode = "ab"
             else:
-                offset = 0  # 200: the server ignored Range, restart cleanly
+                # 200: a fresh file, or the server ignored Range / If-Range
+                # failed (the remote changed): restart cleanly.
+                offset, mode, range_total = 0, "wb", None
+                new_validator = _validator(response.headers)
+                if new_validator:
+                    meta.write_text(new_validator)
+                else:
+                    meta.unlink(missing_ok=True)
             length = response.headers.get("Content-Length")
-            total = _content_range_total(response.headers.get("Content-Range"))
-            if total is None and length is not None and length.isdigit():
-                total = offset + int(length)
-            if total is None:
-                total = asset.size_bytes
+            server_total = range_total
+            if server_total is None and length is not None and length.isdigit():
+                server_total = offset + int(length)
+            total = server_total if server_total is not None else asset.size_bytes
             done = offset
             progress(done, total)
             with part.open(mode) as out:
@@ -181,18 +257,21 @@ class UrlSource:
                     progress(done, total)
                 out.flush()
                 os.fsync(out.fileno())
-        if total is not None and done != total:
+        if server_total is not None and done != server_total:
             # Connection closed early: keep the .part, the next run resumes.
             raise ProvisionError(
-                f"download of {asset.url} interrupted at {done} of {total} bytes; "
-                "run Prepare again to resume"
+                f"download of {asset.url} interrupted at {done} of {server_total} "
+                "bytes; run Prepare again to resume"
             )
+        return server_total
 
     @staticmethod
-    def _verify(asset: UrlAsset, part: Path) -> None:
+    def _verify(
+        asset: UrlAsset, part: Path, meta: Path, server_total: int | None
+    ) -> None:
         size = part.stat().st_size
         if asset.size_bytes is not None and size != asset.size_bytes:
-            part.unlink()
+            UrlSource._restart(part, meta)
             raise ProvisionError(
                 f"size mismatch: {size} bytes, expected {asset.size_bytes} "
                 "(partial file removed)"
@@ -204,11 +283,15 @@ class UrlSource:
                     digest.update(chunk)
             got = digest.hexdigest()
             if got != asset.sha256.lower():
-                part.unlink()
+                UrlSource._restart(part, meta)
                 raise ProvisionError(
                     f"sha256 mismatch: expected {asset.sha256.lower()}, got {got} "
                     "(partial file removed)"
                 )
+            return
+        if asset.size_bytes is None and server_total != size:
+            UrlSource._restart(part, meta)
+            raise ProvisionError(UNVERIFIABLE)
 
 
 # --------------------------------------------------------------- Hugging Face
@@ -313,19 +396,32 @@ def _git_env() -> dict[str, str]:
     return env
 
 
+def _kill(proc: subprocess.Popen) -> None:
+    """Kill git and the helpers it spawned (remote-https, upload-pack...), which
+    would otherwise keep the pipes open and block `communicate`."""
+    try:
+        os.killpg(proc.pid, signal.SIGKILL)
+    except (AttributeError, ProcessLookupError, PermissionError):
+        proc.kill()
+    proc.communicate()
+
+
 def _git(args: list[str], cancel: threading.Event, what: str) -> str:
-    """Run git, killing it when `cancel` is set; ProvisionError on failure."""
+    """Run git, killing it when `cancel` is set or after `GIT_TIMEOUT_S`;
+    ProvisionError on failure or timeout."""
     try:
         proc = subprocess.Popen(
-            ["git", *args],
+            [GIT, *args],
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             stdin=subprocess.DEVNULL,
             text=True,
             env=_git_env(),
+            start_new_session=True,  # its own process group, killed as a whole
         )
     except OSError as exc:
         raise ProvisionError(f"git is not available ({exc})") from None
+    deadline = time.monotonic() + GIT_TIMEOUT_S
     try:
         while True:
             try:
@@ -333,13 +429,16 @@ def _git(args: list[str], cancel: threading.Event, what: str) -> str:
                 break
             except subprocess.TimeoutExpired:
                 if cancel.is_set():
-                    proc.kill()
-                    proc.communicate()
+                    _kill(proc)
                     raise ProvisionCancelled() from None
+                if time.monotonic() > deadline:
+                    _kill(proc)
+                    raise ProvisionError(
+                        f"{what} timed out after {GIT_TIMEOUT_S:g} s"
+                    ) from None
     finally:
         if proc.poll() is None:  # KeyboardInterrupt or another error
-            proc.kill()
-            proc.communicate()
+            _kill(proc)
     if proc.returncode != 0:
         lines = [line for line in err.strip().splitlines() if line.strip()]
         detail = lines[-1] if lines else f"exit code {proc.returncode}"
@@ -347,10 +446,19 @@ def _git(args: list[str], cancel: threading.Event, what: str) -> str:
     return out.strip()
 
 
+# The pin is validated by CodeRepo (hex only); `--end-of-options` is a second
+# guard so a value can never be parsed as a git option.
 def _has_commit(path: Path, commit: str, cancel: threading.Event) -> bool:
     try:
         _git(
-            ["-C", str(path), "cat-file", "-e", f"{commit}^{{commit}}"],
+            [
+                "-C",
+                str(path),
+                "cat-file",
+                "-e",
+                "--end-of-options",
+                f"{commit}^{{commit}}",
+            ],
             cancel,
             "cat-file",
         )
@@ -365,14 +473,30 @@ def _checkout(path: Path, repo: CodeRepo, cancel: threading.Event) -> None:
     if not _has_commit(path, repo.commit, cancel):
         # A commit outside every branch: ask for it directly (servers may refuse).
         _git(
-            ["-C", str(path), "fetch", "--quiet", "origin", repo.commit],
+            [
+                "-C",
+                str(path),
+                "fetch",
+                "--quiet",
+                "--end-of-options",
+                "origin",
+                repo.commit,
+            ],
             cancel,
             f"git fetch of commit {repo.commit}",
         )
     _git(
-        ["-C", str(path), "checkout", "--quiet", "--detach", repo.commit],
+        [
+            "-C",
+            str(path),
+            "switch",  # unlike checkout, switch honours --end-of-options
+            "--quiet",
+            "--detach",
+            "--end-of-options",
+            repo.commit,
+        ],
         cancel,
-        f"git checkout {repo.commit}",
+        f"git switch to {repo.commit}",
     )
 
 

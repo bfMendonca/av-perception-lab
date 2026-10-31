@@ -255,6 +255,14 @@ def test_code_repo_name_must_be_one_plain_component():
     CodeRepo(name="ok-1.2_x", url="x", commit="a" * 40)
 
 
+def test_code_repo_commit_must_be_a_hex_pin():
+    for bad in ("main", "v1.0", "-x", "--upload-pack=touch", "abc", "a" * 65, "g" * 40):
+        with pytest.raises(rq.UnsafePathError, match="hex"):
+            CodeRepo(name="ok", url="x", commit=bad)
+    CodeRepo(name="ok", url="x", commit="90f1b86")
+    CodeRepo(name="ok", url="x", commit="A" * 64)
+
+
 @pytest.mark.skipif(os.geteuid() == 0, reason="root ignores file modes")
 def test_unreadable_paths_do_not_raise(tmp_path):
     locked = tmp_path / "locked"

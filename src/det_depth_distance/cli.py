@@ -322,7 +322,15 @@ def main(argv: Sequence[str] | None = None) -> int:
     try:
         cfg = load_config(args.config, args.overrides, args.video)
         if args.prepare:
-            return prepare_command(cfg)
+            try:
+                return prepare_command(cfg)
+            except KeyboardInterrupt:
+                print(
+                    "\ncancelled: partial downloads are kept and resumed by the "
+                    "next --prepare",
+                    file=sys.stderr,
+                )
+                return 130
         run(cfg)
     # User/configuration errors only; bugs keep their traceback.
     except ConfigError as exc:
