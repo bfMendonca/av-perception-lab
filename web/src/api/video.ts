@@ -20,6 +20,8 @@ export interface VideoRecord {
   preview_status: "pending" | "ready" | "failed" | (string & {});
   created: string;
   origin: string;
+  /** The original is gone, or a referenced import changed since it was added. */
+  missing?: boolean;
   urls: { file: string; preview: string; thumb: string };
 }
 
@@ -72,11 +74,17 @@ export interface UploadOptions {
   signal?: AbortSignal;
 }
 
+export interface ImportRoots {
+  roots: string[];
+  /** The server's working directory (relative paths start there). */
+  cwd: string;
+}
+
 export interface VideoApi {
   listVideos(): Promise<VideoRecord[]>;
   getVideo(id: string): Promise<VideoRecord>;
-  /** Server folders a path may be imported from. */
-  importRoots(): Promise<string[]>;
+  /** Server folders a path may be imported from, and where relative paths start. */
+  importRoots(): Promise<ImportRoots>;
   upload(file: File, options?: UploadOptions): Promise<VideoRecord>;
   importPath(path: string): Promise<VideoRecord>;
   /** Free GPU memory in MiB; null when unknown. */
@@ -115,7 +123,7 @@ export function createVideoApi(base = "", fetchImpl: typeof fetch = (...a) => fe
   return {
     listVideos: () => call<VideoRecord[]>("/api/videos"),
     getVideo: (id) => call<VideoRecord>(`/api/videos/${enc(id)}`),
-    importRoots: async () => (await call<{ roots: string[] }>("/api/videos/roots")).roots,
+    importRoots: () => call<ImportRoots>("/api/videos/roots"),
     importPath: (path) => call<VideoRecord>("/api/videos/import", post({ path })),
     upload: (file, options = {}) =>
       // XMLHttpRequest: fetch has no upload progress. The server streams the

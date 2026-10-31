@@ -42,9 +42,37 @@ export function formatBytes(n: number): string {
   return `${v < 10 ? v.toFixed(1) : Math.round(v)} ${units[i]}`;
 }
 
+/** Collapse `.` and `..` of a POSIX path (no file system access). */
+function normalize(path: string): string {
+  const out: string[] = [];
+  for (const part of path.split("/")) {
+    if (!part || part === ".") continue;
+    if (part === "..") out.pop();
+    else out.push(part);
+  }
+  return `/${out.join("/")}`;
+}
+
+/**
+ * Whether the server would accept importing `path`: relative paths start at
+ * `cwd`, and the result must sit inside one of `roots`. Symlinks are only
+ * known to the server, which checks again.
+ */
+export function importable(path: string, roots: string[], cwd: string): boolean {
+  if (!path || !roots.length) return false;
+  if (!path.startsWith("/") && !cwd) return false;
+  const full = normalize(path.startsWith("/") ? path : `${cwd}/${path}`);
+  return roots.some((r) => {
+    const root = normalize(r);
+    return full === root || full.startsWith(root === "/" ? "/" : `${root}/`);
+  });
+}
+
 export interface DropZoneProps {
   videos: VideoRecord[];
   roots: string[];
+  /** The server's working directory (relative paths start there). */
+  cwd: string;
   /** A path from the open pipeline (source.video) offered for import. */
   suggestedPath?: string | null;
   busy: boolean;
@@ -53,7 +81,7 @@ export interface DropZoneProps {
   onSelect: (video: VideoRecord) => void;
 }
 
-export function DropZone({ videos, roots, suggestedPath, busy, onFiles, onImport, onSelect }: DropZoneProps) {
+export function DropZone({ videos, roots, cwd, suggestedPath, busy, onFiles, onImport, onSelect }: DropZoneProps) {
   const input = useRef<HTMLInputElement>(null);
   const [path, setPath] = useState("");
   return (
@@ -127,7 +155,7 @@ export function DropZone({ videos, roots, suggestedPath, busy, onFiles, onImport
             "Server imports are off (start the server with --data-root)."
           )}
         </p>
-        {suggestedPath ? (
+        {suggestedPath && importable(suggestedPath, roots, cwd) ? (
           <button type="button" className="btn btn--sm btn--ghost intake__suggest" disabled={busy} onClick={() => onImport(suggestedPath)}>
             <Icon name="file" size={13} /> Use the pipeline's video <code>{suggestedPath}</code>
           </button>
@@ -141,6 +169,7 @@ export function DropZone({ videos, roots, suggestedPath, busy, onFiles, onImport
               <li key={v.id}>
                 <button type="button" className="libitem" onClick={() => onSelect(v)} title={v.original}>
                   <img src={v.urls.thumb} alt="" loading="lazy" />
+                  {v.missing ? <span className="libitem__missing">File missing</span> : null}
                   <span className="libitem__name">{v.name}</span>
                   <span className="libitem__meta">
                     {v.width}×{v.height} · {Math.round(v.duration_s)} s

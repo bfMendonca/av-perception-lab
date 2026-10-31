@@ -317,8 +317,11 @@ writes `config.yaml`, `web_run.json` (`status`, `video_id`, `started_at`) and
 Video library and Process (task_0016): `GET /api/videos`, `GET
 /api/videos/roots`, `POST /api/videos` (multipart `file` + optional `meta`,
 streamed to disk by `web/uploads.py`, never held in memory), `POST
-/api/videos/import` (`{path}`: absolute, must resolve inside a `--data-root`,
-default `data`; 403 otherwise; referenced, not copied), `GET
+/api/videos/import` (`{path}`: relative paths start at the server's cwd,
+the repo root; must resolve inside a `--data-root`, default `data`; 403
+otherwise; referenced, not copied; size/mtime recorded, and a moved, deleted
+or modified original makes the record `missing: true`, which a re-import or
+re-upload of the same content replaces), `GET
 /api/videos/{id}` and `GET /api/videos/{id}/{file|preview|thumb}`.
 `web/library.py`: one folder per video under `--library-root` (default
 `_testbed/library`), id = first 12 hex of the sha256 (dedupe), probed with
@@ -328,8 +331,9 @@ entries are assembled in `.incoming/` and renamed into place);
 `.h264` + `.meta.json` remuxed to VFR `.mkv` with the `SensorTimestamp`s
 (PyAV; ffmpeg CLI fallback at the mean rate); `preview.mp4` (H.264,
 longest side <= 1280, source timestamps) encoded in one background thread,
-`preview: null` until ready. `POST /api/runs` rejects (422) a `video_id` not
-in the library and fills a missing `source.video` from it. Front-end: a video
+`preview: null` until ready. `GET /api/videos/roots` -> `{roots, cwd}`.
+`POST /api/runs` rejects (422) a `video_id` not in the library or `missing`,
+and with a `video_id` always sets `source.video` to the record's original. Front-end: a video
 deck above the editor (drop anywhere / browse / server path / library,
 player looping the segment, two-handle segment bar with start/length/stride
 and a live estimate at 2 fps, Process and Process entire video, a GPU

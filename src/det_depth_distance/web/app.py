@@ -143,8 +143,13 @@ def create_app(
         return [r.to_dict() for r in library.list()]
 
     @app.get("/api/videos/roots")
-    def video_roots() -> dict[str, list[str]]:
-        return {"roots": [str(r) for r in library.allowed_roots()]}
+    def video_roots() -> dict[str, Any]:
+        # `cwd`: where a relative import path starts (the UI checks a path
+        # against the roots before offering it; the server checks again).
+        return {
+            "roots": [str(r) for r in library.allowed_roots()],
+            "cwd": str(Path.cwd().resolve()),
+        }
 
     @app.post("/api/videos")
     async def upload_video(request: Request) -> dict[str, Any]:
@@ -221,16 +226,19 @@ def create_app(
             except KeyError:
                 errors.append({"path": "video_id", "message": "unknown video id"})
             else:
-                # The front-end sends source.video itself; a config without
-                # one runs the library video.
+                if record.missing:
+                    errors.append(
+                        {
+                            "path": "video_id",
+                            "message": "the video file is missing or changed "
+                            "on the server: import it again",
+                        }
+                    )
+                # The library video is what runs (and what the history
+                # records): source.video is bound to video_id.
                 source = config.get("source")
-                if source is None or (
-                    isinstance(source, dict) and not source.get("video")
-                ):
-                    config = {
-                        **config,
-                        "source": {**(source or {}), "video": str(record.original)},
-                    }
+                source = source if isinstance(source, dict) else {}
+                config = {**config, "source": {**source, "video": str(record.original)}}
         errors += schema.validate_config(config)
         if errors:
             return JSONResponse({"errors": errors}, status_code=422)

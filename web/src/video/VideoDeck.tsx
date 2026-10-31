@@ -175,6 +175,7 @@ export function VideoDeck({ session, jobs, process, previewUrl, onFiles, onOpenR
           <DropZone
             videos={session.videos}
             roots={session.roots}
+            cwd={session.cwd}
             suggestedPath={typeof pipelineVideo === "string" ? pipelineVideo : null}
             busy={Boolean(session.upload)}
             onFiles={onFiles}
@@ -196,7 +197,14 @@ function VideoHeader({ video, onChange }: { video: VideoRecord; onChange: () => 
   return (
     <header className="deck__head">
       <div className="deck__titles">
-        <h2 title={video.original}>{video.name}</h2>
+        <h2 title={video.original}>
+          {video.name}
+          {video.missing ? (
+            <span className="chip chip--bad deck__missing" title="The original is gone or changed on the server; import or upload it again">
+              <Icon name="alert" size={12} /> File missing
+            </span>
+          ) : null}
+        </h2>
         <p>
           {video.width}×{video.height} · {fps} fps · {formatTime(video.duration_s)} · {formatBytes(video.size_bytes)}
           {video.preview_status === "pending" ? <span className="deck__pending"> · preparing preview</span> : null}

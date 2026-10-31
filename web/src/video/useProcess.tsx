@@ -28,7 +28,9 @@ export function useProcess(api: VideoApi, session: VideoSession, jobs: Jobs, edi
 
   const blocked: string | null = !video
     ? "Load a video first."
-    : !editor.loaded
+    : video.missing
+      ? "The video file is missing or changed on the server: import it again."
+      : !editor.loaded
       ? "Open or start a pipeline first."
       : editor.validation === "invalid"
         ? "Fix the pipeline's problems first."

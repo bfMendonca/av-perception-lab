@@ -924,9 +924,12 @@ A `task_0016` liga o **Process**. Acima do editor fica o painel de vídeo:
   taxa variável com os `SensorTimestamp` (mesmo algoritmo de
   `data/s000032/remux_vfr.py`; com PyAV, extra `web`, os timestamps são
   idênticos aos do script). Também dá para colar um caminho do servidor —
-  só dentro das pastas `--data-root` (padrão `data`; o arquivo é
-  referenciado, não copiado; `../`, symlink para fora e caminho relativo dão
-  403) — ou escolher um vídeo já na biblioteca.
+  só dentro das pastas `--data-root` (padrão `data`; caminho relativo parte
+  da raiz do repo, como na CLI; o arquivo é referenciado, não copiado; `../`
+  e symlink para fora dão 403; se o original sumir ou mudar, a entrada vira
+  "File missing" e reimportar o mesmo conteúdo a conserta) — ou escolher um
+  vídeo já na biblioteca. "Use the pipeline's video" só aparece quando o
+  `source.video` do YAML cai numa pasta permitida.
 - **Biblioteca** em `--library-root` (padrão `_testbed/library`): uma pasta
   por vídeo com id = 12 hex do sha256 (reenvio não duplica), `record.json`,
   original, `thumb.jpg` e `preview.mp4` (H.264 que o navegador toca, gerado em
@@ -955,7 +958,8 @@ Rotas: `GET /api/videos`, `GET /api/videos/roots`, `POST /api/videos`
 (multipart: `file` e, para `.h264`, `meta`), `POST /api/videos/import`
 (`{path}`), `GET /api/videos/{id}` e `GET /api/videos/{id}/{file|preview|thumb}`
 (com `Range`). `POST /api/runs` recusa (422) um `video_id` que não está na
-biblioteca e, sem `source.video` no YAML, usa o original do vídeo.
+biblioteca ou cujo arquivo sumiu, e com `video_id` o `source.video` é sempre
+o original do vídeo (o do cliente é sobrescrito).
 
 ### Pesos dos refinadores e do SegFormer
 

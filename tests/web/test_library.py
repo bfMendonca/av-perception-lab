@@ -113,7 +113,7 @@ def test_import_outside_data_roots_rejected(lib, web_paths, tmp_path, video_fact
     for candidate in (
         outside,  # absolute, outside
         web_paths.data_roots[0] / ".." / "elsewhere" / "x.mp4",  # ../ escape
-        Path("elsewhere/x.mp4"),  # relative: never resolved against a root
+        Path("elsewhere/x.mp4"),  # relative: from the cwd (the repo), outside
     ):
         with pytest.raises(OutsideRoots):
             lib.add_from_path(candidate)
@@ -241,3 +241,54 @@ def test_stale_staging_is_removed_on_start(web_paths):
     (stale / "upload.mp4").write_bytes(b"x" * 100)
     Library(web_paths.library_root).close()
     assert not stale.exists()
+
+
+def test_import_relative_path_resolves_from_cwd(
+    lib, web_paths, video_factory, monkeypatch
+):
+    root = web_paths.data_roots[0]
+    clip = video_factory(root / "s" / "a.mp4")
+    video_factory(root.parent / "elsewhere" / "x.mp4")
+    monkeypatch.chdir(root.parent)
+    assert lib.add_from_path(Path("data/s/a.mp4")).original == clip.resolve()
+    with pytest.raises(OutsideRoots):
+        lib.add_from_path(Path("data/../elsewhere/x.mp4"))
+
+
+def test_import_deleted_then_reuploaded_replaces_the_broken_entry(
+    lib, web_paths, video_factory
+):
+    clip = video_factory(web_paths.data_roots[0] / "d.mp4")
+    data = clip.read_bytes()
+    record = lib.add_from_path(clip)
+    assert record.missing is False
+    clip.unlink()
+    assert lib.get(record.id).missing is True
+    assert lib.get(record.id).to_dict()["missing"] is True
+    again = lib.add(io.BytesIO(data), "d.mp4")
+    assert again.id == record.id
+    assert again.missing is False and again.origin == "upload"
+    assert again.original.is_file()
+    assert [r.id for r in lib.list()] == [record.id]
+
+
+def test_import_moved_then_reimported_from_new_place(lib, web_paths, video_factory):
+    root = web_paths.data_roots[0]
+    clip = video_factory(root / "a" / "m.mp4")
+    record = lib.add_from_path(clip)
+    moved = root / "b" / "m.mp4"
+    moved.parent.mkdir()
+    clip.rename(moved)
+    assert lib.get(record.id).missing is True
+    again = lib.add_from_path(moved)
+    assert again.id == record.id
+    assert again.original == moved.resolve() and again.missing is False
+
+
+def test_import_modified_is_flagged_missing(lib, web_paths, video_factory):
+    clip = video_factory(web_paths.data_roots[0] / "c.mp4", seconds=2)
+    record = lib.add_from_path(clip)
+    video_factory(clip, seconds=3)  # same path, new content
+    assert lib.get(record.id).missing is True
+    fresh = lib.add_from_path(clip)
+    assert fresh.id != record.id and fresh.missing is False

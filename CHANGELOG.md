@@ -27,8 +27,12 @@ o trecho escolhido de um video enviado ou importado.
 
 ### Alterado
 
-- `POST /api/runs` recusa `video_id` fora da biblioteca e preenche
-  `source.video` ausente com o original do video.
+- `POST /api/runs` recusa `video_id` fora da biblioteca (ou com o arquivo
+  sumido) e, com `video_id`, sempre usa o original do video como
+  `source.video`.
+- Importacao aceita caminho relativo a raiz do repo (ainda so dentro de
+  `--data-root`); original importado que some ou muda vira "File missing" e
+  reimportar o mesmo conteudo conserta a entrada.
 - `det-depth-distance-web --data-root` passa a ter padrao `data`.
 - `av` (PyAV) declarado no extra `web`.
 

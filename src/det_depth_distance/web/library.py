@@ -75,7 +75,8 @@ class ProbeInfo:
 
 @dataclass(frozen=True, slots=True)
 class VideoRecord:
-    """One library entry (`preview` is None until the MP4 is ready)."""
+    """One library entry (`preview` is None until the MP4 is ready; `missing`
+    when the original can no longer be processed as recorded)."""
 
     id: str
     name: str
@@ -90,6 +91,8 @@ class VideoRecord:
     preview_status: str = "pending"  # pending|ready|failed
     created: str = ""
     origin: str = "upload"  # upload|import
+    # The original is gone, or a referenced import changed since it was added.
+    missing: bool = False
 
     def to_dict(self) -> dict[str, Any]:
         """JSON view, with the URLs of the file routes."""
@@ -496,7 +499,7 @@ class Library:
             InvalidVideo: as in `add`.
         """
         video_id = sha256[:ID_LEN]
-        if (existing := self._load(video_id)) is not None:
+        if (existing := self._usable(video_id)) is not None:
             return existing
         work = stage / "entry"
         work.mkdir()
@@ -517,25 +520,26 @@ class Library:
         """Add a file of the server by reference (a `.h264` with its sibling
         `.meta.json` is converted into the library).
 
+        A relative path starts from the server's working directory (the repo
+        root, as relative YAML paths do for the CLI).
+
         Raises:
-            OutsideRoots: relative path, or it resolves (through `..` or a
-                symlink) outside every allowed root.
+            OutsideRoots: it resolves (through `..` or a symlink) outside every
+                allowed root.
             FileNotFoundError: no such file (inside the roots).
             InvalidVideo: as in `add`.
         """
         path = Path(path)
-        if not path.is_absolute():
-            raise OutsideRoots(f"{path}: give an absolute path on the server")
         roots = self.allowed_roots()
         if not roots:
             raise OutsideRoots("importing server files is disabled (no --data-root)")
-        real = path.resolve()
+        real = (Path.cwd() / path).resolve()  # an absolute `path` wins the join
         if not _within(real, roots):
             raise OutsideRoots(f"{path} is outside the import folders")
         if not real.is_file():
             raise FileNotFoundError(f"{path}: no such file")
         video_id = file_sha256(real)[:ID_LEN]
-        if (existing := self._load(video_id)) is not None:
+        if (existing := self._usable(video_id)) is not None:
             return existing
         stage = self.staging_dir()
         try:
@@ -599,25 +603,48 @@ class Library:
             "created": datetime.now().astimezone().isoformat(timespec="seconds"),
             "origin": origin,
         }
+        if reference is not None:  # what the content hash was taken from
+            st = reference.stat()
+            record["source_size"] = st.st_size
+            record["source_mtime_ns"] = st.st_mtime_ns
         _write_json(work / RECORD, record)
         target = self.root / video_id
         with self._lock:
-            if target.exists():  # the same content arrived meanwhile
-                existing = self._load(video_id)
+            if target.exists():  # same content: arrived meanwhile, or broken
+                existing = self._usable(video_id)
                 if existing is not None:
                     return existing
-                shutil.rmtree(target, ignore_errors=True)
+                shutil.rmtree(target, ignore_errors=True)  # replace the broken one
             os.rename(work, target)
         self._schedule_preview(video_id)
         loaded = self._load(video_id)
         assert loaded is not None
         return loaded
 
+    def _usable(self, video_id: str) -> VideoRecord | None:
+        """The entry when it exists and its original is intact (dedupe target)."""
+        record = self._load(video_id)
+        return record if record is not None and not record.missing else None
+
+    @staticmethod
+    def _is_missing(data: dict[str, Any], original: Path) -> bool:
+        try:
+            st = original.stat()
+        except OSError:
+            return True
+        if not original.is_file():
+            return True
+        size, mtime = data.get("source_size"), data.get("source_mtime_ns")
+        return (size is not None and st.st_size != size) or (
+            mtime is not None and st.st_mtime_ns != mtime
+        )
+
     def _load(self, video_id: str) -> VideoRecord | None:
         folder = self.root / video_id
         try:
             data = json.loads((folder / RECORD).read_text())
             original = Path(data["original"])
+            original = original if original.is_absolute() else folder / original
             preview = folder / PREVIEW
             status = str(data.get("preview_status", "pending"))
             return VideoRecord(
@@ -628,12 +655,13 @@ class Library:
                 fps=float(data["fps"]),
                 duration_s=float(data["duration_s"]),
                 size_bytes=int(data["size_bytes"]),
-                original=original if original.is_absolute() else folder / original,
+                original=original,
                 preview=preview if status == "ready" and preview.is_file() else None,
                 thumb=folder / THUMB,
                 preview_status=status,
                 created=str(data.get("created", "")),
                 origin=str(data.get("origin", "upload")),
+                missing=self._is_missing(data, original),
             )
         except (OSError, ValueError, KeyError, TypeError):
             return None

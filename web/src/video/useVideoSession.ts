@@ -70,6 +70,7 @@ export function useVideoSession(api: VideoApi, options: SessionOptions = {}) {
   const [stride, setStride] = useState(1);
   const [upload, setUpload] = useState<UploadState | null>(null);
   const [roots, setRoots] = useState<string[]>([]);
+  const [cwd, setCwd] = useState("");
   const [error, setError] = useState<string | null>(null);
   const abort = useRef<AbortController | null>(null);
 
@@ -112,7 +113,11 @@ export function useVideoSession(api: VideoApi, options: SessionOptions = {}) {
     });
     api
       .importRoots()
-      .then((r) => live && setRoots(r))
+      .then((r) => {
+        if (!live) return;
+        setRoots(r.roots);
+        setCwd(r.cwd);
+      })
       .catch(() => undefined);
     return () => {
       live = false;
@@ -199,6 +204,7 @@ export function useVideoSession(api: VideoApi, options: SessionOptions = {}) {
     stride,
     upload,
     roots,
+    cwd,
     error,
     select,
     setSegment,

@@ -5,8 +5,8 @@ import { App } from "../App";
 import type { ConfigDict } from "../api/types";
 import type { JobEvent, JobInfo, VideoApi, VideoRecord } from "../api/video";
 import { createEditorStore } from "../editor/yamlState";
-import { fakeClient } from "../test/fixtures";
-import { classifyFiles } from "./DropZone";
+import { fakeClient, sampleConfig } from "../test/fixtures";
+import { classifyFiles, importable } from "./DropZone";
 
 const record: VideoRecord = {
   id: "0123456789ab",
@@ -40,7 +40,7 @@ function fakeVideoApi(): FakeVideoApi {
     emit: (id, event) => listeners.get(id)?.(event),
     listVideos: async () => [record],
     getVideo: async () => record,
-    importRoots: async () => ["/srv/data"],
+    importRoots: async () => ({ roots: ["/srv/data"], cwd: "/srv" }),
     upload: async () => record,
     importPath: async () => record,
     gpuFreeMiB: async () => api.free,
@@ -162,6 +162,47 @@ describe("Process", () => {
     await waitFor(() => expect(window.location.hash).toBe("#/runs/20261031_101600_road_web-y"));
     expect(await screen.findByRole("region", { name: "Run" })).toBeInTheDocument();
     window.location.hash = "";
+  });
+
+  it("offers the pipeline's video only when the server would import it", async () => {
+    const api = fakeVideoApi();
+    api.listVideos = async () => [];
+    const offer = /Use the pipeline's video/;
+    for (const [video, shown] of [
+      ["a.mp4", false], // /srv/a.mp4: outside /srv/data
+      ["data/../a.mp4", false],
+      ["/elsewhere/a.mp4", false],
+      ["data/s1/clip.mkv", true],
+      ["/srv/data/clip.mkv", true],
+    ] as const) {
+      const client = fakeClient(undefined, { config: { ...sampleConfig.config, source: { video } }, extras: {} });
+      const store = createEditorStore(client, { debounceMs: 0 });
+      await store.load("ignored", "p.yaml");
+      const { unmount } = render(<App client={client} store={store} videoApi={api} />);
+      await screen.findByText(/Allowed folders/);
+      if (shown) expect(await screen.findByRole("button", { name: offer })).toBeInTheDocument();
+      else expect(screen.queryByRole("button", { name: offer })).not.toBeInTheDocument();
+      unmount();
+    }
+    expect(importable("data/x", [], "/srv")).toBe(false);
+    expect(importable("/srv/database/x", ["/srv/data"], "/")).toBe(false);
+  });
+
+  it("a video whose file is missing is flagged and cannot be processed", async () => {
+    const api = fakeVideoApi();
+    const gone = { ...record, missing: true };
+    api.listVideos = async () => [gone];
+    const client = fakeClient();
+    const store = createEditorStore(client, { debounceMs: 0 });
+    await store.load("ignored", "p.yaml");
+    render(<App client={client} store={store} videoApi={api} />);
+    const item = await screen.findByRole("button", { name: /road\.mkv/ });
+    expect(item).toHaveTextContent("File missing");
+    await userEvent.click(item);
+    const deck = screen.getByRole("region", { name: "Video and processing" });
+    expect(within(deck).getByText("File missing")).toBeInTheDocument();
+    expect(within(deck).getByRole("button", { name: /^Process$/ })).toBeDisabled();
+    expect(within(deck).getByText(/missing or changed on the server/)).toBeInTheDocument();
   });
 
   it("classifies drops into video, meta and YAML", () => {

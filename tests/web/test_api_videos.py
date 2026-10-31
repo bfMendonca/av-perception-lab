@@ -137,12 +137,25 @@ def test_import_endpoint(api, web_paths, video_factory, tmp_path):
     assert resp.json()["original"] == str(inside.resolve())
     for bad in (str(outside), f"{root}/../secret/b.mp4", str(root / "link.mp4")):
         assert api.post("/api/videos/import", json={"path": bad}).status_code == 403
+    # relative paths start from the server's working directory (the repo root)
     assert api.post("/api/videos/import", json={"path": "a.mp4"}).status_code == 403
     missing = api.post("/api/videos/import", json={"path": str(root / "none.mp4")})
     assert missing.status_code == 404
     assert len(api.get("/api/videos").json()) == 1
     roots = api.get("/api/videos/roots").json()
-    assert roots == {"roots": [str(root.resolve())]}
+    assert roots == {"roots": [str(root.resolve())], "cwd": str(Path.cwd().resolve())}
+
+
+def test_import_relative_path_from_cwd(api, web_paths, video_factory, monkeypatch):
+    root = web_paths.data_roots[0]
+    video_factory(root / "s1" / "a.mp4")
+    video_factory(root.parent / "secret" / "b.mp4")
+    monkeypatch.chdir(root.parent)  # the server's working directory
+    resp = api.post("/api/videos/import", json={"path": "data/s1/a.mp4"})
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["original"] == str((root / "s1" / "a.mp4").resolve())
+    escape = api.post("/api/videos/import", json={"path": "data/../secret/b.mp4"})
+    assert escape.status_code == 403
 
 
 def test_video_file_routes_reject_bad_ids(api):
@@ -163,8 +176,22 @@ def test_runs_require_a_library_video_id(api, web_paths, video_factory):
     job = api.app.state.jobs.get(job_id)
     # A config without source.video runs the library video.
     assert job.config["source"]["video"] == record["original"]
+    # source.video is bound to video_id: a client path is overridden.
     other = {**VALID, "source": {"video": "/elsewhere.mp4", "start": 1.0}}
     job_id = api.post(
         "/api/runs", json={"config": other, "video_id": record["id"]}
     ).json()["job_id"]
-    assert api.app.state.jobs.get(job_id).config["source"]["video"] == "/elsewhere.mp4"
+    source = api.app.state.jobs.get(job_id).config["source"]
+    assert source == {"video": record["original"], "start": 1.0}
+
+
+def test_runs_refuse_a_missing_library_video(api, web_paths, video_factory):
+    root = web_paths.data_roots[0]
+    clip = video_factory(root / "m.mp4")
+    record = api.post("/api/videos/import", json={"path": str(clip)}).json()
+    clip.unlink()
+    listed = api.get(f"/api/videos/{record['id']}").json()
+    assert listed["missing"] is True
+    resp = api.post("/api/runs", json={"config": VALID, "video_id": record["id"]})
+    assert resp.status_code == 422
+    assert resp.json()["errors"][0]["path"] == "video_id"
