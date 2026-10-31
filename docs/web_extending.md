@@ -39,9 +39,22 @@ Nada sob `web/`: o estágio aparece em `catalog["stages"]` (e a seção em
 
 ## (c) Visão ou inspetor personalizado
 
-Artefatos e tipos de campo desconhecidos são renderizados pelos recursos
-genéricos do front-end; uma visão específica entra pelo registro de extensões
-do front-end (`web/`, Task 3 do plano da interface), sem tocar no backend.
+Estágio desconhecido vira uma pista genérica (cartão por especificação ou
+cartão da seção); tipo de campo desconhecido, `map` e `any` viram um editor
+YAML bruto. Uma visão específica entra pelo registro de extensões do
+front-end (`web/src/editor/registry.ts`), sem tocar no backend:
+
+```ts
+import { registerFieldControl, registerStageView } from "./editor/registry";
+
+// controle próprio para campos que a dica marca (metadata ui {"widget": "knob"})
+registerFieldControl((f) => f.hint?.widget === "knob", KnobControl);
+// pista própria para um estágio
+registerStageView("planners", PlannerLane);
+```
+
+O registro mais recente vence; ambas as funções devolvem a função que
+desfaz o registro. Sem registro, valem os padrões genéricos.
 
 ## Versão do catálogo
 

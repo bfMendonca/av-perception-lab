@@ -4,6 +4,34 @@ Todas as mudancas relevantes do det-depth-distance serao documentadas neste arqu
 
 ---
 
+## [2026-10-31] Editor visual de pipeline da interface web
+
+Terceira entrega da interface web (task_0015): o front-end em `web/` (React +
+TypeScript + Vite, em ingles, so tema escuro), servido pelo FastAPI.
+
+### Novo
+
+- **Editor por pistas**: estagios na ordem do catalogo, um cartao por modulo,
+  "+ Add" com os tipos registrados, inspetor com campos gerados do esquema
+  (slider, select, switch, texto/caminho, lista, grupo, "Advanced"
+  recolhido) e "General settings" para as secoes gerais.
+- **YAML**: abrir (botao, Ctrl+O, arrastar), salvar com aviso unico de perda
+  de comentarios, `extras` preservados, diff contra o ultimo YAML aberto.
+- **Validacao** no servidor com debounce de 400 ms; erros no campo pelo
+  caminho pontilhado, no cartao e na barra superior.
+- **A prova de futuro**: estagio, tipo de campo e versao de catalogo
+  desconhecidos caem em alternativas genericas (pista generica, editor YAML
+  bruto, aviso); registro de extensoes `registerStageView` e
+  `registerFieldControl`.
+
+### Alterado
+
+- `create_app(..., static_dir=...)` serve `web/dist` em `/` com fallback de
+  SPA (nunca para `/api`); sem build, so a API. `.gitignore` ganha
+  `web/node_modules/` e `web/dist/`.
+
+---
+
 ## [2026-10-31] Execucoes, fila, progresso ao vivo e historico da interface web
 
 Segunda entrega da interface web (task_0014): processar de fato, sem que o

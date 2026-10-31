@@ -36,6 +36,7 @@
 - [Calibração da câmera](#calibração-da-câmera)
 - [Avaliação contra referências](#avaliação-contra-referências)
 - [Interface web (API de esquema e validação)](#interface-web-api-de-esquema-e-validação)
+- [Interface web: front-end e editor de pipeline](#interface-web-front-end-e-editor-de-pipeline)
 - [Pesos dos refinadores e do SegFormer](#pesos-dos-refinadores-e-do-segformer)
 - [Saídas](#saídas)
 - [Como a distância é calculada](#como-a-distância-é-calculada)
@@ -133,6 +134,7 @@ rodam sem torch.
 ```
 det-depth-distance/
 ├── pyproject.toml           # manifesto uv; extra "infer" com a stack GPU, extra "eval" (matplotlib), extra "web" (FastAPI)
+├── web/                     # front-end da interface web (React + TypeScript + Vite; `node_modules/` e `dist/` não versionados)
 ├── uv.lock                  # lock versionado
 ├── configs/                 # exemplos de YAML: rfdetr_da3, yolo_o365_da3, multi_detector(_fused), rfdetr_seg_da3, yolo_seg_da3, yolo_o365_seg_da3, rfdetr_sam2_da3, yolo_o365_sam2_da3, rfdetr_semantic_da3, rfdetr_lanes_scene_da3, rfdetr_da3_track, rfdetr_da3_calibrated, yolo_light_da3, rfdetr_da3_motion, rfdetr_sam2_lanes_motion_da3
 │   ├── labels/              # mapas de rótulos por vocabulário: coco_driving, objects365_driving
@@ -160,7 +162,7 @@ det-depth-distance/
 │   ├── io/                  # video.py (ffmpeg), source.py (VideoSource, FrameTransform), sinks.py (CSV, vídeo, npz, métricas), quicktime.py (metadados de câmera do MOV)
 │   ├── evaluation/          # references, run_data, matching, stats, evaluate, report: erro contra referências de campo
 │   ├── tools/               # CLIs auxiliares: calibrate.py, evaluate.py
-│   ├── web/                 # backend da interface web (extra `web`, sem torch): catálogo de módulos, esquema de opções, validação do YAML, fila de execuções, worker e histórico
+│   ├── web/                 # backend da interface web (extra `web`, sem torch): catálogo de módulos, esquema de opções, validação do YAML, fila de execuções, worker e histórico; serve o build do front-end
 │   ├── camera.py            # provedores de intrínsecos (fixa, estimada, calibrada), Calibration, Undistorter, build_camera
 │   ├── calibration.py       # alvos (tabuleiro, ChArUco), detecção de vistas, ajuste com rejeição de vistas atípicas
 │   ├── config.py            # RunConfig, load_config, --set; registra os estágios do pipeline
@@ -843,6 +845,70 @@ Nada em `web/` cita um modelo ou estágio: o catálogo é função dos registros
 Para dicas de interface (rótulo, unidade, faixa) use
 `field(default=..., metadata={"ui": {...}})` no campo. Checklist para novos
 modelos, estágios e visões em `docs/web_extending.md`.
+
+### Interface web: front-end e editor de pipeline
+
+A `task_0015` cria o front-end em `web/` (React 18 + TypeScript + Vite,
+interface em inglês, só tema escuro). O build (`web/dist`) não é versionado;
+o `det-depth-distance-web` o serve em `/` quando existe (rotas fora de `/api`
+caem no `index.html`) e, sem ele, serve só a API.
+
+Node sem sudo (tarball oficial LTS em `~/.local/share/node`, sem editar
+arquivos de shell; o `PATH` vai em cada comando):
+
+```bash
+V=v24.22.2; D=~/.local/share/node; mkdir -p $D/dl && cd $D/dl
+curl -fsSLO https://nodejs.org/dist/$V/node-$V-linux-x64.tar.xz
+curl -fsSLO https://nodejs.org/dist/$V/SHASUMS256.txt
+grep " node-$V-linux-x64.tar.xz\$" SHASUMS256.txt | sha256sum -c -
+tar -xJf node-$V-linux-x64.tar.xz -C $D && ln -sfn $D/node-$V-linux-x64 $D/current
+cd ~ && rm -rf $D/dl
+export PATH=$D/current/bin:$PATH   # só na sessão atual
+```
+
+Build, testes e uso:
+
+```bash
+cd web
+npm ci                 # dependências exatas do package-lock.json
+npm test               # vitest (jsdom)
+npm run build          # tsc -b + vite build -> web/dist
+cd ..
+export UV_PROJECT_ENVIRONMENT=_testbed/venv-infer
+uv run --extra infer --extra web det-depth-distance-web --port 8000   # http://127.0.0.1:8000
+# rede local: --host 0.0.0.0 (sem autenticação)
+# desenvolvimento: `cd web && npm run dev` (proxy de /api para DDD_API, padrão http://127.0.0.1:8000)
+```
+
+O editor:
+
+- **Pistas** na ordem de `catalog.stages` (estágios com `general = false`):
+  estágio com família de adaptador mostra um cartão por especificação
+  (`{type, name?, ...}`) e "+ Add" com os tipos registrados; estágio com
+  seção mostra um cartão da seção; opcionais vazios aparecem como "Off".
+- **Inspetor** (à direita) segue o clique: tipo do módulo, nome da
+  instância e os campos gerados do esquema — slider (int/float com
+  `min`/`max` na dica), select (`enum`), switch (`bool`), texto/caminho,
+  lista, grupo aninhado (`object`); campos com `hint.advanced` ficam em
+  "Advanced", recolhido. `map`, `any` e qualquer tipo desconhecido viram um
+  editor YAML bruto (validado ao sair do campo). Chaves fora do esquema
+  aparecem como "Keys not in the schema". A engrenagem **General settings**
+  abre as seções `general = true` (camera, distance, agreement, render,
+  output), as chaves de topo sem estágio (ex.: `device`) e os `extras`.
+- **Validação** no servidor 400 ms após a última mudança; o erro aparece no
+  campo pelo caminho pontilhado, no cartão (contador) e na barra superior.
+- **Abrir/Salvar YAML**: abrir usa `POST /api/config/parse` (botão, Ctrl+O ou
+  arrastar o arquivo); salvar baixa o texto de `POST /api/config/dump` e, na
+  primeira vez, avisa que comentários e ordem das chaves se perdem. O painel
+  **Changes** mostra o diff contra o último YAML aberto ou salvo. O rascunho
+  fica no `localStorage` do navegador entre recarregamentos.
+- **Process** fica desabilitado até a `task_0016`.
+
+À prova de futuro: nada em `web/src` nomeia estágio, modelo ou campo; um
+estágio novo vira uma pista genérica, um tipo de campo novo cai no editor
+YAML e um `catalog_version` maior que o suportado mostra só um aviso. Telas
+próprias entram por `registerStageView(yamlKey, view)` e
+`registerFieldControl(match, control)` (`web/src/editor/registry.ts`).
 
 ### Pesos dos refinadores e do SegFormer
 

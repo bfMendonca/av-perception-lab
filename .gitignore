@@ -25,3 +25,7 @@ weights/
 .idea/
 *.swp
 .superpowers/
+
+# Front-end (web/): dependencies and build output are never versioned
+web/node_modules/
+web/dist/

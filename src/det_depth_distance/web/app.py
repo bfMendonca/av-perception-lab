@@ -16,7 +16,10 @@ from pydantic import BaseModel
 from det_depth_distance import config
 from det_depth_distance.web import gpu, history, schema
 from det_depth_distance.web.jobs import Job, JobQueue, valid_video_id
-from det_depth_distance.web.paths import WebPaths
+from det_depth_distance.web.paths import WebPaths, safe_join
+
+# Built front-end (`cd web && npm run build`); not committed, served when present.
+DEFAULT_STATIC_DIR = Path(__file__).resolve().parents[3] / "web" / "dist"
 
 
 class ValidateBody(BaseModel):
@@ -51,10 +54,14 @@ def _known_keys() -> set[str]:
 def create_app(
     paths: WebPaths,
     worker_argv: Callable[[Path], list[str]] = default_worker_argv,
+    static_dir: Path = DEFAULT_STATIC_DIR,
 ) -> FastAPI:
     """Build the application: catalog, config, runs, jobs and history.
 
     `worker_argv` builds the worker command line (tests inject a fake).
+    `static_dir` is the built front-end, served at `/` (any path outside
+    `/api` that is not a file falls back to its `index.html`); it is looked
+    up per request, so a build made after start-up is picked up.
     """
     jobs = JobQueue(paths, worker_argv)
 
@@ -165,5 +172,18 @@ def create_app(
     @app.get("/api/gpu")
     def gpu_state() -> dict[str, int | None]:
         return {"free_mib": gpu.free_memory_mib()}
+
+    @app.get("/{rel:path}", include_in_schema=False)
+    def front_end(rel: str) -> FileResponse:
+        if rel == "api" or rel.startswith("api/"):
+            raise HTTPException(404, "not found")
+        index = static_dir / "index.html"
+        if not index.is_file():
+            raise HTTPException(404, "front-end not built (cd web && npm run build)")
+        try:
+            target = safe_join(static_dir, rel) if rel else index
+        except ValueError:
+            raise HTTPException(404, "not found") from None
+        return FileResponse(target if target.is_file() else index)
 
     return app
