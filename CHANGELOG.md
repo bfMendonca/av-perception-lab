@@ -4,6 +4,31 @@ Todas as mudancas relevantes do det-depth-distance serao documentadas neste arqu
 
 ---
 
+## [2026-10-31] Execucoes, fila, progresso ao vivo e historico da interface web
+
+Segunda entrega da interface web (task_0014): processar de fato, sem que o
+servidor importe torch.
+
+### Novo
+
+- **Worker** (`python -m det_depth_distance.web.worker CONFIG.yaml`): roda
+  `cli.run` num subprocesso e imprime um JSON por linha (`started`, `frame`,
+  `done`, `error`; saida 2 em `ConfigError`, 1 nos demais). Grava
+  `config.yaml`, `web_run.json` e `preview.jpg` na pasta da execucao.
+- **`JobQueue`**: um executor, um job por vez, eventos para SSE com replay,
+  cancelamento por `kill()` do grupo de processos, queda do worker vira
+  `failed` com o fim do log.
+- **Historico** (`scan_runs`, `load_run`): le as pastas de `out_root`,
+  inclusive antigas e incompletas; ids validados contra `../` e symlinks.
+- Rotas `/api/runs`, `/api/jobs`, `/api/gpu` (memoria livre via subprocesso).
+
+### Alterado
+
+- `cli.run(cfg, on_frame=None)` e `VideoSink(..., on_frame=None)`; sem
+  `on_frame` o comportamento e identico.
+
+---
+
 ## [2026-10-31] API de esquema e validacao da interface web
 
 Primeiro passo da interface web: um backend FastAPI, sem torch, que descreve

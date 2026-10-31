@@ -160,7 +160,7 @@ det-depth-distance/
 │   ├── io/                  # video.py (ffmpeg), source.py (VideoSource, FrameTransform), sinks.py (CSV, vídeo, npz, métricas), quicktime.py (metadados de câmera do MOV)
 │   ├── evaluation/          # references, run_data, matching, stats, evaluate, report: erro contra referências de campo
 │   ├── tools/               # CLIs auxiliares: calibrate.py, evaluate.py
-│   ├── web/                 # backend da interface web (extra `web`, sem torch): catálogo de módulos, esquema de opções, validação do YAML
+│   ├── web/                 # backend da interface web (extra `web`, sem torch): catálogo de módulos, esquema de opções, validação do YAML, fila de execuções, worker e histórico
 │   ├── camera.py            # provedores de intrínsecos (fixa, estimada, calibrada), Calibration, Undistorter, build_camera
 │   ├── calibration.py       # alvos (tabuleiro, ChArUco), detecção de vistas, ajuste com rejeição de vistas atípicas
 │   ├── config.py            # RunConfig, load_config, --set; registra os estágios do pipeline
@@ -825,6 +825,19 @@ curl -s localhost:8000/api/catalog | head -c 400
   (sempre 200; vazio = válido).
 - `POST /api/config/parse` / `dump`: YAML <-> mapeamento; chaves de topo
   desconhecidas voltam em `extras` (comentários e ordem das chaves se perdem).
+
+Execuções (`task_0014`): `POST /api/runs` (`{config, video_id?}`) entra numa
+fila de um job por vez; cada job é um subprocesso
+`python -m det_depth_distance.web.worker` (o servidor continua sem torch).
+`GET /api/jobs/{id}` dá o estado, `GET /api/jobs/{id}/events` o progresso por
+SSE (`started`, `frame`, `done`, `error`, `end`; quem chega tarde recebe tudo
+desde o início) e `DELETE /api/jobs/{id}` cancela (mata o worker e o ffmpeg).
+O worker grava na pasta da execução `config.yaml` (efetivo), `web_run.json` e
+`preview.jpg` (no máximo a cada 0,5 s). `GET /api/runs` lista as pastas de
+`output.out_root` (inclusive as antigas ou incompletas),
+`GET /api/runs/{id}/{video|preview|config|detections}` serve os arquivos e
+`GET /api/gpu` informa a memória livre (`null` sem CUDA). Se um worker cair
+(ex.: falta de memória na GPU) o job termina `failed` com o fim do log.
 
 Nada em `web/` cita um modelo ou estágio: o catálogo é função dos registros.
 Para dicas de interface (rótulo, unidade, faixa) use

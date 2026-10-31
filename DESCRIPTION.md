@@ -93,7 +93,7 @@ det-depth-distance/
 │   ├── calibration.py       # TargetSpec, CalibrationTarget (ChessboardTarget, CharucoTarget), detect_views, select_views, coverage, calibrate_views, focal_px_from_35mm
 │   ├── evaluation/          # references.py (ReferenceSet), run_data.py (RunData, load_run), matching.py, stats.py (ErrorStats, summarize), evaluate.py, report.py
 │   ├── tools/               # calibrate.py (det-depth-distance-calibrate), evaluate.py (det-depth-distance-evaluate)
-│   ├── web/                 # web backend (extra `web`, torch-free): paths.py (WebPaths, safe_join), stages.py (stage list from core.registry), schema.py (options_schema, module_catalog, validate_config), app.py (create_app), server.py (det-depth-distance-web)
+│   ├── web/                 # web backend (extra `web`, torch-free): paths.py (WebPaths, safe_join), stages.py (stage list from core.registry), schema.py (options_schema, module_catalog, validate_config), app.py (create_app), jobs.py (JobQueue), worker.py, history.py (scan_runs, load_run), gpu.py (free_memory_mib), server.py (det-depth-distance-web)
 │   ├── config.py            # RunConfig + sections, load_config, config_from_mapping, apply_overrides (--set); registers the built-in pipeline stages
 │   ├── distance.py          # pure numpy: box -> map pixels -> robust stats -> distance
 │   ├── temporal.py          # pure numpy: SmoothingConfig, distance_sigma, white_accel_cov, KalmanFilter1D / EmaFilter / MedianFilter (FILTERS), TrackSmoother
@@ -297,6 +297,20 @@ keys are kept as extras) and `POST /api/config/dump` (`{config, extras?}` ->
 `{yaml}`). Models and stages are never listed in `web/`: a new adapter
 (`@register`) or stage (`core.registry.register_stage`) appears by itself
 (`docs/web_extending.md`).
+
+Runs (task_0014): `POST /api/runs` (`{config, video_id?}` -> `{job_id}`; 422
+`{errors}` when invalid), `GET /api/jobs/{id}` (status queued|running|done|
+failed|cancelled, position, error, run_id, frames, log_tail), `GET
+/api/jobs/{id}/events` (SSE; events queued, running, started, frame, done,
+error, end), `DELETE /api/jobs/{id}` (cancel), `GET /api/runs`, `GET
+/api/runs/{id}` and `GET /api/runs/{id}/{video|preview|config|detections}`,
+`GET /api/gpu` (`{free_mib}`). One `JobQueue` runner starts one worker
+subprocess (`python -m det_depth_distance.web.worker CONFIG.yaml`, JSON
+lines on stdout) at a time; the server never imports torch. The worker
+writes `config.yaml`, `web_run.json` (`status`, `video_id`, `started_at`) and
+`preview.jpg` into the run folder; history (`web/history.py`) scans
+`output.out_root`, tolerating old folders. `cli.run(cfg, on_frame=None)` and
+`VideoSink(on_frame=...)` expose the composed frames.
 
 ## 8. Key Business Concepts
 

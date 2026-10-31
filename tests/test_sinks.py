@@ -1162,3 +1162,23 @@ def test_video_sink_motion_label_path_and_bev(
     (bev,) = kw["bev"]
     assert (bev.key, bev.label, bev.xz) == ("car", "#4", (1.0, 12.0))
     assert hud[-1] == "track iou · IoU ≥ 0.3 · age 0.5 s · motion cv/ctrv · 3 s · ids 9"
+
+
+@pytest.mark.skipif(shutil.which("ffmpeg") is None, reason="needs ffmpeg/ffprobe")
+def test_video_sink_on_frame_receives_rendered_image(ctx, result, tmp_path):
+    clip = tmp_path / "clip.mp4"
+    with VideoWriter(clip, 100, 100, "10/1") as writer:
+        writer.write(np.zeros((100, 100, 3), np.uint8))
+    ctx = replace(ctx, source=VideoSource(SourceConfig(video=clip)))
+    got = []
+    sink = VideoSink(
+        RenderConfig(), DistanceConfig(), on_frame=lambda i, img: got.append((i, img))
+    )
+    sink.open(ctx)
+    rendered = np.full((100, 100, 3), 7, np.uint8)
+    sink._renderer.render = lambda *args, **kw: rendered
+    sink.write(result)
+    sink.close()
+    ((index, image),) = got
+    assert index == result.frame.index == 7
+    assert image is rendered

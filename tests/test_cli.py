@@ -1,6 +1,7 @@
 import subprocess
 import sys
 
+import numpy as np
 import pytest
 import yaml
 
@@ -134,3 +135,37 @@ def test_help_without_torch():
     )
     assert out.returncode == 0, out.stderr
     assert "--config" in out.stdout
+
+
+def test_run_calls_on_frame_per_frame(tmp_path, monkeypatch):
+    """on_frame sees every composed frame, indices 0..n-1 (fake scene adapters)."""
+    import sys
+    from pathlib import Path
+
+    sys.path.insert(0, str(Path(__file__).parent / "smoke"))
+    from smoke_fakes import DepthOracle, install_scene_fakes
+    from smoke_scene import SCENE, scene_frames, write_scene_video
+
+    from det_depth_distance.config import RunConfig, config_from_mapping
+    from det_depth_distance.core.types import CameraIntrinsics
+
+    focal = 725.0 / 3
+    install_scene_fakes(
+        monkeypatch, DepthOracle(SCENE, CameraIntrinsics(focal, focal, 160.0, 90.0))
+    )
+    video = write_scene_video(SCENE, tmp_path / "scene.mp4", scene_frames(SCENE))
+    cfg: RunConfig = config_from_mapping(
+        {
+            "device": "cpu",
+            "source": {"video": str(video)},
+            "detectors": [{"type": "scene_det", "name": "box"}],
+            "depth": {"type": "da3", "model": "da3metric-large", "process_res": 154},
+            "camera": {"focal_px": focal, "estimate": None},
+            "output": {"out_root": str(tmp_path / "out")},
+        }
+    )
+    seen = []
+    run_dir = cli.run(cfg, lambda i, image: seen.append((i, image.shape, image.dtype)))
+    assert [i for i, _, _ in seen] == list(range(SCENE.n_frames))
+    assert {(s, d) for _, s, d in seen} == {((180, 320, 3), np.dtype("uint8"))}
+    assert (run_dir / "video.mp4").is_file()

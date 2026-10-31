@@ -390,9 +390,15 @@ class VideoSink(Sink):
     `render.bev_inset`, the frame panel a top-view inset.
     """
 
-    def __init__(self, cfg: RenderConfig, distance: DistanceConfig) -> None:
+    def __init__(
+        self,
+        cfg: RenderConfig,
+        distance: DistanceConfig,
+        on_frame: Callable[[int, np.ndarray], None] | None = None,
+    ) -> None:
         self.cfg = cfg
         self.distance = distance
+        self.on_frame = on_frame  # called with (frame index, composed image)
         self.render_ms: list[float] = []  # read by MetricsSink
 
     def open(self, ctx: RunContext) -> None:
@@ -563,16 +569,17 @@ class VideoSink(Sink):
             else []
         )
         side_by_side = self.cfg.layout == "side-by-side"
-        self._writer.write(
-            self._renderer.render(
-                result.frame.rgb,
-                annotations,
-                hud,
-                result.depth.depth_m if side_by_side else None,
-                semantic=layers,
-                bev=bev,
-            )
+        image = self._renderer.render(
+            result.frame.rgb,
+            annotations,
+            hud,
+            result.depth.depth_m if side_by_side else None,
+            semantic=layers,
+            bev=bev,
         )
+        if self.on_frame is not None:
+            self.on_frame(result.frame.index, image)
+        self._writer.write(image)
         self.render_ms.append((time.perf_counter() - t0) * 1e3)
 
     def close(self) -> None:

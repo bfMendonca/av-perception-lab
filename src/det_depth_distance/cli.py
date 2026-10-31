@@ -15,9 +15,11 @@ import argparse
 import dataclasses
 import sys
 import time
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from contextlib import ExitStack
 from pathlib import Path
+
+import numpy as np
 
 from det_depth_distance.camera import build_camera
 from det_depth_distance.config import RunConfig, load_config
@@ -91,8 +93,13 @@ def list_models() -> str:
     return "\n".join(lines)
 
 
-def run(cfg: RunConfig) -> Path:
+def run(
+    cfg: RunConfig, on_frame: Callable[[int, np.ndarray], None] | None = None
+) -> Path:
     """Process the configured video and return the run folder.
+
+    `on_frame(index, image)` is called with each composed (RGB) video frame
+    just before it is written (progress and previews); None changes nothing.
 
     Raises:
         ConfigError: invalid component specs, unusable calibration, missing
@@ -165,7 +172,7 @@ def run(cfg: RunConfig) -> Path:
             f" | {', '.join(names)} | {depth.name} ({g.map_w}x{g.map_h}) -> {run_dir}",
             flush=True,
         )
-        video = VideoSink(cfg.render, cfg.distance)
+        video = VideoSink(cfg.render, cfg.distance, on_frame)
         metrics = MetricsSink(
             monitor, lambda: {"render": video.render_ms}, describe=pipeline.describe
         )
