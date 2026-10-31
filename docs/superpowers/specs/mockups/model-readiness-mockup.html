@@ -1,0 +1,75 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Mockup — Model readiness</title>
+<style>
+:root{--bg:#0d1117;--panel:#151b23;--panel2:#1b232d;--line:#26303c;--tx:#e6edf3;--mut:#8b98a8;--acc:#5eead4;--acc2:#a78bfa;--warn:#fbbf24;--ok:#4ade80;--bad:#f87171}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--tx);font:14px/1.45 Inter,system-ui,sans-serif;padding:22px}
+h1{font-size:16px;margin:0 0 4px}h2{font-size:12px;letter-spacing:.08em;text-transform:uppercase;color:var(--mut);margin:26px 0 10px;font-weight:600}
+p.sub{color:var(--mut);margin:0 0 10px;font-size:13px}
+.banner{display:flex;align-items:center;gap:12px;background:#fbbf2414;border:1px solid #fbbf2455;border-radius:12px;padding:10px 14px;max-width:980px}
+.banner b{color:var(--warn)}.sp{flex:1}
+.btn{background:var(--panel2);border:1px solid var(--line);color:var(--tx);border-radius:9px;padding:7px 13px;font-size:13px;cursor:pointer}
+.btn.pri{background:var(--acc);color:#04201c;border-color:var(--acc);font-weight:600}
+.btn.warn{background:var(--warn);color:#261c00;border-color:var(--warn);font-weight:600}
+.row{display:flex;gap:26px;flex-wrap:wrap;align-items:flex-start}
+.flow{display:flex;gap:10px;align-items:flex-start;flex-wrap:wrap}
+.stage{width:190px}.stage h4{margin:0 0 8px;font-size:11px;letter-spacing:.08em;text-transform:uppercase;color:var(--mut);font-weight:600}
+.mod{position:relative;background:var(--panel);border:1px solid var(--line);border-radius:11px;padding:10px 12px;margin-bottom:8px}
+.mod b{display:block;font-size:13px}.mod span{color:var(--mut);font-size:12px}
+.mod.missing{border:1.6px dashed var(--warn);background:#fbbf2409}
+.mod.missing .alert{position:absolute;top:-9px;right:-9px;width:22px;height:22px;border-radius:50%;background:var(--warn);color:#261c00;font-weight:800;font-size:13px;display:grid;place-items:center;box-shadow:0 0 0 3px var(--bg)}
+.mod.prep{border:1.6px dashed var(--warn)}
+.bar{height:5px;border-radius:9px;background:var(--line);margin-top:8px;overflow:hidden}.bar i{display:block;height:100%;width:62%;background:var(--warn)}
+.mod.err{border:1.6px dashed var(--bad);background:#f8717110}
+.mod.err .alert{position:absolute;top:-9px;right:-9px;width:22px;height:22px;border-radius:50%;background:var(--bad);color:#2a0606;font-weight:800;font-size:13px;display:grid;place-items:center;box-shadow:0 0 0 3px var(--bg)}
+.mod.ok .tick{position:absolute;top:8px;right:10px;color:var(--ok);font-size:12px}
+.legend{display:flex;gap:18px;flex-wrap:wrap;color:var(--mut);font-size:12px;margin-top:6px}
+.insp{width:360px;background:var(--panel);border:1px solid var(--line);border-radius:14px;padding:16px}
+.insp h3{margin:0 0 2px;font-size:15px}.insp .sub{margin-bottom:12px}
+.src{border:1px solid var(--line);border-radius:10px;padding:10px;margin-bottom:8px;background:var(--panel2)}
+.src b{font-size:13px}.src div{color:var(--mut);font-size:12px}
+code{background:#0a0e13;border:1px solid var(--line);border-radius:6px;padding:1px 6px;font-size:12px;color:#b6c2d0}
+.pill{display:inline-block;font-size:11px;padding:1px 8px;border-radius:99px;margin-left:6px}
+.pill.y{background:#fbbf2422;color:var(--warn)}.pill.g{background:#4ade8022;color:var(--ok)}.pill.r{background:#f8717122;color:var(--bad)}.pill.p{background:#a78bfa22;color:var(--acc2)}
+.note{color:var(--mut);font-size:12px;margin-top:10px}
+</style>
+</head>
+<body>
+<h1>Model readiness — mockup</h1>
+<p class="sub">Direction only. Fake data. The same card, in each state a model can be in.</p>
+
+<h2>1 · A freshly cloned repo, sample YAML loaded</h2>
+<div class="banner"><span style="font-size:18px">⚠</span><div><b>2 models need preparing</b> before this pipeline can run <span style="color:var(--mut)">· about 4.9 GB to download</span></div><div class="sp"></div><button class="btn warn">Prepare all</button></div>
+<div class="flow" style="margin-top:22px">
+  <div class="stage"><h4>Detectors</h4>
+    <div class="mod missing"><i class="alert">!</i><b>RF-DETR large</b><span>weights not found</span></div></div>
+  <div class="stage"><h4>Mask refiners</h4>
+    <div class="mod missing"><i class="alert">!</i><b>SAM 2.1 large</b><span>weights not found</span></div></div>
+  <div class="stage"><h4>Depth</h4>
+    <div class="mod ok"><i class="tick">● ready</i><b>DA3 metric</b><span>weights/hf · 1.3 GB</span></div></div>
+  <div class="stage"><h4>Tracking &amp; filter</h4>
+    <div class="mod"><b>IoU tracker</b><span>no weights needed</span></div></div>
+</div>
+<div class="legend"><span>solid = ready or nothing to download</span><span style="color:var(--warn)">yellow dashed + ! = not ready</span></div>
+
+<h2>2 · Preparing, failed, and the inspector of a missing model</h2>
+<div class="row">
+  <div style="width:210px">
+    <div class="mod prep"><b>RF-DETR large <span class="pill y">preparing</span></b><span>downloading 410 MB of 690 MB</span><div class="bar"><i></i></div></div>
+    <div class="mod err"><i class="alert">!</i><b>SAM 2.1 large <span class="pill r">failed</span></b><span>needs a Hugging Face token (gated)</span></div>
+    <div class="mod missing"><i class="alert">!</i><b>Metric3D <span class="pill p">your model</span></b><span>weights not found</span></div>
+  </div>
+  <div class="insp">
+    <h3>RF-DETR large</h3><div class="sub">Detector · weights not found <span class="pill y">not ready</span></div>
+    <div class="src"><b>Roboflow release</b><div>via URL · 690 MB · license: Apache-2.0</div><div>will be stored in <code>weights/rfdetr/</code></div></div>
+    <button class="btn warn" style="width:100%">Prepare model</button>
+    <div class="note">Using your own file? Set <b>weights</b> in Advanced to override the default location.</div>
+    <div class="note">Sources are declared by the model's code, not typed here.</div>
+  </div>
+</div>
+</body>
+</html>
