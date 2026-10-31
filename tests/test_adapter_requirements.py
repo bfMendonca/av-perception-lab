@@ -205,11 +205,11 @@ def test_yolo_custom_pt_is_user_provided(root):
     assert url.url.endswith("/v8.4.0/yolo26l-objv1-150.pt")
     assert url.size_bytes == ULTRALYTICS_ASSETS["yolo26l-objv1-150.pt"][0]
 
-    custom = _build("detector", "yolo", weights="trained/my_custom.pt")
+    custom = _build("detector", "yolo", weights="my_custom.pt")
     req = type(custom).requirements(custom.options)
     (asset,) = req.assets
     assert isinstance(asset, UserProvided) and not asset.downloadable
-    assert asset.target == "ultralytics/trained/my_custom.pt"
+    assert asset.target == "ultralytics/my_custom.pt"
     # Prepare never downloads it (the network is an AssertionError): it says
     # "provide this file" and the model stays not ready.
     status = prepare(req, root, lambda *a: None, threading.Event())
@@ -236,6 +236,14 @@ def test_twinlitenet_declares_pinned_clone(root):
     assert isinstance(weights, UserProvided)
     assert weights.target == "_code/TwinLiteNetPlus/pretrained/small.pth"
     assert "drive.usercontent.google.com" in weights.hint
+    assert weights.hint.startswith("manual download")
+    large = _build("semantic", "twinlitenet")  # variant large: the folder link
+    (large_weights,) = type(large).requirements(large.options).assets
+    assert large_weights.hint.startswith("manual download")
+    assert (
+        "https://drive.google.com/drive/folders/1EqBzUw0b17aEumZmWYrGZmbx_XJqU-vz"
+        in large_weights.hint
+    )
     assert check(req, root).layers["code"] == "missing"
     with pytest.raises(
         ConfigError, match=r"^repo: no TwinLiteNetPlus clone.*--prepare"
@@ -282,11 +290,58 @@ def test_existing_explicit_paths_in_yaml_still_override_defaults(
     # An explicit location inside the weights root is declared like a default.
     inside = _build("depth", "da3", hf_cache=str(root / "other"))
     assert type(inside).requirements(inside.options).assets[0].target == "other"
-    # A relative path may not climb out of <weights root>/ultralytics/: the
-    # option is refused (no escape, and no mismatch with what is checked).
+    # Not a file name: refused at option validation.
     for kind, type_name in (("detector", "yolo"), ("refiner", "ultralytics_sam")):
-        with pytest.raises(ConfigError, match=r"weights: relative path .*no '\.\.'"):
-            _build(kind, type_name, weights="../../_testbed/library/mobile_sam.pt")
+        with pytest.raises(ConfigError, match=r"weights: '\.\.' is not a file name"):
+            _build(kind, type_name, weights="..")
+
+
+@pytest.mark.parametrize(
+    ("kind", "type_name", "name"),
+    [
+        ("detector", "yolo", "yolo26s.pt"),
+        ("refiner", "ultralytics_sam", "mobile_sam.pt"),
+    ],
+)
+def test_ultralytics_weights_bare_name_under_root_other_paths_unchanged(
+    root, tmp_path, monkeypatch, kind, type_name, name
+):
+    from det_depth_distance.adapters._ultralytics import resolve_weights
+
+    work = tmp_path / "work"
+    (work / "_testbed" / "weights").mkdir(parents=True)
+    monkeypatch.chdir(work)
+
+    # A bare file name resolves under <weights root>/ultralytics/ and is declared.
+    bare = _build(kind, type_name, weights=name)
+    assert resolve_weights(bare.options.weights) == root / "ultralytics" / name
+    (asset,) = type(bare).requirements(bare.options).assets
+    assert isinstance(asset, UrlAsset) and asset.target == f"ultralytics/{name}"
+
+    # A relative path with a directory part keeps its old meaning: relative to
+    # the working directory; outside the root it is not declared (no UrlAsset
+    # under the root), and a missing file is a plain "file not found".
+    rel = Path("_testbed/weights") / name
+    relative = _build(kind, type_name, weights=str(rel))
+    assert resolve_weights(relative.options.weights) == rel
+    assert type(relative).requirements(relative.options).assets == ()
+    with pytest.raises(ConfigError, match=r"^weights: file not found: _testbed"):
+        relative._load(CTX)
+    assert "ultralytics" not in sys.modules
+    (work / rel).write_bytes(b"pt")
+    assert resolve_weights(relative.options.weights).resolve() == work / rel
+
+    # An absolute path is untouched (and not declared outside the root).
+    absolute = _build(kind, type_name, weights=str(work / rel))
+    assert resolve_weights(absolute.options.weights) == work / rel
+    assert type(absolute).requirements(absolute.options).assets == ()
+
+    # A relative path with a directory part that lands inside the root is
+    # declared at its real location (the same file the adapter opens).
+    monkeypatch.chdir(root.parent)
+    inside = _build(kind, type_name, weights=f"{root.name}/custom/{name}")
+    (declared,) = type(inside).requirements(inside.options).assets
+    assert declared.target == f"custom/{name}"
 
 
 def test_every_shipped_config_loads_and_checks_without_importing_torch(

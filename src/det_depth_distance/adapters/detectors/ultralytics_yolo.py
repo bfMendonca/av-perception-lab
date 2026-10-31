@@ -11,8 +11,9 @@ resolution with the letterbox removed (without it, masks stay at the
 letterboxed input size). Ultralytics crops masks to their boxes and drops
 predictions with an empty mask.
 
-`weights` follows adapters._ultralytics: a relative path (a bare file name)
-resolves under `<weights root>/ultralytics/`; release names are declared as
+`weights` follows adapters._ultralytics: a bare file name resolves under
+`<weights root>/ultralytics/` (a path with a directory part keeps its usual
+meaning); release names are declared as
 URL assets for `--prepare`, other files as user-provided.
 
 YOLO_OFFLINE, YOLO_AUTOINSTALL and YOLO_CONFIG_DIR are set (setdefault, see
@@ -53,8 +54,8 @@ class YoloDetector(Detector):
     @dataclass(frozen=True, slots=True, kw_only=True)
     class Options(DetectorOptions):
         # Existence is checked in _load (before the import), not here, so example
-        # configs can be validated on machines without the weights. Relative =
-        # under <weights root>/ultralytics/ (adapters._ultralytics).
+        # configs can be validated on machines without the weights. A bare file
+        # name = under <weights root>/ultralytics/ (adapters._ultralytics).
         weights: Path
         imgsz: int = 640  # inference size, multiple of the stride
         half: bool = False  # FP16 inference

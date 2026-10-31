@@ -51,7 +51,11 @@ TWINLITENET_REPO = CodeRepo(
     url="https://github.com/chequanghuy/TwinLiteNetPlus",
     commit="90f1b8695ae311d5123b05f8534b2e11e42499d2",
 )
-# Google Drive download of the upstream README (only `small` is recorded here).
+# Google Drive downloads of the upstream README (line 87 of the clone): the
+# folder of every variant, and the file id of `small`.
+_DRIVE_FOLDER = (
+    "https://drive.google.com/drive/folders/1EqBzUw0b17aEumZmWYrGZmbx_XJqU-vz"
+)
 _SMALL_URL = (
     "https://drive.usercontent.google.com/download?"
     "id=1N7jNsa8P1dM-UevqPRsx6heUpN4L00FJ&export=download&confirm=t"
@@ -65,10 +69,10 @@ def default_repo() -> Path:
 
 def _weights_hint(variant: str, path: Path) -> str:
     if variant == "small":
-        return f'download it with: curl -fL -o {path} "{_SMALL_URL}"'
+        return f'manual download (Google Drive): curl -fL -o {path} "{_SMALL_URL}"'
     return (
-        f"download {variant}.pth from the TwinLiteNetPlus README "
-        f"(Google Drive) to {path}"
+        f"manual download (Google Drive, not fetched by --prepare): get "
+        f"{variant}.pth from {_DRIVE_FOLDER} and save it as {path}"
     )
 
 

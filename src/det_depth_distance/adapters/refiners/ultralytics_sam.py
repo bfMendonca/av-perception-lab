@@ -8,8 +8,8 @@ Ultralytics letterboxes SAM 2.x inputs instead of the square resize of
 the original SAM 2: prefer the `sam2` refiner for SAM 2.1. The weights
 file must exist and keep its canonical name (e.g. mobile_sam.pt), from which
 Ultralytics picks the architecture; it is checked before importing
-ultralytics, which would otherwise download it. A relative `weights` (a bare
-file name) resolves under `<weights root>/ultralytics/` and release names are
+ultralytics, which would otherwise download it. A bare file name in `weights`
+resolves under `<weights root>/ultralytics/` and release names are
 declared as URL assets for `--prepare` (adapters._ultralytics). No object score. The
 Ultralytics environment policy (offline, no auto-install) is applied when
 this module is imported. Ultralytics is AGPL-3.0.

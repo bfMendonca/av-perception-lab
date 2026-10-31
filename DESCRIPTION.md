@@ -91,7 +91,7 @@ det-depth-distance/
 │   ├── adapters/semantic/   # segformer.py (SegformerSegmenter), twinlitenet.py (TwinLiteNetSegmenter)
 │   ├── adapters/_hf_hub.py  # offline from_pretrained (default cache <weights root>/hf), hf_asset() declaration, HF_FACTS (sizes/licences), download command
 │   ├── adapters/_weights.py # under_root() (explicit path inside the weights root?), not_prepared() error naming --prepare
-│   ├── adapters/_ultralytics.py  # ultralytics/assets v8.4.0 table (YOLO26, SAM), resolve_weights (relative -> weights/ultralytics/), weights_asset
+│   ├── adapters/_ultralytics.py  # ultralytics/assets v8.4.0 table (YOLO26, SAM), resolve_weights (bare file name -> weights/ultralytics/, other paths unchanged), weights_asset
 │   ├── adapters/_ultralytics_env.py  # YOLO_OFFLINE / YOLO_AUTOINSTALL / YOLO_CONFIG_DIR policy (YOLO and SAM)
 │   ├── motion/              # pure numpy, per-track 2D motion: config.py (MotionConfig, MeasurementConfig, PredictionConfig, CameraMount), measurement.py (box -> (x, z) + covariance, project_points), models.py (MotionModel/MotionFilter, registered "cv" and "ctrv" EKF), ego.py (EgoMotionProvider, registered "csv", PlanarTransform), estimator.py (MotionEstimator, build_motion)
 │   ├── io/                  # video.py (ffmpeg pipes), source.py (FrameSource, FrameTransform, VideoSource), sinks.py (CSV/video/npz/metrics), quicktime.py (stdlib MOV metadata reader: moov/meta + trak/udta metas)

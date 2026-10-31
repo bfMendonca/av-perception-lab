@@ -1080,7 +1080,7 @@ file is an error naming `--prepare`.
 |---|---|---|
 | DA3 (`depth`, `camera.estimate`), SAM family, SegFormer | `weights/hf` (Hugging Face cache layout; an existing cache keeps working) | Hugging Face, weights file + `*.json` |
 | RF-DETR (`variant`) | `weights/rfdetr/<library file name>`, e.g. `rf-detr-large-2026.pth` | `repo.roboflow.com` (library URL table), Apache-2.0 |
-| YOLO / Ultralytics SAM (`weights`) | a relative `weights` (bare file name) resolves under `weights/ultralytics/` | `ultralytics/assets` v8.4.0 for published names (YOLO26 COCO and Objects365, SAM, SAM 2.x, MobileSAM; AGPL-3.0 YOLO weights); any other file is *user-provided* |
+| YOLO / Ultralytics SAM (`weights`) | a bare file name in `weights` resolves under `weights/ultralytics/`; a path with a directory part keeps its usual meaning (relative to the working directory) | `ultralytics/assets` v8.4.0 for published names (YOLO26 COCO and Objects365, SAM, SAM 2.x, MobileSAM; AGPL-3.0 YOLO weights); any other file is *user-provided* |
 | TwinLiteNet+ (`repo`) | `weights/_code/TwinLiteNetPlus` (pinned clone @ `90f1b86`) | git clone; `pretrained/<variant>.pth` is *user-provided* (upstream Google Drive) |
 
 An explicit path in the YAML overrides the default and behaves as before
@@ -1089,7 +1089,7 @@ An explicit path in the YAML overrides the default and behaves as before
 existing `~/.roboflow/models/rf-detr-large-2026.pth`). A location outside the
 weights root is not tracked by `--prepare` (the adapter checks it when it
 loads); existing `~/.roboflow`, `~/dev/...` and `weights/hf` files are never
-moved or deleted. A relative YOLO / Ultralytics SAM path may not contain `..`.
+moved or deleted.
 Sources, sizes and licences of every declared file: `docs/task_0021.md`.
 The GPU smoke and the task_0001 regression skip an example config until its
 models are ready under the weights root: on a GPU host run `--prepare` once per

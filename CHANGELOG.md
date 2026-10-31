@@ -29,8 +29,9 @@ on a sample YAML (task_0021).
   root>/hf` (was the user-wide HF cache); RF-DETR loads
   `weights/rfdetr/<file>` through `pretrain_weights=` (was `~/.roboflow/models`,
   which is left untouched); TwinLiteNet+ `repo` = `weights/_code/TwinLiteNetPlus`
-  (was `~/dev/TwinLiteNetPlus`, still valid as an explicit `repo`); a relative
-  YOLO / Ultralytics SAM `weights` resolves under `weights/ultralytics/`.
+  (was `~/dev/TwinLiteNetPlus`, still valid as an explicit `repo`); a bare file
+  name in YOLO / Ultralytics SAM `weights` resolves under
+  `weights/ultralytics/` (a path with a directory part keeps its old meaning).
   Explicit paths behave as before.
 - DA3 no longer downloads at run time (`local_files_only=True`); a missing
   checkpoint is a `ConfigError` naming `--prepare`, raised before
