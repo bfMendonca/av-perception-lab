@@ -851,7 +851,8 @@ modelos, estágios e visões em `docs/web_extending.md`.
 A `task_0015` cria o front-end em `web/` (React 18 + TypeScript + Vite,
 interface em inglês, só tema escuro). O build (`web/dist`) não é versionado;
 o `det-depth-distance-web` o serve em `/` quando existe (rotas fora de `/api`
-caem no `index.html`) e, sem ele, serve só a API.
+sem extensão caem no `index.html`; arquivo ausente em `assets/` ou com
+extensão dá 404) e, sem ele, serve só a API.
 
 Node sem sudo (tarball oficial LTS em `~/.local/share/node`, sem editar
 arquivos de shell; o `PATH` vai em cada comando):
@@ -876,13 +877,15 @@ npm run build          # tsc -b + vite build -> web/dist
 cd ..
 export UV_PROJECT_ENVIRONMENT=_testbed/venv-infer
 uv run --extra infer --extra web det-depth-distance-web --port 8000   # http://127.0.0.1:8000
-# rede local: --host 0.0.0.0 (sem autenticação)
+# rede local: --host 0.0.0.0 (sem autenticação); outro build: --static-dir DIR
 # desenvolvimento: `cd web && npm run dev` (proxy de /api para DDD_API, padrão http://127.0.0.1:8000)
 ```
 
 O editor:
 
-- **Pistas** na ordem de `catalog.stages` (estágios com `general = false`):
+- **Pistas** na ordem de `catalog.stages` (estágios com `general = false`;
+  estágios consecutivos com o mesmo `group` dividem uma pista com o título do
+  grupo — os nativos `tracking` e `smoothing` formam "Tracking & filter"):
   estágio com família de adaptador mostra um cartão por especificação
   (`{type, name?, ...}`) e "+ Add" com os tipos registrados; estágio com
   seção mostra um cartão da seção; opcionais vazios aparecem como "Off".

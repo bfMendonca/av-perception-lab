@@ -427,7 +427,7 @@ for _stage in (
     Stage(
         yaml_key="semantic",
         title="Semantic segmentation",
-        order=45,
+        order=75,
         kind="semantic",
         multiple=True,
         optional=True,
@@ -439,6 +439,7 @@ for _stage in (
         order=60,
         kind="tracker",
         optional=True,
+        group="Tracking & filter",
     ),
     Stage(
         yaml_key="smoothing",
@@ -446,6 +447,7 @@ for _stage in (
         order=70,
         config_cls=SmoothingConfig,
         optional=True,
+        group="Tracking & filter",
     ),
     Stage(
         yaml_key="motion",

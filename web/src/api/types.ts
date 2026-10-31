@@ -62,6 +62,8 @@ export interface StageInfo {
   /** Shown under "General settings" instead of a lane. */
   general: boolean;
   has_section: boolean;
+  /** Consecutive stages with the same group share one lane titled by it. */
+  group?: string | null;
   [key: string]: unknown;
 }
 

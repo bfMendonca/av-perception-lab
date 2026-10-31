@@ -21,6 +21,7 @@ def stage_list() -> list[dict[str, Any]]:
             "optional": s.optional,
             "order": s.order,
             "general": s.general,
+            "group": s.group,
             "has_section": s.config_cls is not None,
         }
         for s in registry.stages()

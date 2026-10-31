@@ -5,7 +5,7 @@ import json
 import sys
 from collections.abc import AsyncIterator, Callable
 from contextlib import asynccontextmanager
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Any
 
 import yaml
@@ -184,6 +184,12 @@ def create_app(
             target = safe_join(static_dir, rel) if rel else index
         except ValueError:
             raise HTTPException(404, "not found") from None
-        return FileResponse(target if target.is_file() else index)
+        if target.is_file():
+            return FileResponse(target)
+        # Client-side routes have no extension; a missing file (e.g. a stale
+        # hashed asset) is a 404, never HTML served as JS/CSS.
+        if rel.startswith("assets/") or PurePosixPath(rel).suffix:
+            raise HTTPException(404, f"{rel} not found")
+        return FileResponse(index)
 
     return app

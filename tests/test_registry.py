@@ -120,14 +120,29 @@ def test_builtin_stages_are_registered_in_order():
     from det_depth_distance import config  # noqa: F401  (registers the stages)
 
     stages = registry.stages()
-    keys = [s.yaml_key for s in stages]
-    assert keys[:3] == ["source", "detectors", "aggregation"]
+    keys = [s.yaml_key for s in stages if not s.general]
+    assert keys == [
+        "source",
+        "detectors",
+        "aggregation",
+        "refiners",
+        "depth",
+        "tracking",
+        "smoothing",
+        "semantic",
+        "motion",
+    ]
     assert [s.order for s in stages] == sorted(s.order for s in stages)
     by_key = {s.yaml_key: s for s in stages}
     assert by_key["detectors"].kind == "detector" and by_key["detectors"].multiple
     assert by_key["smoothing"].config_cls is not None and by_key["smoothing"].optional
     assert by_key["render"].general and not by_key["depth"].general
     assert {s.kind for s in stages if s.kind} <= set(registry.available())
+    grouped = {s.yaml_key: s.group for s in stages if s.group is not None}
+    assert grouped == {
+        "tracking": "Tracking & filter",
+        "smoothing": "Tracking & filter",
+    }
 
 
 def test_duplicate_stage_is_an_error():

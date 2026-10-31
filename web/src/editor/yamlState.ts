@@ -95,6 +95,7 @@ export function createEditorStore(client: ApiClient, options: StoreOptions = {})
   function scheduleValidation() {
     if (!state.loaded) return;
     if (timer !== null) clearTimeout(timer);
+    validationSeq++; // a response to any request already in flight is now stale
     set({ validation: "pending" });
     timer = setTimeout(() => {
       timer = null;

@@ -9,6 +9,24 @@ export const SUPPORTED_CATALOG_VERSION = 1;
 const byOrder = (a: StageInfo, b: StageInfo) => a.order - b.order;
 
 export const laneStages = (c: Catalog) => c.stages.filter((s) => !s.general).sort(byOrder);
+/** Lanes: consecutive lane stages sharing a non-empty `group` are merged. */
+export interface LaneUnit {
+  key: string;
+  group: string | null;
+  stages: StageInfo[];
+}
+
+export function laneUnits(c: Catalog): LaneUnit[] {
+  const units: LaneUnit[] = [];
+  for (const stage of laneStages(c)) {
+    const group = typeof stage.group === "string" && stage.group ? stage.group : null;
+    const last = units[units.length - 1];
+    if (group !== null && last?.group === group) last.stages.push(stage);
+    else units.push({ key: group !== null ? `group:${group}:${stage.yaml_key}` : stage.yaml_key, group, stages: [stage] });
+  }
+  return units;
+}
+
 export const generalStages = (c: Catalog) => c.stages.filter((s) => s.general).sort(byOrder);
 export const stageByKey = (c: Catalog | null, key: string) => c?.stages.find((s) => s.yaml_key === key);
 

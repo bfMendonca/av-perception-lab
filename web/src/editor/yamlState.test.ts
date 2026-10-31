@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { fakeClient, makeCatalog, sampleConfig } from "../test/fixtures";
 import { createEditorStore } from "./yamlState";
 
@@ -58,5 +58,28 @@ describe("editor state", () => {
     expect(store.getState().pipeline.config).not.toHaveProperty("my_notes");
     expect(store.toConfig()).toEqual({ detectors: [{ type: "alpha" }], my_notes: { a: 1 } });
     expect(store.getState().fileName).toBe("notes.yaml");
+  });
+});
+
+describe("validation", () => {
+  it("an edit made while a validation request is in flight discards its stale response", async () => {
+    const client = fakeClient();
+    const pending: ((errors: { path: string; message: string }[]) => void)[] = [];
+    client.validate = (config) => {
+      client.validateCalls.push(config);
+      return new Promise((resolve) => pending.push(resolve));
+    };
+    const store = createEditorStore(client, { debounceMs: 0 });
+    store.setCatalog(makeCatalog());
+    store.loadParsed(structuredClone(sampleConfig), "s.yaml");
+    await vi.waitFor(() => expect(pending).toHaveLength(1)); // first request in flight
+    store.setOption(["smoothing", "accel_std"], 99); // edit during the flight
+    pending[0]([]); // the old request answers "valid"
+    await Promise.resolve();
+    expect(store.getState().validation).toBe("pending");
+    await vi.waitFor(() => expect(pending).toHaveLength(2));
+    pending[1]([{ path: "smoothing.accel_std", message: "too large" }]);
+    await vi.waitFor(() => expect(store.getState().validation).toBe("invalid"));
+    expect(store.getState().errors).toEqual([{ path: "smoothing.accel_std", message: "too large" }]);
   });
 });

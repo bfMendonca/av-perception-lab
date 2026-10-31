@@ -31,8 +31,10 @@ Nada mais: o modelo aparece em `catalog["modules"][família][tipo]`.
    não de interface) e o campo correspondente em `RunConfig`.
 2. Registre o descritor, ao lado do campo (fim de `config.py`):
    `register_stage(Stage(yaml_key=..., title=..., order=..., kind=... ou
-   config_cls=..., multiple=..., optional=..., general=...))`. `order` define
-   a posição na pista; deixe folga entre os valores.
+   config_cls=..., multiple=..., optional=..., general=..., group=...))`.
+   `order` define a posição na pista; deixe folga entre os valores. `group`
+   (opcional) junta estágios consecutivos com o mesmo valor numa só pista
+   com esse título (ex.: `tracking` e `smoothing` em "Tracking & filter").
 
 Nada sob `web/`: o estágio aparece em `catalog["stages"]` (e a seção em
 `catalog["sections"]`, se tiver `config_cls`) na ordem registrada.

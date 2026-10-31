@@ -38,15 +38,48 @@ def test_assets_served_and_unknown_routes_fall_back_to_index(web_paths, dist):
 def test_api_routes_never_fall_back(web_paths, dist):
     client = TestClient(create_app(web_paths, static_dir=dist))
     assert client.get("/api/catalog").status_code == 200
-    assert client.get("/api/nope").status_code == 404
-    assert client.get("/api").status_code == 404
+    for path in ("/api/nope", "/api", "/api/runs/x/y/z"):
+        r = client.get(path)
+        assert r.status_code == 404
+        assert r.headers["content-type"].startswith("application/json")
+        assert "detail" in r.json()
+
+
+def test_missing_asset_is_404_not_index(web_paths, dist):
+    client = TestClient(create_app(web_paths, static_dir=dist))
+    for path in ("/assets/index-stale.js", "/assets/x", "/favicon.ico"):
+        r = client.get(path)
+        assert r.status_code == 404, path
+        assert "id=root" not in r.text
 
 
 def test_static_traversal_does_not_escape_dist(web_paths, dist):
     client = TestClient(create_app(web_paths, static_dir=dist))
     for path in ("/..%2Fsecret.txt", "/assets/..%2F..%2Fsecret.txt"):
         r = client.get(path)
+        assert r.status_code == 404
         assert "outside" not in r.text
+
+
+def test_server_static_dir_flag(monkeypatch, tmp_path):
+    import uvicorn
+
+    from det_depth_distance.web import app as app_module
+    from det_depth_distance.web import server
+
+    seen = {}
+
+    def fake_create_app(paths, **kwargs):
+        seen.update(kwargs)
+        return "app"
+
+    monkeypatch.setattr(app_module, "create_app", fake_create_app)
+    monkeypatch.setattr(uvicorn, "run", lambda app, host, port: seen.update(app=app))
+    server.main(["--static-dir", str(tmp_path / "ui")])
+    assert seen == {"static_dir": tmp_path / "ui", "app": "app"}
+    seen.clear()
+    server.main([])
+    assert seen == {"app": "app"}  # default: create_app's own DEFAULT_STATIC_DIR
 
 
 def test_without_dist_only_the_api_is_served(web_paths, tmp_path):

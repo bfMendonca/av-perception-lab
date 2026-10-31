@@ -56,6 +56,22 @@ def test_new_stage_appears_in_catalog_in_order(monkeypatch):
     assert "fake_stage" in catalog["sections"]
 
 
+def test_stage_group_flows_to_catalog(monkeypatch):
+    monkeypatch.setattr(registry, "_STAGES", dict(registry._STAGES))
+    registry.register_stage(
+        registry.Stage(
+            yaml_key="fake_grouped",
+            title="Fake",
+            order=56,
+            config_cls=FakeDetector.Options,
+            group="Fake group",
+        )
+    )
+    stages = {s["yaml_key"]: s for s in schema.module_catalog()["stages"]}
+    assert stages["fake_grouped"]["group"] == "Fake group"
+    assert stages["depth"]["group"] is None
+
+
 def test_duplicate_stage_key_rejected():
     with pytest.raises(ValueError, match="already registered"):
         registry.register_stage(registry.Stage(yaml_key="depth", title="x", order=1))

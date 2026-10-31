@@ -4,7 +4,7 @@
 import { useEffect, useRef, useState } from "react";
 import type { Catalog, StageInfo, ValidationError } from "../api/types";
 import { Icon } from "../ui/icons";
-import { laneStages, moduleInfo, moduleTypes, sectionFields, slotPath, slotsOf, summarize } from "./catalog";
+import { laneUnits, moduleInfo, moduleTypes, sectionFields, slotPath, slotsOf, summarize } from "./catalog";
 import { EmptySlot, ModuleCard } from "./ModuleCard";
 import { isRecord, isUnder, toDotted } from "./paths";
 import { stageViewFor } from "./registry";
@@ -13,30 +13,41 @@ import { useEditor, type Selection } from "./yamlState";
 export function Lanes() {
   const { catalog, pipeline, errors, selection, select } = useEditor();
   if (!catalog) return null;
-  const stages = laneStages(catalog);
+  const stage = (s: StageInfo, nested: boolean) => {
+    const View = stageViewFor(s.yaml_key);
+    const props = {
+      stage: s,
+      value: pipeline.config[s.yaml_key],
+      catalog,
+      errors: errors.filter((e) => isUnder(e.path, s.yaml_key)),
+      selection,
+      select,
+    };
+    return View ? <View key={s.yaml_key} {...props} /> : <GenericLane key={s.yaml_key} {...props} nested={nested} />;
+  };
   return (
     <div className="lanes" role="list" aria-label="Pipeline stages">
-      {stages.map((stage, i) => {
-        const View = stageViewFor(stage.yaml_key);
-        const value = pipeline.config[stage.yaml_key];
-        const stageErrors = errors.filter((e) => isUnder(e.path, stage.yaml_key));
-        return (
-          <div className="lanes__item" role="listitem" key={stage.yaml_key}>
-            {i > 0 ? (
-              <div className="lanes__arrow" aria-hidden="true">
-                <svg width="22" height="10" viewBox="0 0 22 10">
-                  <path d="M0 5h19M15 1l4 4-4 4" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
-                </svg>
-              </div>
-            ) : null}
-            {View ? (
-              <View stage={stage} value={value} catalog={catalog} errors={stageErrors} selection={selection} select={select} />
-            ) : (
-              <GenericLane stage={stage} value={value} catalog={catalog} errors={stageErrors} selection={selection} select={select} />
-            )}
-          </div>
-        );
-      })}
+      {laneUnits(catalog).map((unit, i) => (
+        <div className="lanes__item" role="listitem" key={unit.key}>
+          {i > 0 ? (
+            <div className="lanes__arrow" aria-hidden="true">
+              <svg width="22" height="10" viewBox="0 0 22 10">
+                <path d="M0 5h19M15 1l4 4-4 4" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
+              </svg>
+            </div>
+          ) : null}
+          {unit.group !== null ? (
+            <section className="lane lane--group" aria-label={unit.group}>
+              <header className="lane__head">
+                <h2 className="lane__title">{unit.group}</h2>
+              </header>
+              <div className="lane__body">{unit.stages.map((s) => stage(s, true))}</div>
+            </section>
+          ) : (
+            stage(unit.stages[0], false)
+          )}
+        </div>
+      ))}
     </div>
   );
 }
@@ -53,7 +64,8 @@ interface LaneProps {
   select: (s: Selection) => void;
 }
 
-export function GenericLane({ stage, value, catalog, errors, selection, select }: LaneProps) {
+/** The generic lane of a stage; `nested` renders it as a part of a group lane. */
+export function GenericLane({ stage, value, catalog, errors, selection, select, nested = false }: LaneProps & { nested?: boolean }) {
   const { addModule } = useEditor();
   const slots = slotsOf(stage, value);
   const ownErrors = errors.filter((e) => e.path === stage.yaml_key);
@@ -61,12 +73,16 @@ export function GenericLane({ stage, value, catalog, errors, selection, select }
   const badShape = stage.multiple ? value !== undefined && value !== null && !Array.isArray(value) : false;
 
   return (
-    <section className="lane" aria-label={stage.title}>
-      <header className="lane__head">
-        <h2 className="lane__title" title={stage.optional ? `${stage.title} (optional)` : stage.title}>
-          {stage.title}
-        </h2>
-      </header>
+    <section className={nested ? "lane__part" : "lane"} aria-label={stage.title}>
+      {nested ? (
+        <h3 className="lane__subtitle">{stage.title}</h3>
+      ) : (
+        <header className="lane__head">
+          <h2 className="lane__title" title={stage.optional ? `${stage.title} (optional)` : stage.title}>
+            {stage.title}
+          </h2>
+        </header>
+      )}
       <div className="lane__body">
         {slots.map(({ index, value: spec }) => {
           const dotted = toDotted(slotPath(stage, index));
@@ -105,8 +121,8 @@ export function GenericLane({ stage, value, catalog, errors, selection, select }
         ) : null}
         {slots.length === 0 && !badShape ? <EmptySlot label={stage.optional ? "Off" : "Not configured"} hint={stage.optional ? undefined : "required"} /> : null}
         {canAdd && !badShape ? <AddButton stage={stage} catalog={catalog} onAdd={(t) => addModule(stage.yaml_key, t)} /> : null}
-        {ownErrors.map((e) => (
-          <p className="lane__error" key={e.message}>
+        {ownErrors.map((e, i) => (
+          <p className="lane__error" key={i}>
             <Icon name="alert" size={13} /> {e.message}
           </p>
         ))}

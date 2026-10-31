@@ -81,6 +81,9 @@ class Stage:
     multiple: bool = False  # a list of specs instead of one
     optional: bool = False  # the stage can be absent (null)
     general: bool = False  # shown in "General settings", not in the lane
+    # Consecutive stages (by `order`) sharing a group are shown as one lane
+    # titled by the group; None = a lane of its own.
+    group: str | None = None
     # Fields of `lifted_from` (a dataclass) written under this section in the
     # YAML but stored elsewhere (e.g. RunConfig fields set in `distance`);
     # UIs merge them into the section's form.

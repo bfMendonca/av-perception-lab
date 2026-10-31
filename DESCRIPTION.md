@@ -129,7 +129,7 @@ dataclass (`core/types.py`), never a framework object:
 - `MotionConfig` (motion/config.py): `models` (name -> spec `{type, **options}`, registry family "motion"), `classes` (canonical label -> model name), `default` (model or null), `reset_after_s`, `nis_gate`, `measurement` (`reference_point`, `std_scale`, `rel_floor`, `pixel_std`), `prediction` (`horizon_s`, `step_s`, `n_sigma`), `ego_motion` (spec, registry family "ego_motion", or null = camera frame), `camera_mount` (`x_m`, `y_m`, `yaw_deg`).
 - `SmoothingConfig` (temporal.py): `filter` (kalman/ema/median), `accel_std`, `std_scale`, `rel_floor`, `init_speed_std`, `tau_s`, `window_s`, `reset_after_s` (times in seconds).
 - `Calibration` (camera.py): one recording mode's calibration: `image_size` (W, H), K as `CameraIntrinsics` in the continuous convention (OpenCV cx/cy + 0.5, converted only in `from_opencv`/`camera_matrix`), OpenCV-order `dist`, `rms_px`, `std`, recording `camera` metadata, `meta`; `scaled_to` (same aspect ratio only). Stored as an OpenCV `FileStorage` YAML/JSON (`image_width`, `image_height`, `camera_matrix`, `distortion_coefficients` + optional keys); `CalibrationConfig` (config.py) is the `camera.calibration` section (`path`, `undistort`, `alpha`, `check_lens`, `cross_check`).
-- `Stage` (core/registry.py): UI-facing descriptor of a pipeline stage (`yaml_key`, `title`, `kind` or `config_cls`, `multiple`, `optional`, `order`, `general`), registered with `register_stage` (built-ins at the bottom of `config.py`); options dataclass fields may carry `metadata={"ui": {label, unit, min, max, step, advanced, help}}`, read by `web.schema.options_schema`.
+- `Stage` (core/registry.py): UI-facing descriptor of a pipeline stage (`yaml_key`, `title`, `kind` or `config_cls`, `multiple`, `optional`, `order`, `general`, `group`: consecutive stages with the same group share one UI lane), registered with `register_stage` (built-ins at the bottom of `config.py`, lane order source, detectors, aggregation, refiners, depth, tracking + smoothing (group "Tracking & filter"), semantic, motion); options dataclass fields may carry `metadata={"ui": {label, unit, min, max, step, advanced, help}}`, read by `web.schema.options_schema`.
 - `ReferenceSet` (evaluation/references.py): field references of one video (YAML via `from_mapping`): `video`, `instruments` (uncertainty_m, uncertainty_rel), `references` (`Reference`: id, frame or time range, `Selector` box/point/track_id + label, constant `distance_m` or `series`, instrument or uncertainty, `quantity` range/z, target, notes). `RunData` (run_data.py): a run's CSV columns as numpy arrays + metrics.json.
 - `RunConfig` (config.py): the YAML run (source, detectors, depth, camera, aggregation, refiners, semantic, tracking (flat tracker spec or null), smoothing (`SmoothingConfig` or null), motion (`MotionConfig` or null), agreement, distance incl. `exclude_semantic` "<segmenter>.<class>" labels, render incl. `semantic_alpha`/`semantic_overlay`/`show_smoothed`/`show_speed` and, for motion, `show_trajectory`/`trajectory_alpha`/`show_motion_speed`/`bev_inset`/`bev_size`/`bev_range_m`/`bev_width_m`, output, device).
 
@@ -316,7 +316,7 @@ writes `config.yaml`, `web_run.json` (`status`, `video_id`, `started_at`) and
 
 Front-end (task_0015, `web/`, English, dark theme only): a pipeline editor
 built entirely from `/api/catalog`. Lanes follow `stages` (non-general) in
-`order`; adapter stages show one card per spec and an "+ Add" menu of the
+`order`, consecutive stages sharing a `group` merged into one lane; adapter stages show one card per spec and an "+ Add" menu of the
 registered types, section stages one card; a right inspector renders the
 selected spec/section from its schema (`Field.type` -> slider with hint
 min/max, select, switch, text/path, list, nested group; `hint.advanced` in a
@@ -328,7 +328,9 @@ and the parse `extras`. State lives in a small store (`useEditor()`:
 extras), `dirty`, `diff()` against the last opened/saved YAML); validation is
 debounced 400 ms and errors attach to fields by dotted path (spec-level
 domain errors whose message starts with a field name are attached to that
-field). Save YAML downloads `/api/config/dump` output and warns once that
+field). `det-depth-distance-web --static-dir DIR` overrides the served build
+(default `web/dist` of the checkout); missing files under `assets/` or with
+an extension are 404, other paths fall back to `index.html`. Save YAML downloads `/api/config/dump` output and warns once that
 comments/key order are lost. Extension registry: `registerStageView(yamlKey,
 view)`, `registerFieldControl(match, control)`; a `catalog_version` above the
 supported one shows a non-blocking banner. Process is disabled until task_0016.

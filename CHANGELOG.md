@@ -27,8 +27,14 @@ TypeScript + Vite, em ingles, so tema escuro), servido pelo FastAPI.
 ### Alterado
 
 - `create_app(..., static_dir=...)` serve `web/dist` em `/` com fallback de
-  SPA (nunca para `/api`); sem build, so a API. `.gitignore` ganha
-  `web/node_modules/` e `web/dist/`.
+  SPA (nunca para `/api` nem para arquivo ausente em `assets/` ou com
+  extensao); sem build, so a API; `det-depth-distance-web --static-dir`.
+  `.gitignore` ganha `web/node_modules/` e `web/dist/`.
+- `Stage.group` (opcional) no registro de estagios e no catalogo: estagios
+  consecutivos do mesmo grupo dividem uma pista; `tracking` e `smoothing`
+  formam "Tracking & filter". A ordem nativa das pistas passa a ser fonte,
+  detectores, agregacao, refinadores, profundidade, rastreio e filtro,
+  semantica, movimento.
 
 ---
 
