@@ -980,7 +980,9 @@ nome da pasta como caminho):
   medida bruta em cinza e a de comparação tracejada; passar o mouse mostra os
   valores, clicar (ou setas + Enter) salta o vídeo para aquele instante e a
   linha vertical acompanha o vídeo. Ao comparar, a trilha inicial é a mais
-  longa que existe nas duas execuções (os ids são por execução).
+  longa cujo id também existe na outra execução com intervalo de tempo
+  sobreposto (senão o id comum mais longo); ids são por execução e o mesmo id
+  pode ser outro objeto, o que a nota sob o gráfico lembra.
 - **Artefatos**: todos os arquivos da pasta (tamanho, tipo, abrir, baixar);
   JSON vira árvore recolhível, e o `metrics.json` aparece inteiro em
   **Metrics** — um sink ou seção nova aparece sem mudar a interface

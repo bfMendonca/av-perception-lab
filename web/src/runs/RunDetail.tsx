@@ -3,7 +3,7 @@
 // discovered artifacts and the generic metrics tree. A `job-<id>` entry (a
 // failed job without a folder) shows its error and log instead.
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
-import type { Artifact, Comparison, RunsApi, Series, SummaryResponse } from "../api/runs";
+import type { Artifact, Comparison, RunsApi, Series, SummaryResponse, TrackInfo } from "../api/runs";
 import type { RunRecord } from "../api/video";
 import { Icon } from "../ui/icons";
 import { Artifacts } from "./Artifacts";
@@ -45,6 +45,22 @@ function useLoad<T>(load: (() => Promise<T>) | null, deps: unknown[]): Load<T> |
     };
   }, deps);
   return state;
+}
+
+export const SHARED_ID_LABEL = "id also in comparison run";
+export const TRACK_ID_NOTE = "Track ids are per run; the same id may be a different object.";
+
+const overlaps = (a: TrackInfo, b: TrackInfo) => a.t0 <= b.t1 && b.t0 <= a.t1;
+
+/** Default track of a comparison: the longest track of B whose id A also has
+ * with an overlapping [t0, t1]; else the longest id A also has; else null
+ * (keep B's own default). `tracksB` is longest first, as the server sends it.
+ * Equal ids are not matched objects: the view says so. */
+export function pickDefaultTrack(tracksB: TrackInfo[], tracksA: TrackInfo[]): number | null {
+  const byId = new Map(tracksA.map((t) => [t.id, t]));
+  const overlapping = tracksB.find((t) => byId.has(t.id) && overlaps(t, byId.get(t.id) as TrackInfo));
+  if (overlapping) return overlapping.id;
+  return tracksB.find((t) => byId.has(t.id))?.id ?? null;
 }
 
 function Actions({ run, onReopen, onRerun }: Pick<RunDetailProps, "run" | "onReopen" | "onRerun">) {
@@ -132,15 +148,16 @@ function RunResults({ run, against, runs, api, onCompare, onReopen, onRerun }: R
   const seriesB = useLoad<Series>(() => api.series(run.id, track), [api, run.id, track, run.status]);
   const resolvedTrack = seriesB?.status === "ready" ? seriesB.value.track : null;
   const seriesA = useLoad<Series>(againstId && seriesB?.status === "ready" ? () => api.series(againstId, resolvedTrack) : null, [api, againstId, resolvedTrack, seriesB?.status]);
-  // Track ids are per run: until the user picks one, show the longest track
-  // of this run that the comparison run has too.
+  // Track ids are per run (the same id may be another object): until the
+  // user picks one, prefer an id the comparison run also has over an
+  // overlapping time range (pickDefaultTrack); never a claim of identity.
   const [picked, setPicked] = useState(false);
   const idsA = useMemo(() => new Set(seriesA?.status === "ready" ? seriesA.value.tracks.map((t) => t.id) : []), [seriesA]);
   useEffect(() => {
-    if (picked || seriesB?.status !== "ready" || seriesA?.status !== "ready" || seriesA.value.found) return;
-    const shared = seriesB.value.tracks.find((t) => idsA.has(t.id));
-    if (shared && shared.id !== resolvedTrack) setTrack(shared.id);
-  }, [idsA, picked, resolvedTrack, seriesA, seriesB]);
+    if (picked || seriesB?.status !== "ready" || seriesA?.status !== "ready") return;
+    const best = pickDefaultTrack(seriesB.value.tracks, seriesA.value.tracks);
+    if (best !== null && best !== resolvedTrack) setTrack(best);
+  }, [picked, resolvedTrack, seriesA, seriesB]);
 
   const list = artifacts?.status === "ready" ? artifacts.value : [];
   const videoArt = list.find((a) => a.role === "video");
@@ -257,7 +274,7 @@ function RunResults({ run, against, runs, api, onCompare, onReopen, onRerun }: R
                     <option key={t.id} value={t.id}>
                       #{t.id}
                       {t.class_name ? ` · ${t.class_name}` : ""} · {t.rows} pts · {formatSeconds(t.t0)}–{formatSeconds(t.t1)}
-                      {against && idsA.has(t.id) ? " · in both runs" : ""}
+                      {against && idsA.has(t.id) ? ` · ${SHARED_ID_LABEL}` : ""}
                     </option>
                   ))}
                 </select>
@@ -270,7 +287,12 @@ function RunResults({ run, against, runs, api, onCompare, onReopen, onRerun }: R
           {seriesB?.status === "ready" ? (
             <>
               <DistanceChart b={seriesB.value} a={seriesA?.status === "ready" ? seriesA.value : null} labelB={labelB} labelA={labelA} onSeek={seek} playhead={playhead} />
-              {against && seriesA?.status === "ready" && !seriesA.value.found ? <p className="muted runs__notes">Track #{resolvedTrack} does not exist in the comparison run.</p> : null}
+              {against ? (
+                <p className="muted runs__notes" data-testid="track-id-note">
+                  {TRACK_ID_NOTE}
+                  {seriesA?.status === "ready" && !seriesA.value.found ? ` Track #${resolvedTrack} does not exist in the comparison run.` : ""}
+                </p>
+              ) : null}
               {seriesA?.status === "error" ? <p className="muted runs__notes">Comparison series unavailable: {seriesA.message}</p> : null}
             </>
           ) : seriesB?.status === "loading" ? (
