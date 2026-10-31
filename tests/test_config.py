@@ -564,10 +564,10 @@ def test_light_config_is_the_planned_light_stack(monkeypatch):
     assert Path(detector["weights"]).name == "yolo26s-seg.pt"
     assert cfg.refiners == ()  # the masks come from the detector
     assert cfg.depth["model"] == "da3metric-large"
-    assert cfg.depth["hf_cache"] == "weights/hf"
+    assert "hf_cache" not in cfg.depth  # default: <weights root>/hf
     assert cfg.camera.estimate.model == "da3-large-1.1"
     assert cfg.camera.estimate.frames == 16
-    assert cfg.camera.estimate.hf_cache == Path("weights/hf")
+    assert cfg.camera.estimate.hf_cache is None
     track = load_config(TRACK)
     assert cfg.tracking == track.tracking
     assert cfg.smoothing == track.smoothing

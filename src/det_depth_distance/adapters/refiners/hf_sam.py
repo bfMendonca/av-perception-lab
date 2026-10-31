@@ -15,8 +15,9 @@ intermediate) embeddings. The facebook/sam2.1-* and EdgeTAM checkpoints
 are video configs that load into the image models. The SAM 1 / SAM-HQ IoU
 head has no sigmoid, so their scores may leave [0, 1].
 
-Weights are read with local_files_only=True from `hf_cache`: nothing is
-downloaded at run time. Models run in float32 (quality first). EdgeTAM
+Weights are read with local_files_only=True from `hf_cache` (default
+`<weights root>/hf`): nothing is downloaded at run time; `requirements`
+declares the same files for `--prepare`. Models run in float32 (quality first). EdgeTAM
 needs `timm` (its backbone is a TimmWrapper). facebook/sam3 is gated
 ("SAM License"): request access and set HF_TOKEN before downloading it.
 torch and transformers are imported inside the hooks only.
@@ -29,7 +30,8 @@ from typing import Any, ClassVar
 
 import numpy as np
 
-from det_depth_distance.adapters._hf_hub import from_pretrained_offline
+from det_depth_distance.adapters._hf_hub import from_pretrained_offline, hf_asset
+from det_depth_distance.adapters._weights import INFER_EXTRA
 from det_depth_distance.adapters.refiners.box_prompt import (
     BoxPromptOptions,
     BoxPromptRefiner,
@@ -37,6 +39,7 @@ from det_depth_distance.adapters.refiners.box_prompt import (
 )
 from det_depth_distance.core.components import LoadContext
 from det_depth_distance.core.registry import register
+from det_depth_distance.core.requirements import Requirements
 from det_depth_distance.runtime import package_version
 
 
@@ -46,7 +49,7 @@ class HFSamOptions(BoxPromptOptions):
     gives `model` its default (no __post_init__ of its own: the base one runs)."""
 
     model: str  # Hugging Face repo in transformers format
-    hf_cache: Path | None = None  # e.g. weights/hf; None = default HF cache
+    hf_cache: Path | None = None  # None = <weights root>/hf
 
 
 @dataclass(frozen=True, slots=True)
@@ -77,6 +80,8 @@ class HFSamRefiner(BoxPromptRefiner):
 
     # SAM 1 convention: post_process_masks also takes reshaped_input_sizes.
     uses_reshaped_input_sizes: ClassVar[bool] = False
+    # import names the family needs besides torch/transformers (EdgeTAM: timm)
+    extra_packages: ClassVar[tuple[str, ...]] = ()
     options: HFSamOptions
 
     def __init__(self, options: HFSamOptions, *, name: str | None = None) -> None:
@@ -84,6 +89,18 @@ class HFSamRefiner(BoxPromptRefiner):
         self._model = None
         self._processor = None
         self._device = ""
+
+    @classmethod
+    def requirements(cls, options: HFSamOptions) -> Requirements:
+        """`model.safetensors` + `*.json` of `model` in the HF cache layout."""
+        asset = hf_asset(
+            "weights", options.model, options.hf_cache, "model.safetensors"
+        )
+        return Requirements(
+            assets=() if asset is None else (asset,),
+            packages=("torch", "transformers", *cls.extra_packages),
+            extra=INFER_EXTRA,
+        )
 
     def default_name(self) -> str:
         """Lower-case basename of the repo, e.g. "sam2.1-hiera-large"."""
@@ -186,6 +203,7 @@ class EdgeTamRefiner(HFSamRefiner):
 
     model_class = "EdgeTamModel"
     processor_class = "Sam2Processor"
+    extra_packages = ("timm",)
     has_object_score = True
 
     @dataclass(frozen=True, slots=True, kw_only=True)

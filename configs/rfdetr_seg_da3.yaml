@@ -1,6 +1,6 @@
 # RF-DETR Seg Large (COCO instance segmentation) + DA3METRIC-LARGE: distance over
-# each instance mask. The weights (rf-detr-seg-large.pt, ~145 MB) are downloaded by
-# rfdetr on first use to ~/.roboflow/models (MD5-checked).
+# each instance mask. The weights (rf-detr-seg-large.pt, ~145 MB) are fetched by
+# --prepare to weights/rfdetr/ (nothing is downloaded at run time).
 # region: both records the mask and the box distance of every masked instance.
 # Run: det-depth-distance --config configs/rfdetr_seg_da3.yaml [VIDEO] [--set key=value]...
 device: cuda:0
@@ -12,7 +12,6 @@ depth:
   model: da3metric-large
   process_res: 504
   process_res_method: upper_bound_resize
-  hf_cache: &hf ~/dev/depth-anything-3/_testbed/weights/hf
 camera:
   focal_px: null  # focal length in pixels of the input video; takes precedence over estimate
   estimate:
@@ -20,7 +19,6 @@ camera:
     frames: 16
     process_res: 504
     process_res_method: upper_bound_resize
-    hf_cache: *hf
 aggregation: {type: concat}
 distance:
   box_shrink: 0.1

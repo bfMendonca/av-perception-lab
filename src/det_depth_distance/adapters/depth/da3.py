@@ -15,6 +15,12 @@ the GPU stack. DA3_LOG_LEVEL defaults to WARN to silence per-call INFO logs.
 The model kind (and so `needs_intrinsics`) is decided at construction from
 the checkpoint's model_name, before loading, so relative models are refused
 and focal estimation is scheduled without loading the main model.
+
+Nothing is downloaded at run time: checkpoints are read with
+local_files_only=True from `hf_cache` (default `<weights root>/hf`), and a
+missing one raises a ConfigError naming `--prepare` before depth_anything_3 is
+imported. `da3_requirements` declares the same files (also used for the focal
+model of `camera.estimate`).
 """
 
 import json
@@ -26,9 +32,22 @@ from typing import Any, Literal, get_args
 
 import numpy as np
 
+from det_depth_distance.adapters._hf_hub import (
+    default_cache,
+    download_command,
+    hf_asset,
+    is_repo_id,
+    resolve_cache,
+)
+from det_depth_distance.adapters._weights import INFER_EXTRA
 from det_depth_distance.core.components import DepthEstimator, LoadContext
 from det_depth_distance.core.options import ConfigError
 from det_depth_distance.core.registry import register
+from det_depth_distance.core.requirements import (
+    HuggingFaceAsset,
+    Requirements,
+    UnsafePathError,
+)
 from det_depth_distance.core.types import CameraIntrinsics, DepthResult, MapGeometry
 from det_depth_distance.runtime import package_version
 
@@ -155,14 +174,61 @@ def to_metres(
     raise ValueError("relative-depth models cannot produce metric distances")
 
 
+_DA3_WEIGHTS = "model.safetensors"
+
+
+def da3_requirements(model: str, hf_cache: Path | None) -> Requirements:
+    """`config.json` + `model.safetensors` of a DA3 alias / repo id in the HF
+    cache layout (nothing for a local checkpoint directory)."""
+    asset = hf_asset("weights", resolve_depth_model(model), hf_cache, _DA3_WEIGHTS)
+    return Requirements(
+        assets=() if asset is None else (asset,),
+        packages=("torch", "depth_anything_3"),
+        extra=INFER_EXTRA,
+    )
+
+
+def _check_cached(repo_id: str, cache: Path) -> None:
+    """ConfigError naming `--prepare` when `repo_id` is not in `cache`
+    (read from disk, nothing imported)."""
+    if not is_repo_id(repo_id):
+        return  # a local checkpoint directory
+    probe = HuggingFaceAsset(
+        key="weights",
+        target=cache.name,
+        repo=repo_id,
+        files=(_DA3_WEIGHTS,),
+        patterns=("*.json",),
+    )
+    try:
+        state = probe.present(cache.parent).state
+    except (UnsafePathError, OSError):
+        return  # e.g. a symlinked cache: local_files_only still never downloads
+    if state != "ready":
+        raise ConfigError(
+            f"model: {repo_id} is not in {cache} (nothing is downloaded at run "
+            "time); run `det-depth-distance --config <yaml> --prepare` or download "
+            f"it with:\n  {download_command(repo_id, cache, _DA3_WEIGHTS)}"
+        )
+
+
 def _load_da3(repo_id: str, device: str, cache_dir: str | None):
+    """The DA3 network from the local cache only (`cache_dir`, default
+    `<weights root>/hf`); never downloads."""
+    cache = default_cache() if cache_dir is None else resolve_cache(Path(cache_dir))
+    _check_cached(repo_id, cache)
     from depth_anything_3.api import DepthAnything3
 
-    return (
-        DepthAnything3.from_pretrained(repo_id, cache_dir=cache_dir)
-        .to(device=device)
-        .eval()
-    )
+    try:
+        net = DepthAnything3.from_pretrained(
+            repo_id, cache_dir=str(cache), local_files_only=True
+        )
+    except FileNotFoundError:  # LocalEntryNotFoundError: a file the probe missed
+        raise ConfigError(
+            f"model: {repo_id} is incomplete in {cache}; run "
+            "`det-depth-distance --config <yaml> --prepare`"
+        ) from None
+    return net.to(device=device).eval()
 
 
 def estimate_focal_frame_px(
@@ -222,7 +288,9 @@ class DA3Depth(DepthEstimator):
         model: str = "da3metric-large"  # alias (DEPTH_MODELS), HF repo id or local dir
         process_res: int = 504
         process_res_method: ProcessResMethod = "upper_bound_resize"
-        hf_cache: Path | None = None  # Hugging Face cache dir (default: HF_HUB_CACHE)
+        hf_cache: Path | None = (
+            None  # Hugging Face cache dir (default <weights root>/hf)
+        )
 
         def __post_init__(self) -> None:
             if self.process_res < 14:
@@ -242,6 +310,10 @@ class DA3Depth(DepthEstimator):
         # Constant map-resolution K from the given focal; None means K is predicted per frame.
         self.fixed_intrinsics: CameraIntrinsics | None = None
         self._net = None
+
+    @classmethod
+    def requirements(cls, options: Options) -> Requirements:
+        return da3_requirements(options.model, options.hf_cache)
 
     def default_name(self) -> str:
         return self.repo_id.rstrip("/").split("/")[-1].lower()

@@ -1,6 +1,6 @@
 # RF-DETR large + DA3METRIC-LARGE + two semantic segmenters on every frame, in list order:
 # "lanes" = TwinLiteNet+ (drivable area and lane lines, BDD100K; code and weights from the
-# local clone ~/dev/TwinLiteNetPlus) and "scene" = SegFormer Cityscapes (weights in the HF
+# pinned clone weights/_code/TwinLiteNetPlus) and "scene" = SegFormer Cityscapes (weights in the HF
 # cache weights/hf). `name` is the namespace of the excluded labels (<name>.<class>); the
 # maps are not merged, only the exclusion is the union of the listed classes. Example of
 # composition, not a validated recommendation: lanes.lane drops painted lane lines (they
@@ -17,7 +17,6 @@ depth:
   model: da3metric-large
   process_res: 504
   process_res_method: upper_bound_resize
-  hf_cache: &hf ~/dev/depth-anything-3/_testbed/weights/hf
 camera:
   focal_px: null  # focal length in pixels of the input video; takes precedence over estimate
   estimate:
@@ -25,14 +24,12 @@ camera:
     frames: 16
     process_res: 504
     process_res_method: upper_bound_resize
-    hf_cache: *hf
 aggregation: {type: concat}
 semantic:  # run in this order on every frame
-  - {name: lanes, type: twinlitenet, variant: large}  # repo: ~/dev/TwinLiteNetPlus
+  - {name: lanes, type: twinlitenet, variant: large}  # repo: <weights root>/_code/TwinLiteNetPlus
   - name: scene
     type: segformer
     model: nvidia/segformer-b5-finetuned-cityscapes-1024-1024
-    hf_cache: weights/hf
     size: [1024, 1024]
 distance:
   box_shrink: 0.1

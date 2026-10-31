@@ -9,7 +9,7 @@ device: cuda:0
 source: {video: _testbed/data/IMG_4021.MOV, start: 0.0, duration: 0.0, max_frames: 0, stride: 1}
 detectors:
   - type: yolo
-    weights: ~/dev/ultralytics/_testbed/weights/yolo26l-objv1-seg.pt
+    weights: yolo26l-objv1-seg.pt
     threshold: 0.4
     imgsz: 640
     classes: driving
@@ -19,7 +19,6 @@ depth:
   model: da3metric-large
   process_res: 504
   process_res_method: upper_bound_resize
-  hf_cache: &hf ~/dev/depth-anything-3/_testbed/weights/hf
 camera:
   focal_px: null  # focal length in pixels of the input video; takes precedence over estimate
   estimate:
@@ -27,7 +26,6 @@ camera:
     frames: 16
     process_res: 504
     process_res_method: upper_bound_resize
-    hf_cache: *hf
 aggregation: {type: concat}
 distance:
   box_shrink: 0.1

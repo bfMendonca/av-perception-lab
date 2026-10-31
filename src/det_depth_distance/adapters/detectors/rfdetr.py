@@ -8,6 +8,14 @@ data["class_name"] (correct for COCO and fine-tuned checkpoints).
 Seg variants (RFDETRSeg*, COCO) return Detections.mask: mask logits at
 resolution/4, bilinearly resized to the frame and thresholded at 0; masks are
 not cropped to the box (the distance stage does that).
+
+Checkpoints: the COCO checkpoint of each variant is declared as a `UrlAsset`
+(`RFDETR_CHECKPOINTS`: the library's own URL table, sizes read with HTTP HEAD
+in task_0021) at `<weights root>/rfdetr/<library file name>` and loaded from
+that explicit path (`pretrain_weights=`); the library's `~/.roboflow/models`
+cache is neither read nor written by default. The file is checked before the
+import, because the constructor would download a missing default checkpoint.
+A fine-tuned `weights` file goes through `rfdetr.from_checkpoint` as before.
 """
 
 from dataclasses import dataclass
@@ -16,8 +24,16 @@ from typing import Any, Literal
 
 import numpy as np
 
+from det_depth_distance.adapters._weights import INFER_EXTRA, not_prepared, under_root
 from det_depth_distance.core.components import Detector, DetectorOptions, LoadContext
+from det_depth_distance.core.options import ConfigError
 from det_depth_distance.core.registry import register
+from det_depth_distance.core.requirements import (
+    Requirements,
+    UrlAsset,
+    UserProvided,
+    weights_root,
+)
 from det_depth_distance.core.types import Instances
 from det_depth_distance.runtime import package_version
 
@@ -35,6 +51,53 @@ DET_MODELS: dict[str, str] = {
     "seg-xlarge": "RFDETRSegXLarge",
     "seg-2xlarge": "RFDETRSeg2XLarge",
 }
+
+_URL = "https://repo.roboflow.com/rfdetr"
+RFDETR_DIR = "rfdetr"  # <weights root>/rfdetr/<file>
+RFDETR_LICENSE = "Apache-2.0"  # every variant above (rfdetr README tables)
+
+# variant -> (local file name = rfdetr.assets.ModelWeights filename, URL, bytes)
+RFDETR_CHECKPOINTS: dict[str, tuple[str, str, int]] = {
+    "nano": (
+        "rf-detr-nano.pth",
+        f"{_URL}/nano_coco/checkpoint_best_regular.pth",
+        366_287_238,
+    ),
+    "small": (
+        "rf-detr-small.pth",
+        f"{_URL}/small_coco/checkpoint_best_regular.pth",
+        386_045_550,
+    ),
+    "medium": (
+        "rf-detr-medium.pth",
+        f"{_URL}/medium_coco/checkpoint_best_regular.pth",
+        404_992_918,
+    ),
+    "large": ("rf-detr-large-2026.pth", f"{_URL}/rf-detr-large-2026.pth", 135_954_129),
+    "seg-nano": ("rf-detr-seg-nano.pt", f"{_URL}/rf-detr-seg-n-ft.pth", 134_545_398),
+    "seg-small": ("rf-detr-seg-small.pt", f"{_URL}/rf-detr-seg-s-ft.pth", 135_042_342),
+    "seg-medium": (
+        "rf-detr-seg-medium.pt",
+        f"{_URL}/rf-detr-seg-m-ft.pth",
+        143_024_058,
+    ),
+    "seg-large": ("rf-detr-seg-large.pt", f"{_URL}/rf-detr-seg-l-ft.pth", 145_055_866),
+    "seg-xlarge": (
+        "rf-detr-seg-xlarge.pt",
+        f"{_URL}/rf-detr-seg-xl-ft.pth",
+        152_713_150,
+    ),
+    "seg-2xlarge": (
+        "rf-detr-seg-xxlarge.pt",
+        f"{_URL}/rf-detr-seg-2xl-ft.pth",
+        154_851_262,
+    ),
+}
+
+
+def checkpoint_path(variant: str) -> Path:
+    """Default location of a variant's COCO checkpoint under the weights root."""
+    return weights_root() / RFDETR_DIR / RFDETR_CHECKPOINTS[variant][0]
 
 
 @register("detector", "rfdetr")
@@ -63,19 +126,61 @@ class RFDETRDetector(Detector):
         super().__init__(options, name=name)
         self._model = None
 
+    @classmethod
+    def requirements(cls, options: Options) -> Requirements:
+        """The variant's COCO checkpoint (URL), or a fine-tuned `weights` file
+        inside the weights root (user-provided; outside it: not declared)."""
+        packages = ("torch", "rfdetr")
+        if options.weights is not None:
+            target = under_root(options.weights)
+            assets = (
+                ()
+                if target is None
+                else (
+                    UserProvided(
+                        key="weights",
+                        target=target,
+                        option="weights",
+                        hint=f"provide the fine-tuned checkpoint at {options.weights}",
+                    ),
+                )
+            )
+            return Requirements(assets=assets, packages=packages, extra=INFER_EXTRA)
+        name, url, size = RFDETR_CHECKPOINTS[options.variant]
+        asset = UrlAsset(
+            key="weights",
+            target=f"{RFDETR_DIR}/{name}",
+            url=url,
+            size_bytes=size,
+            license=RFDETR_LICENSE,
+        )
+        return Requirements(assets=(asset,), packages=packages, extra=INFER_EXTRA)
+
     def default_name(self) -> str:
         if self.options.weights is not None:
             return f"rfdetr-{self.options.weights.stem}"
         return f"rfdetr-{self.options.variant}"
 
     def _load(self, ctx: LoadContext) -> None:
-        import rfdetr
-
         opts = self.options
         if opts.weights is not None:
+            if not opts.weights.is_file():
+                raise ConfigError(f"weights: file not found: {opts.weights}")
+            import rfdetr
+
             model = rfdetr.from_checkpoint(str(opts.weights), device=ctx.device)
         else:
-            model = getattr(rfdetr, DET_MODELS[opts.variant])(device=ctx.device)
+            # Checked first: the constructor would download a missing file.
+            path = checkpoint_path(opts.variant)
+            if not path.is_file():
+                raise not_prepared(
+                    "variant", f"RF-DETR {opts.variant} checkpoint", path
+                )
+            import rfdetr
+
+            model = getattr(rfdetr, DET_MODELS[opts.variant])(
+                pretrain_weights=str(path), device=ctx.device
+            )
         if opts.optimize:
             import torch
 

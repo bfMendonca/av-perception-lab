@@ -2,7 +2,6 @@
 
 import sys
 import types
-from pathlib import Path
 
 import numpy as np
 import pytest
@@ -46,7 +45,7 @@ def test_options_and_default_name():
         "semantic", {"type": "twinlitenet", "name": "lanes"}, path="semantic[0]"
     )
     assert seg.name == "lanes" and seg.class_names == TWINLITENET_CLASSES
-    assert seg.options.repo == Path("~/dev/TwinLiteNetPlus")
+    assert seg.options.repo is None  # the pinned clone under the weights root
     assert seg.default_name() == "twinlitenet-large"
     with pytest.raises(ConfigError, match=r"^semantic\[0\]: imgsz must be"):
         registry.build(

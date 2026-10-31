@@ -10,7 +10,7 @@ source: {video: _testbed/data/IMG_4021.MOV, start: 0.0, duration: 0.0, max_frame
 detectors:
   - {type: rfdetr, variant: large, threshold: 0.5, classes: driving, labels: configs/labels/coco_driving.yaml}
   - type: yolo
-    weights: ~/dev/ultralytics/_testbed/weights/yolo26l-objv1-150.pt
+    weights: yolo26l-objv1-150.pt
     threshold: 0.4
     imgsz: 640
     classes: driving
@@ -20,7 +20,6 @@ depth:
   model: da3metric-large
   process_res: 504
   process_res_method: upper_bound_resize
-  hf_cache: &hf ~/dev/depth-anything-3/_testbed/weights/hf
 camera:
   focal_px: null  # focal length in pixels of the input video; takes precedence over estimate
   estimate:
@@ -28,7 +27,6 @@ camera:
     frames: 16
     process_res: 504
     process_res_method: upper_bound_resize
-    hf_cache: *hf
 aggregation:
   type: wbf
   iou_thr: 0.55

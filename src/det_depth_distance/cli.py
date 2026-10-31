@@ -26,13 +26,18 @@ from typing import Any
 
 import numpy as np
 
-from det_depth_distance.camera import build_camera
+from det_depth_distance.adapters.depth.da3 import da3_requirements
+from det_depth_distance.camera import build_camera, focal_estimate_config
 from det_depth_distance.config import RunConfig, load_config
 from det_depth_distance.core import registry
 from det_depth_distance.core.options import ConfigError
 from det_depth_distance.core.pipeline import Pipeline
 from det_depth_distance.core.provision import prepare
-from det_depth_distance.core.requirements import ModelStatus, weights_root
+from det_depth_distance.core.requirements import (
+    ModelStatus,
+    Requirements,
+    weights_root,
+)
 from det_depth_distance.io.sinks import (
     CsvSink,
     MetricsSink,
@@ -244,6 +249,34 @@ def config_components(cfg: RunConfig) -> list[tuple[str, Any]]:
     return found
 
 
+def config_requirements(
+    cfg: RunConfig,
+) -> list[tuple[str, str, str, Requirements | str]]:
+    """`(path, name, type, requirements)` of every model the config would load:
+    each component, plus the focal model of `camera.estimate` when the depth
+    model needs intrinsics and the focal is estimated. `requirements` is the
+    error text when the declaration is unsafe (UnsafePathError). Nothing is
+    loaded; raises ConfigError like `run`."""
+    rows: list[tuple[str, str, str, Requirements | str]] = []
+    depth_needs_intrinsics = False
+    for path, component in config_components(cfg):
+        if path == "depth":
+            depth_needs_intrinsics = component.needs_intrinsics
+        try:
+            req: Requirements | str = type(component).requirements(component.options)
+        except ValueError as exc:  # unsafe declaration (UnsafePathError)
+            req = str(exc)
+        rows.append((path, component.name, component.type_name, req))
+    estimate = focal_estimate_config(cfg.camera)
+    if depth_needs_intrinsics and estimate is not None:
+        try:
+            req = da3_requirements(estimate.model, estimate.hf_cache)
+        except ValueError as exc:
+            req = str(exc)
+        rows.append(("camera.estimate", estimate.model, "da3", req))
+    return rows
+
+
 def _progress_printer(min_interval_s: float = 1.0):
     """progress(label, done, total) printing at most once per second per item."""
     last: dict[str, float] = {}
@@ -269,16 +302,14 @@ def prepare_command(cfg: RunConfig, root: Path | None = None) -> int:
     root = weights_root() if root is None else root
     cancel = threading.Event()
     rows: list[tuple[str, str, ModelStatus | str]] = []
-    for path, component in config_components(cfg):
-        label = f"{path} {component.name}"
-        try:
-            req = type(component).requirements(component.options)
-        except ValueError as exc:  # unsafe declaration (UnsafePathError)
-            rows.append((label, component.type_name, f"failed: {exc}"))
+    for path, name, type_name, req in config_requirements(cfg):
+        label = f"{path} {name}"
+        if isinstance(req, str):
+            rows.append((label, type_name, f"failed: {req}"))
             continue
-        print(f"[prepare] {label} ({component.type_name})", flush=True)
+        print(f"[prepare] {label} ({type_name})", flush=True)
         status = prepare(req, root, _progress_printer(), cancel)
-        rows.append((label, component.type_name, status))
+        rows.append((label, type_name, status))
     print(f"\nweights root: {root}")
     header = ("component", "type", "state", "assets", "code", "packages")
     table = [header]

@@ -387,9 +387,14 @@ def test_yaml_alias_bomb_is_refused(api, recommended_yaml):
     assert resp.status_code == 422 and "expands" in resp.json()["detail"]
     recursive = api.post("/api/config/parse", json={"yaml": "a: &a [*a]"})
     assert recursive.status_code == 422
-    # The shipped config shares hf_cache through an anchor: still accepted.
-    assert "&" in recommended_yaml
-    ok = api.post("/api/config/parse", json={"yaml": recommended_yaml})
+    # A real config sharing a value through an anchor is still accepted (the
+    # shipped configs no longer share hf_cache, task_0021: anchor process_res).
+    assert recommended_yaml.count("process_res: 504\n") == 2
+    anchored = recommended_yaml.replace(
+        "process_res: 504\n", "process_res: &res 504\n", 1
+    ).replace("process_res: 504\n", "process_res: *res\n", 1)
+    assert "&res" in anchored and "*res" in anchored
+    ok = api.post("/api/config/parse", json={"yaml": anchored})
     assert ok.status_code == 200
 
 

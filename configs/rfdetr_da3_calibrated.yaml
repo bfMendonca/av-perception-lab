@@ -11,7 +11,6 @@ depth:
   model: da3metric-large
   process_res: 504
   process_res_method: upper_bound_resize
-  hf_cache: &hf ~/dev/depth-anything-3/_testbed/weights/hf
 camera:
   focal_px: null  # must stay null with a calibration
   calibration:
@@ -25,7 +24,6 @@ camera:
     frames: 16
     process_res: 504
     process_res_method: upper_bound_resize
-    hf_cache: *hf
 aggregation: {type: concat}
 distance:
   box_shrink: 0.1

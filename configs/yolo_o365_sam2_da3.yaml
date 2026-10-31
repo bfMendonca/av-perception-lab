@@ -4,12 +4,12 @@
 # Run: det-depth-distance --config configs/yolo_o365_sam2_da3.yaml [VIDEO] [--set key=value]...
 # Other refiners (same options; see README "Refinadores de máscara"): edgetam,
 # sam_hq, sam, sam3_tracker (gated) and ultralytics_sam (needs weights:). Switch with
-#   --set 'refiners=[{type: edgetam, hf_cache: weights/hf}]'
+#   --set 'refiners=[{type: edgetam}]'
 device: cuda:0
 source: {video: _testbed/data/IMG_4021.MOV, start: 0.0, duration: 0.0, max_frames: 0, stride: 1}
 detectors:
   - type: yolo
-    weights: ~/dev/ultralytics/_testbed/weights/yolo26l-objv1-150.pt
+    weights: yolo26l-objv1-150.pt
     threshold: 0.4
     imgsz: 640
     classes: driving
@@ -19,7 +19,6 @@ depth:
   model: da3metric-large
   process_res: 504
   process_res_method: upper_bound_resize
-  hf_cache: &hf ~/dev/depth-anything-3/_testbed/weights/hf
 camera:
   focal_px: null  # focal length in pixels of the input video; takes precedence over estimate
   estimate:
@@ -27,10 +26,9 @@ camera:
     frames: 16
     process_res: 504
     process_res_method: upper_bound_resize
-    hf_cache: *hf
 aggregation: {type: concat}
 refiners:  # box -> mask, after aggregation; weights are never downloaded at run time
-  - {type: sam2, model: facebook/sam2.1-hiera-large, hf_cache: weights/hf, targets: missing}
+  - {type: sam2, model: facebook/sam2.1-hiera-large, targets: missing}
 distance:
   box_shrink: 0.1
   outlier: iqr

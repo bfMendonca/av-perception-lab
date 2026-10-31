@@ -4,6 +4,43 @@ Todas as mudancas relevantes do det-depth-distance serao documentadas neste arqu
 
 ---
 
+## [2026-10-31] Adapter requirements and portable sample YAMLs
+
+Every adapter declares what it needs, so a fresh clone can run `--prepare`
+on a sample YAML (task_0021).
+
+### Added
+
+- `requirements(options)` on every adapter (`extra="infer"`, import names as
+  packages): DA3 and the Hugging Face refiners/SegFormer declare a
+  `HuggingFaceAsset` (weights file + `*.json`) in `<weights root>/hf`; RF-DETR a
+  `UrlAsset` per variant (`weights/rfdetr/`, library URL table, sizes and
+  Apache-2.0); YOLO and Ultralytics SAM a `UrlAsset` for the
+  `ultralytics/assets` v8.4.0 names (YOLO26 COCO and Objects365, SAM, SAM 2.x,
+  MobileSAM) and `UserProvided` for any other file; TwinLiteNet+ the pinned
+  clone (`CodeRepo` at `weights/_code/TwinLiteNetPlus`, commit `90f1b86...`) and
+  `pretrained/<variant>.pth` as `UserProvided` (Google Drive upstream).
+- `cli.config_requirements()`; `--prepare` also prepares the focal model of
+  `camera.estimate` when it is used.
+
+### Changed
+
+- Defaults resolve under the weights root: `hf_cache: null` = `<weights
+  root>/hf` (was the user-wide HF cache); RF-DETR loads
+  `weights/rfdetr/<file>` through `pretrain_weights=` (was `~/.roboflow/models`,
+  which is left untouched); TwinLiteNet+ `repo` = `weights/_code/TwinLiteNetPlus`
+  (was `~/dev/TwinLiteNetPlus`, still valid as an explicit `repo`); a relative
+  YOLO / Ultralytics SAM `weights` resolves under `weights/ultralytics/`.
+  Explicit paths behave as before.
+- DA3 no longer downloads at run time (`local_files_only=True`); a missing
+  checkpoint is a `ConfigError` naming `--prepare`, raised before
+  `depth_anything_3` is imported. Missing default weights of every adapter
+  name `--prepare` too.
+- Every `configs/*.yaml` drops machine paths (`~/dev/...`): no `hf_cache`,
+  bare YOLO file names, no TwinLiteNet+ `repo`.
+
+---
+
 ## [2026-10-31] Provisioning engine and `--prepare`
 
 Obtain what a model declares (task_0020). Adapters declare nothing yet

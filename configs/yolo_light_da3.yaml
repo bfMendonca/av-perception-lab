@@ -11,18 +11,18 @@
 # (~3 GB) is the tightest one. Levers: --set camera.estimate.frames=8, or
 # --set camera.focal_px=<px> (skips it); semantic off: --set semantic=[]
 # --set distance.exclude_semantic=[] --set render.semantic_overlay=null
-# Weights (download commands in README, "Execução no notebook"):
-#   ~/dev/ultralytics/_testbed/weights/yolo26s-seg.pt (ultralytics/assets v8.4.0)
-#   weights/hf: depth-anything/DA3METRIC-LARGE, depth-anything/DA3-LARGE-1.1
-#     (DA3 downloads a missing checkpoint at run time: fetch it first) and
-#     nvidia/segformer-b0-finetuned-cityscapes-640-1280 (pytorch_model.bin)
-#   ~/dev/TwinLiteNetPlus/pretrained/small.pth (clone @ 90f1b86)
+# Weights, under the weights root (default weights/; fetch with --prepare, nothing is
+# downloaded at run time): ultralytics/yolo26s-seg.pt (ultralytics/assets v8.4.0);
+#   hf: depth-anything/DA3METRIC-LARGE, depth-anything/DA3-LARGE-1.1 and
+#   nvidia/segformer-b0-finetuned-cityscapes-640-1280 (pytorch_model.bin);
+#   _code/TwinLiteNetPlus (clone @ 90f1b86) + pretrained/small.pth (Google Drive,
+#   provide it by hand: --prepare prints the command)
 # Run: det-depth-distance --config configs/yolo_light_da3.yaml [VIDEO] [--set key=value]...
 device: cuda:0
 source: {video: _testbed/data/IMG_4021.MOV, start: 0.0, duration: 0.0, max_frames: 0, stride: 1}
 detectors:
   - type: yolo
-    weights: ~/dev/ultralytics/_testbed/weights/yolo26s-seg.pt
+    weights: yolo26s-seg.pt
     threshold: 0.4
     imgsz: 640
     classes: driving
@@ -31,7 +31,6 @@ depth:
   model: da3metric-large
   process_res: 504
   process_res_method: upper_bound_resize
-  hf_cache: &hf weights/hf
 camera:
   focal_px: null  # focal length in pixels of the input video; takes precedence over estimate
   estimate:
@@ -39,7 +38,6 @@ camera:
     frames: 16
     process_res: 504
     process_res_method: upper_bound_resize
-    hf_cache: *hf
 aggregation: {type: concat}
 refiners: []  # the masks come from YOLO26s-seg itself
 tracking: {type: iou, iou_thr: 0.3, max_age_s: 0.5, motion: constant_velocity,
@@ -47,11 +45,10 @@ tracking: {type: iou, iou_thr: 0.3, max_age_s: 0.5, motion: constant_velocity,
 smoothing: {filter: kalman, accel_std: 2.0, std_scale: 0.5, rel_floor: 0.01,
             init_speed_std: 5.0, tau_s: 0.1, window_s: 0.15, reset_after_s: 1.0}
 semantic:  # run in this order on every frame
-  - {name: lanes, type: twinlitenet, variant: small}  # repo: ~/dev/TwinLiteNetPlus
+  - {name: lanes, type: twinlitenet, variant: small}  # repo: <weights root>/_code/TwinLiteNetPlus
   - name: scene
     type: segformer
     model: nvidia/segformer-b0-finetuned-cityscapes-640-1280
-    hf_cache: *hf
     size: [640, 1152]  # its test scale for 1920x1080 (short side 640), multiples of 32
 distance:
   box_shrink: 0.1

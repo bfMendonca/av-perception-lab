@@ -11,6 +11,10 @@ resolution with the letterbox removed (without it, masks stay at the
 letterboxed input size). Ultralytics crops masks to their boxes and drops
 predictions with an empty mask.
 
+`weights` follows adapters._ultralytics: a relative path (a bare file name)
+resolves under `<weights root>/ultralytics/`; release names are declared as
+URL assets for `--prepare`, other files as user-provided.
+
 YOLO_OFFLINE, YOLO_AUTOINSTALL and YOLO_CONFIG_DIR are set (setdefault, see
 adapters._ultralytics_env) when this module is imported, before the lazy
 import, because ultralytics reads them at import time.
@@ -23,10 +27,17 @@ from typing import Any
 
 import numpy as np
 
+from det_depth_distance.adapters._ultralytics import (
+    check_weights,
+    resolve_weights,
+    weights_asset,
+)
 from det_depth_distance.adapters._ultralytics_env import apply_ultralytics_env
+from det_depth_distance.adapters._weights import INFER_EXTRA, not_prepared, under_root
 from det_depth_distance.core.components import Detector, DetectorOptions, LoadContext
 from det_depth_distance.core.options import ConfigError
 from det_depth_distance.core.registry import register
+from det_depth_distance.core.requirements import Requirements
 from det_depth_distance.core.types import Instances
 from det_depth_distance.runtime import package_version
 
@@ -42,7 +53,8 @@ class YoloDetector(Detector):
     @dataclass(frozen=True, slots=True, kw_only=True)
     class Options(DetectorOptions):
         # Existence is checked in _load (before the import), not here, so example
-        # configs can be validated on machines without the weights.
+        # configs can be validated on machines without the weights. Relative =
+        # under <weights root>/ultralytics/ (adapters._ultralytics).
         weights: Path
         imgsz: int = 640  # inference size, multiple of the stride
         half: bool = False  # FP16 inference
@@ -50,6 +62,7 @@ class YoloDetector(Detector):
         def __post_init__(self) -> None:
             # Explicit base call: zero-arg super() fails in slots dataclasses.
             DetectorOptions.__post_init__(self)
+            check_weights(self.weights)
             if self.imgsz <= 0 or self.imgsz % _STRIDE:
                 raise ValueError(f"imgsz must be a positive multiple of {_STRIDE}")
 
@@ -60,13 +73,24 @@ class YoloDetector(Detector):
         self._device = ""
         self._task: str | None = None  # "detect" or "segment", from the checkpoint
 
+    @classmethod
+    def requirements(cls, options: Options) -> Requirements:
+        asset = weights_asset(options.weights, "provide the YOLO checkpoint (.pt)")
+        return Requirements(
+            assets=() if asset is None else (asset,),
+            packages=("torch", "ultralytics"),
+            extra=INFER_EXTRA,
+        )
+
     def default_name(self) -> str:
         return self.options.weights.stem
 
     def _load(self, ctx: LoadContext) -> None:
-        weights = self.options.weights
+        weights = resolve_weights(self.options.weights)
         # Checked first: ultralytics would otherwise try to download a missing file.
         if not weights.is_file():
+            if under_root(weights) is not None:
+                raise not_prepared("weights", "file", weights)
             raise ConfigError(f"weights: file not found: {weights}")
         # ultralytics only creates its settings dir when the parent already exists.
         Path(os.environ["YOLO_CONFIG_DIR"]).mkdir(parents=True, exist_ok=True)

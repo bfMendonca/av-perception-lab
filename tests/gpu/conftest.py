@@ -6,7 +6,7 @@ marker on each test. torch is checked inside an autouse fixture, not at
 import: a module-level skip would prevent the hook from registering. Weights
 and caches come from environment variables, with gpu-host's paths as defaults;
 missing assets skip the test that needs them (nothing is downloaded; RF-DETR
-Seg weights are looked up in rfdetr's own cache, RF_HOME or ~/.roboflow/models).
+checkpoints are looked up under the weights root, `weights/rfdetr/`, task_0021).
 
 Mask refiners and semantic segmenters (task_0005) read the project's HF cache
 ($DDD_WEIGHTS_HF, default weights/hf); presence is checked with
@@ -17,7 +17,9 @@ box-prompted model adds its case here to run the shared contract test.
 End-to-end runs (the task_0001 regression, the task_0008 GPU smoke) go
 through the `run_cli_subprocess` fixture, a fresh interpreter per run, so frameworks
 imported by other tests of the session cannot influence them;
-`require_assets` skips a run whose weights are missing, with the hint.
+`require_assets` skips a run whose weights are missing, with the hint;
+`require_ready` skips an example-config run until every model it declares is
+ready under the weights root (run `--prepare` once on the host, task_0021).
 """
 
 import os
@@ -113,19 +115,17 @@ DETECTOR_SPECS = {
     "yolo26n-objv1-seg": (_yolo("yolo26n-objv1-seg.pt"), "objects365"),
 }
 SEGMENTERS = frozenset({"rfdetr-seg-nano", "yolo26n-seg", "yolo26n-objv1-seg"})
-# rfdetr cache file names (rfdetr/assets/model_weights.py); RF-DETR detection
-# weights are already cached on gpu-host, so only Seg weights are checked.
-RFDETR_SEG_FILES = {"seg-nano": "rf-detr-seg-nano.pt"}
 
 
 def _missing_weights(spec: dict) -> Path | None:
-    """The weights file a spec needs when it is not on disk, else None."""
+    """The weights file a spec needs when it is not on disk, else None (RF-DETR
+    variants: their checkpoint under the weights root, fetched by --prepare)."""
     if "weights" in spec:
         path = Path(spec["weights"])
-    elif spec.get("variant") in RFDETR_SEG_FILES:
-        from rfdetr.assets.model_weights import get_model_cache_dir
+    elif spec.get("type") == "rfdetr":
+        from det_depth_distance.adapters.detectors.rfdetr import checkpoint_path
 
-        path = Path(get_model_cache_dir()) / RFDETR_SEG_FILES[spec["variant"]]
+        path = checkpoint_path(spec.get("variant", "large"))
     else:
         return None
     return None if path.is_file() else path
@@ -237,6 +237,9 @@ def frame_ctx(source):
 @pytest.fixture(scope="module")
 def rfdetr_boxes(frame0, frame_ctx):
     """RF-DETR nano instances (boxes only) of frame 0."""
+    missing = _missing_weights({"type": "rfdetr", "variant": "nano"})
+    if missing is not None:
+        pytest.skip(f"missing weights {missing} (run --prepare)")
     detector = registry.build(
         "detector", {"type": "rfdetr", "variant": "nano"}, path="d"
     )
@@ -358,5 +361,32 @@ def require_assets() -> Callable[[Mapping[str, Any]], None]:
                 pytest.skip(f"missing {path}")
         else:
             raise ValueError(f"unknown asset kind: {dict(asset)}")
+
+    return require
+
+
+@pytest.fixture
+def require_ready(monkeypatch) -> Callable[[str, Sequence[str]], None]:
+    """Factory that skips the test until every model of an example config
+    (with `--set` overrides) is ready under the weights root, naming
+    `--prepare`: require_ready("configs/x.yaml", ("k=v", ...))."""
+    from det_depth_distance.cli import config_requirements
+    from det_depth_distance.config import load_config
+    from det_depth_distance.core.requirements import check
+
+    def require(config: str, overrides: Sequence[str] = ()) -> None:
+        monkeypatch.chdir(REPO)
+        cfg = load_config(Path(config), list(overrides))
+        missing = []
+        for path, name, _, req in config_requirements(cfg):
+            status = check(req) if not isinstance(req, str) else None
+            if status is None or status.state != "ready":
+                reason = req if status is None else status.message
+                missing.append(f"{path} {name}: {reason}")
+        if missing:
+            pytest.skip(
+                f"not ready (run det-depth-distance --config {config} --prepare): "
+                + "; ".join(missing)
+            )
 
     return require

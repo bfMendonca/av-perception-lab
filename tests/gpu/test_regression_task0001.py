@@ -65,9 +65,12 @@ def _close(a: str, b: str, rel: float) -> bool:
     return math.isclose(x, y, rel_tol=rel, abs_tol=0.0)
 
 
-def test_regression_against_task_0001(tmp_path, video, run_cli_subprocess):
+def test_regression_against_task_0001(
+    tmp_path, video, run_cli_subprocess, require_ready
+):
     if not REF_CSV.is_file() or not REF_METRICS.is_file():
         pytest.skip(f"missing regression reference {REF_CSV} (task_0002 Passo 0)")
+    require_ready("configs/rfdetr_da3.yaml")  # weights under the weights root
     _run(tmp_path, run_cli_subprocess)
     (run_dir,) = tmp_path.iterdir()
     ref, new = _read(REF_CSV), _read(run_dir / "detections.csv")

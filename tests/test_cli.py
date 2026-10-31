@@ -239,19 +239,34 @@ def test_cli_prepare_exit_code_and_table(tmp_path, monkeypatch, capsys):
     def offline(*args, **kwargs):
         raise sources.urllib.error.URLError("no network")
 
+    def hf_offline(self, asset, root, progress, cancel):
+        raise sources.ProvisionError(f"offline: cannot download {asset.repo}")
+
     monkeypatch.setattr(sources, "_open", offline)
+    monkeypatch.setattr(sources.HuggingFaceSource, "prepare", hf_offline)
+    # Packages are reported, not installed: pretend the infer stack is there.
+    monkeypatch.setattr("det_depth_distance.core.requirements._top_level_present", bool)
     assert main(["--config", str(cfg), "--prepare"]) == 1
     out = capsys.readouterr().out
     assert "[prepare] detectors[0] fake (needs_weights)" in out
     assert "component" in out and "packages" in out
     table = {line.split()[0]: line.split() for line in out.splitlines() if line}
     assert table["detectors[0]"][2:4] == ["needs_weights", "failed"]
-    assert table["depth"][2:4] == ["da3", "ready"]  # declares nothing yet
+    # DA3 and the focal model of camera.estimate declare their HF checkpoints.
+    assert table["depth"][2:4] == ["da3", "failed"]
+    assert table["camera.estimate"][1:4] == ["da3-large-1.1", "da3", "failed"]
     assert "offline or unreachable" in out
+    assert "offline: cannot download depth-anything/DA3METRIC-LARGE" in out
 
-    # Once the file is there every component is ready: exit code 0, no download.
+    # Once the files are there every component is ready: exit code 0, no download.
     (root / "fake").mkdir(parents=True, exist_ok=True)
     (root / "fake/ckpt.bin").write_bytes(b"x")
+    for repo in ("depth-anything/DA3METRIC-LARGE", "depth-anything/DA3-LARGE-1.1"):
+        snap = root / "hf" / f"models--{repo.replace('/', '--')}" / "snapshots/abc"
+        snap.mkdir(parents=True)
+        (snap / "config.json").write_text("{}")
+        with (snap / "model.safetensors").open("wb") as f:
+            f.truncate(2_000_000_000)  # sparse: above the declared size
     assert main(["--config", str(cfg), "--prepare"]) == 0
     out = capsys.readouterr().out
     assert f"weights root: {root}" in out

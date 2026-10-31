@@ -10,6 +10,14 @@ resized to the exact frame size (the demo's integer scale factor only works
 when frame/input is an integer ratio). Frames are already RGB, the order the
 demo feeds after its BGR -> RGB flip. Labels: 0 background, 1 drivable,
 2 lane (lane wins). torch is imported inside the hooks only.
+
+Location: `repo` defaults to the pinned clone `<weights root>/_code/
+TwinLiteNetPlus` (declared as a `CodeRepo`, cloned by `--prepare`); any other
+clone (e.g. `~/dev/TwinLiteNetPlus`) is an explicit override and is not
+declared when it is outside the weights root. The pretrained files are not in
+the git repository (upstream serves them from Google Drive, not a v1 source),
+so `pretrained/<variant>.pth` is declared `UserProvided` with the download
+hint.
 """
 
 import importlib
@@ -22,13 +30,46 @@ from typing import Any, Literal
 import cv2
 import numpy as np
 
+from det_depth_distance.adapters._weights import INFER_EXTRA, under_root
 from det_depth_distance.core.components import LoadContext, SemanticSegmenter
 from det_depth_distance.core.options import ConfigError
 from det_depth_distance.core.registry import register
+from det_depth_distance.core.requirements import (
+    CODE_DIR,
+    CodeRepo,
+    Requirements,
+    UserProvided,
+    weights_root,
+)
 from det_depth_distance.core.types import SemanticMap
 
 TWINLITENET_CLASSES: tuple[str, ...] = ("background", "drivable", "lane")
 _PAD_VALUE = (114, 114, 114)  # demoDataset.letterbox_for_img default
+
+TWINLITENET_REPO = CodeRepo(
+    name="TwinLiteNetPlus",
+    url="https://github.com/chequanghuy/TwinLiteNetPlus",
+    commit="90f1b8695ae311d5123b05f8534b2e11e42499d2",
+)
+# Google Drive download of the upstream README (only `small` is recorded here).
+_SMALL_URL = (
+    "https://drive.usercontent.google.com/download?"
+    "id=1N7jNsa8P1dM-UevqPRsx6heUpN4L00FJ&export=download&confirm=t"
+)
+
+
+def default_repo() -> Path:
+    """The pinned clone under the weights root."""
+    return weights_root() / CODE_DIR / TWINLITENET_REPO.name
+
+
+def _weights_hint(variant: str, path: Path) -> str:
+    if variant == "small":
+        return f'download it with: curl -fL -o {path} "{_SMALL_URL}"'
+    return (
+        f"download {variant}.pth from the TwinLiteNetPlus README "
+        f"(Google Drive) to {path}"
+    )
 
 
 @register("semantic", "twinlitenet")
@@ -37,9 +78,9 @@ class TwinLiteNetSegmenter(SemanticSegmenter):
 
     @dataclass(frozen=True, slots=True)
     class Options:
-        # Defaults do not pass through from_mapping (which expands "~" only in
-        # YAML values), so _load expands repo and weights itself.
-        repo: Path = Path("~/dev/TwinLiteNetPlus")
+        # None = the pinned clone <weights root>/_code/TwinLiteNetPlus; "~" is
+        # expanded here too (from_mapping expands it only in YAML values).
+        repo: Path | None = None
         variant: Literal["nano", "small", "medium", "large"] = "large"
         weights: Path | None = None  # default: <repo>/pretrained/<variant>.pth
         imgsz: int = 640  # longest letterbox side, multiple of 32
@@ -56,23 +97,52 @@ class TwinLiteNetSegmenter(SemanticSegmenter):
         self._net = None
         self._device = ""
 
+    @classmethod
+    def requirements(cls, options: Options) -> Requirements:
+        """The pinned clone (default repo only) and the pretrained file, each
+        declared when it lies inside the weights root."""
+        repo = _repo(options)
+        weights = _weights(options, repo)
+        code = (TWINLITENET_REPO,) if options.repo is None else ()
+        target = under_root(weights)
+        assets = (
+            ()
+            if target is None
+            else (
+                UserProvided(
+                    key="weights",
+                    target=target,
+                    option="weights",
+                    hint=_weights_hint(options.variant, weights),
+                ),
+            )
+        )
+        return Requirements(
+            assets=assets, code=code, packages=("torch",), extra=INFER_EXTRA
+        )
+
     def default_name(self) -> str:
         """ "twinlitenet-<variant>" (programmatic use: configs require a name)."""
         return f"twinlitenet-{self.options.variant}"
 
     def _weights(self, repo: Path) -> Path:
-        weights = self.options.weights
-        if weights is None:
-            return repo / "pretrained" / f"{self.options.variant}.pth"
-        return weights.expanduser()
+        return _weights(self.options, repo)
 
     def _load(self, ctx: LoadContext) -> None:
-        repo = self.options.repo.expanduser()
+        repo = _repo(self.options)
         if not (repo / "model" / "model.py").is_file():
-            raise ConfigError(f"repo: no TwinLiteNetPlus clone at {repo}")
+            hint = (
+                "; run `det-depth-distance --config <yaml> --prepare`"
+                if self.options.repo is None
+                else ""
+            )
+            raise ConfigError(f"repo: no TwinLiteNetPlus clone at {repo}{hint}")
         weights = self._weights(repo)
         if not weights.is_file():
-            raise ConfigError(f"weights: file not found: {weights}")
+            raise ConfigError(
+                f"weights: file not found: {weights}; "
+                f"{_weights_hint(self.options.variant, weights)}"
+            )
         import torch
 
         net = _import_network(repo)(SimpleNamespace(config=self.options.variant))
@@ -113,8 +183,18 @@ class TwinLiteNetSegmenter(SemanticSegmenter):
         torch.cuda.empty_cache()
 
     def _describe(self) -> dict[str, Any]:
-        repo = self.options.repo.expanduser()
-        return {"weights_file": str(self._weights(repo))}
+        return {"weights_file": str(self._weights(_repo(self.options)))}
+
+
+def _repo(options: Any) -> Path:
+    return default_repo() if options.repo is None else options.repo.expanduser()
+
+
+def _weights(options: Any, repo: Path) -> Path:
+    """`weights`, default `<repo>/pretrained/<variant>.pth`."""
+    if options.weights is None:
+        return repo / "pretrained" / f"{options.variant}.pth"
+    return options.weights.expanduser()
 
 
 def _letterbox(

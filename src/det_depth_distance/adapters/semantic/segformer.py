@@ -5,7 +5,8 @@ terrain, sky, ...), a street-scene domain. The frame is resized to `size`
 (height, width; a square default stretches 16:9 frames) and the logits are
 bilinearly resized back to the frame before argmax
 (post_process_semantic_segmentation). Weights are read with
-local_files_only=True (the NVIDIA checkpoints ship pytorch_model.bin);
+local_files_only=True from `hf_cache` (default `<weights root>/hf`; the NVIDIA
+checkpoints ship pytorch_model.bin), declared by `requirements` for `--prepare`;
 torch and transformers are imported inside the hooks only.
 """
 
@@ -16,9 +17,11 @@ from typing import Any
 
 import numpy as np
 
-from det_depth_distance.adapters._hf_hub import from_pretrained_offline
+from det_depth_distance.adapters._hf_hub import from_pretrained_offline, hf_asset
+from det_depth_distance.adapters._weights import INFER_EXTRA
 from det_depth_distance.core.components import LoadContext, SemanticSegmenter
 from det_depth_distance.core.registry import register
+from det_depth_distance.core.requirements import Requirements
 from det_depth_distance.core.types import ContractError, SemanticMap
 from det_depth_distance.runtime import package_version
 
@@ -30,7 +33,7 @@ class SegformerSegmenter(SemanticSegmenter):
     @dataclass(frozen=True, slots=True)
     class Options:
         model: str = "nvidia/segformer-b5-finetuned-cityscapes-1024-1024"
-        hf_cache: Path | None = None  # e.g. weights/hf; None = default HF cache
+        hf_cache: Path | None = None  # None = <weights root>/hf
         size: tuple[int, int] = (1024, 1024)  # (height, width) input, multiples of 32
 
         def __post_init__(self) -> None:
@@ -43,6 +46,18 @@ class SegformerSegmenter(SemanticSegmenter):
         self._processor = None
         self._device = ""
         self._class_names: tuple[str, ...] = ()
+
+    @classmethod
+    def requirements(cls, options: Options) -> Requirements:
+        """`pytorch_model.bin` + `*.json` of `model` in the HF cache layout."""
+        asset = hf_asset(
+            "weights", options.model, options.hf_cache, "pytorch_model.bin"
+        )
+        return Requirements(
+            assets=() if asset is None else (asset,),
+            packages=("torch", "transformers"),
+            extra=INFER_EXTRA,
+        )
 
     def default_name(self) -> str:
         """Lower-case basename of the repo (programmatic use: configs require a name)."""

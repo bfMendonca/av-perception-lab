@@ -38,6 +38,7 @@
 - [Interface web (API de esquema e validação)](#interface-web-api-de-esquema-e-validação)
 - [Interface web: front-end e editor de pipeline](#interface-web-front-end-e-editor-de-pipeline)
 - [Interface web: vídeos, trecho e processamento](#interface-web-vídeos-trecho-e-processamento)
+- [Model weights](#model-weights)
 - [Pesos dos refinadores e do SegFormer](#pesos-dos-refinadores-e-do-segformer)
 - [Saídas](#saídas)
 - [Como a distância é calculada](#como-a-distância-é-calculada)
@@ -112,7 +113,7 @@ o desenvolvimento e os testes unitários rodam localmente.
 | Profundidade | `depth-anything-3` (ByteDance Seed) | git `3d835ec` |
 | Refinadores SAM e SegFormer | `transformers` (Hugging Face) | `>=5.1,<6` (lock: 5.19.0) |
 | *Backbone* do EdgeTAM | `timm` | `>=1.0.17` (lock: 1.0.30) |
-| Área trafegável e faixas | TwinLiteNet+ (clone externo `~/dev/TwinLiteNetPlus`, MIT; não é pacote) | `90f1b86` |
+| Área trafegável e faixas | TwinLiteNet+ (pinned clone `weights/_code/TwinLiteNetPlus`, cloned by `--prepare`; MIT; not a package) | `90f1b86` |
 | Atenção eficiente (DA3) | xformers | 0.0.32.post2 |
 | Vídeo | ffmpeg (sistema), OpenCV, Pillow | — |
 | Configuração | PyYAML | ≥ 6 (ambiente leve) |
@@ -193,7 +194,7 @@ det-depth-distance/
 | ffmpeg / ffprobe | laptop e servidor | decodificação e codificação por pipe; também usados por parte dos testes |
 | GPU NVIDIA com CUDA 12.8 | servidor | testado na RTX PRO 6000 Blackwell (sm_120) do `gpu-host` |
 | Acesso `ssh gpu-host` | laptop | sincronização por rsync (`utils/sync_gpu_host.sh`) |
-| Cache de pesos | servidor e notebook | DA3 via `hf_cache` no YAML (ex.: `~/dev/depth-anything-3/_testbed/weights/hf`); RF-DETR em `~/.roboflow/models` (as variantes Seg, ~135–155 MB cada, são baixadas pela biblioteca no primeiro uso, com MD5 conferido); YOLO26 em `~/dev/ultralytics/_testbed/weights` (caminho em `weights`; nada é baixado — pesos `-seg` vêm de `https://github.com/ultralytics/assets/releases/download/v8.4.0/<nome>.pt`); refinadores `transformers` e SegFormer no cache HF do projeto `weights/hf` (ignorado pelo git e pelo `push`; ver [Pesos](#pesos-dos-refinadores-e-do-segformer)); TwinLiteNet+ lido de `~/dev/TwinLiteNetPlus/pretrained/`; no notebook, DA3 e SegFormer-B0 do exemplo leve também em `weights/hf` |
+| Weights | servidor e notebook | Everything under the weights root (`weights/`, git-ignored and excluded from the `push`; `DDD_WEIGHTS_ROOT` overrides), fetched by `--prepare`; nothing is downloaded at run time. See [Model weights](#model-weights) |
 
 > **Nota:** nunca instale o extra `infer` no `.venv` do laptop (a stack GPU ocupa ~9 GB e o próximo `uv run pytest` a removeria); para a GPU do notebook use o ambiente isolado de [Execução no notebook](#execução-no-notebook-gpu-de-4-gb).
 
@@ -306,21 +307,20 @@ extra `infer` fica num ambiente isolado em `_testbed/` (ignorado e fora do
 `push`), nunca no `.venv`. Com a variável exportada, todo `uv run` leva
 `--extra infer` (sem ele, o sync exato remove a stack também desse
 ambiente); `unset UV_PROJECT_ENVIRONMENT` antes de voltar ao `.venv` leve.
-O DA3 **baixa** um checkpoint ausente em execução: baixe antes.
+Nothing is downloaded at run time (DA3 included since task_0021): fetch the
+weights once with `--prepare`; TwinLiteNet+ `small.pth` comes from the
+upstream Google Drive and is copied by hand (`--prepare` prints the command).
 
 ```bash
 df -h ~
 export UV_PROJECT_ENVIRONMENT=_testbed/venv-infer   # o .venv continua leve
 uv sync --extra infer
-# DA3 + SegFormer-B0 em weights/hf (filtrados: sem .bin/.h5 duplicados)
-uv run --extra infer python -c "from huggingface_hub import snapshot_download as d; [d(r, cache_dir='weights/hf', allow_patterns=['*.json', 'model.safetensors']) for r in ('depth-anything/DA3METRIC-LARGE', 'depth-anything/DA3-LARGE-1.1')]; d('nvidia/segformer-b0-finetuned-cityscapes-640-1280', cache_dir='weights/hf', allow_patterns=['*.json', 'pytorch_model.bin'])"
-mkdir -p ~/dev/ultralytics/_testbed/weights
-curl -fL -o ~/dev/ultralytics/_testbed/weights/yolo26s-seg.pt https://github.com/ultralytics/assets/releases/download/v8.4.0/yolo26s-seg.pt
-git clone https://github.com/chequanghuy/TwinLiteNetPlus ~/dev/TwinLiteNetPlus && git -C ~/dev/TwinLiteNetPlus checkout 90f1b86
-mkdir -p ~/dev/TwinLiteNetPlus/pretrained   # small.pth: Google Drive do upstream
-curl -fL -o ~/dev/TwinLiteNetPlus/pretrained/small.pth "https://drive.usercontent.google.com/download?id=1N7jNsa8P1dM-UevqPRsx6heUpN4L00FJ&export=download&confirm=t"
+# YOLO26s-seg, DA3 (metric + focal), SegFormer-B0 and the TwinLiteNet+ clone under weights/
+uv run --extra infer python -m det_depth_distance --config configs/yolo_light_da3.yaml --prepare
+mkdir -p weights/_code/TwinLiteNetPlus/pretrained   # small.pth: upstream Google Drive
+curl -fL -o weights/_code/TwinLiteNetPlus/pretrained/small.pth "https://drive.usercontent.google.com/download?id=1N7jNsa8P1dM-UevqPRsx6heUpN4L00FJ&export=download&confirm=t"
 mkdir -p _testbed/data && rsync -av gpu-host:dev/det-depth-distance/_testbed/data/IMG_4021.MOV _testbed/data/
-DDD_HF_CACHE=weights/hf uv run --extra infer pytest -m gpu tests/gpu/test_smoke_gpu.py -k yolo_light -v -rs
+uv run --extra infer pytest -m gpu tests/gpu/test_smoke_gpu.py -k yolo_light -v -rs
 nvidia-smi --query-gpu=timestamp,memory.used --format=csv,noheader -lms 200 > _testbed/outputs/light_vram_IMG_4021.csv &
 uv run --extra infer python -m det_depth_distance --config configs/yolo_light_da3.yaml --set source.max_frames=300 --set output.tag=light
 kill %1
@@ -351,7 +351,7 @@ uv run --extra infer python -m det_depth_distance --config configs/rfdetr_da3.ya
 | `VIDEO` (opcional) | Sobrescreve `source.video` |
 | `--set chave=valor` | Repetível; caminho pontilhado com índice de lista (`detectors.0.threshold=0.3`); valor lido como YAML (`null`, `true`, números); um valor-mapa ou lista substitui a seção inteira (`--set 'aggregation={type: concat}'`) |
 | `--list-models` | Lista detectores, modelos de profundidade, agregadores, rastreadores, refinadores de máscara, segmentadores semânticos, modelos de movimento (`motion`) e provedores de ego-motion (`ego_motion`) registrados com suas opções e padrões |
-| `--prepare` | Downloads the weights and pinned code every configured model declares (under `DDD_WEIGHTS_ROOT`, default `weights/`; nothing is loaded and the video is not probed), prints a status table and exits: 0 only when every model is ready, 1 otherwise (the reason is listed: offline, HTTP 404, gated licence + `HF_TOKEN`, sha256 mismatch, "provide this file"). Downloads go to `<file>.part` and are renamed only when verified (declared size or sha256, or the full `Content-Length`); running it again resumes (only with a declared size or sha256) or is a no-op; Ctrl-C exits 130 and keeps the partial file. Python packages are reported, not installed |
+| `--prepare` | Downloads the weights and pinned code every configured model declares (under `DDD_WEIGHTS_ROOT`, default `weights/`; nothing is loaded and the video is not probed), prints a status table and exits: 0 only when every model is ready, 1 otherwise (the reason is listed: offline, HTTP 404, gated licence + `HF_TOKEN`, sha256 mismatch, "provide this file"). Downloads go to `<file>.part` and are renamed only when verified (declared size or sha256, or the full `Content-Length`); running it again resumes (only with a declared size or sha256) or is a no-op; Ctrl-C exits 130 and keeps the partial file. Python packages are reported, not installed. Also covers the focal model of `camera.estimate` when the focal is estimated |
 
 Ferramentas auxiliares (ambiente leve, sem GPU; ver
 [Calibração da câmera](#calibração-da-câmera) e
@@ -496,7 +496,7 @@ Opções em camadas (todas por chave do item da lista):
 |---|---|
 | todo refinador | `targets` (`missing`: só instâncias sem máscara não vazia na caixa — preserva máscaras nativas de detectores Seg; `all`: todas, para comparar) |
 | `BoxPromptRefiner` | `max_boxes` (32, ≥ 1); `multimask` (false; true = melhor de 3 máscaras pelo IoU previsto); `mask_threshold` (0.0, limiar do *logit*); `score` (`iou` ou `object` = sigmoide do *object score*, só famílias com esse sinal); `min_object_score` (null; em [0, 1], esvazia a máscara de caixas sem objeto, só famílias com o sinal) |
-| famílias `transformers` | `model` (repo HF no formato `transformers`); `hf_cache` (null = cache HF padrão; os exemplos usam `weights/hf`); SAM-HQ: `hq_token_only` (false) |
+| famílias `transformers` | `model` (repo HF no formato `transformers`); `hf_cache` (null = `<weights root>/hf`); SAM-HQ: `hq_token_only` (false) |
 | `ultralytics_sam` | `weights` (obrigatório; existência conferida antes do import); `imgsz` (1024, múltiplo de 32) |
 
 `name` é opcional (padrão: nome do repo em minúsculas, ex.
@@ -505,7 +505,7 @@ e aparece em `mask_source`, em `metrics.json` (`mask_sources`, `refined`,
 `components.refiners`), em `timings_ms` (`refine.<nome>`) e no HUD; dois
 refinadores do mesmo checkpoint exigem `name` explícito. Trocar o refinador
 de um exemplo não exige YAML novo:
-`--set 'refiners=[{type: edgetam, hf_cache: weights/hf}]'`.
+`--set 'refiners=[{type: edgetam}]'`.
 
 Notas: os processadores do SAM 1/SAM-HQ só normalizam caixas junto com a
 imagem e pós-processam com `reshaped_input_sizes`; a cabeça de IoU deles não
@@ -550,7 +550,7 @@ classe excluída) o resultado é idêntico ao da `task_0004`.
 | `type` | Opções (padrão) | Classes |
 |---|---|---|
 | `segformer` | `model` (`nvidia/segformer-b5-finetuned-cityscapes-1024-1024`); `hf_cache` (null); `size` ((1024, 1024), altura × largura de entrada, múltiplos de 32 — quadrado estica quadros 16:9) | as 19 do Cityscapes: `road`, `sidewalk`, `building`, `wall`, `fence`, `pole`, `traffic light`, `traffic sign`, `vegetation`, `terrain`, `sky`, `person`, `rider`, `car`, `truck`, `bus`, `train`, `motorcycle`, `bicycle` |
-| `twinlitenet` | `repo` (`~/dev/TwinLiteNetPlus`); `variant` (`large`; `nano`/`small`/`medium`); `weights` (null = `<repo>/pretrained/<variant>.pth`); `imgsz` (640); `half` (false) | `background`, `drivable`, `lane` (faixa vence a área trafegável) |
+| `twinlitenet` | `repo` (null = pinned clone `<weights root>/_code/TwinLiteNetPlus`); `variant` (`large`; `nano`/`small`/`medium`); `weights` (null = `<repo>/pretrained/<variant>.pth`); `imgsz` (640); `half` (false) | `background`, `drivable`, `lane` (faixa vence a área trafegável) |
 
 Domínios: Cityscapes e BDD100K são cenas de rua; em cena agrícola
 `vegetation`/`terrain` cobrem a cultura — revisar a lista de exclusão.
@@ -868,7 +868,7 @@ A `task_0018` endurece o servidor (continua sem autenticação):
   descobertos pelas anotações dos esquemas) não podem cair na biblioteca nem
   em `--out-root` (pastas que o cliente escreve). Com `--asset-root PASTA`
   (repetível) todos precisam estar dentro de uma delas — inclusive os
-  padrões, como o `~/dev/TwinLiteNetPlus` do TwinLiteNet. Com `--host` fora do
+  padrões. Com `--host` fora do
   loopback e sem `--asset-root` (ou sem `--allowed-host` em `0.0.0.0`) o
   servidor avisa na partida. Na rede local, use as três flags, por exemplo:
   `--host 0.0.0.0 --allowed-host 192.168.0.7 --asset-root weights
@@ -891,8 +891,8 @@ A `task_0018` endurece o servidor (continua sem autenticação):
   página. Ids de execução começando com `.` não existem (`.web_jobs`).
 - **YAML e corpos**: corpos JSON de POST/PUT/PATCH/DELETE até 1 MiB (413);
   `POST /api/config/parse` recusa (422) documento que, com os aliases
-  expandidos, passa de 100 000 valores, ou alias recursivo (âncoras comuns,
-  como o `hf_cache` compartilhado dos configs, continuam valendo).
+  expandidos, passa de 100 000 valores, ou alias recursivo (âncoras comuns
+  continuam valendo).
 - **Ctrl-C**: o uvicorn espera no máximo 3 s pelas conexões (um SSE aberto
   nunca termina), depois fecha e mata o worker; todo job pendente termina
   `cancelled` ("the server shut down") no registro e no `web_run.json`. Um
@@ -1067,6 +1067,34 @@ suavizadas aparecem com `n/a` e uma nota. Rotas: `GET /api/runs/{id}/summary`,
 `GET /api/runs/{id}/artifacts`, `GET /api/runs/{id}/files/{caminho}`,
 `POST /api/runs/{id}/reopen` e `POST /api/runs/{id}/rerun`.
 
+### Model weights
+
+Every model declares what it needs (`requirements(options)`, task_0021), so a
+fresh clone runs a sample YAML after one
+`det-depth-distance --config configs/<x>.yaml --prepare`. Everything lives
+under the **weights root** (`weights/` in the repo, git-ignored; override with
+`DDD_WEIGHTS_ROOT`); nothing is downloaded at run time, and a missing default
+file is an error naming `--prepare`.
+
+| Model | Default location | Source (`--prepare`) |
+|---|---|---|
+| DA3 (`depth`, `camera.estimate`), SAM family, SegFormer | `weights/hf` (Hugging Face cache layout; an existing cache keeps working) | Hugging Face, weights file + `*.json` |
+| RF-DETR (`variant`) | `weights/rfdetr/<library file name>`, e.g. `rf-detr-large-2026.pth` | `repo.roboflow.com` (library URL table), Apache-2.0 |
+| YOLO / Ultralytics SAM (`weights`) | a relative `weights` (bare file name) resolves under `weights/ultralytics/` | `ultralytics/assets` v8.4.0 for published names (YOLO26 COCO and Objects365, SAM, SAM 2.x, MobileSAM; AGPL-3.0 YOLO weights); any other file is *user-provided* |
+| TwinLiteNet+ (`repo`) | `weights/_code/TwinLiteNetPlus` (pinned clone @ `90f1b86`) | git clone; `pretrained/<variant>.pth` is *user-provided* (upstream Google Drive) |
+
+An explicit path in the YAML overrides the default and behaves as before
+(`hf_cache` relative to the working directory; an absolute or `~` YOLO path;
+`repo: ~/dev/TwinLiteNetPlus`; RF-DETR `weights:` a checkpoint such as an
+existing `~/.roboflow/models/rf-detr-large-2026.pth`). A location outside the
+weights root is not tracked by `--prepare` (the adapter checks it when it
+loads); existing `~/.roboflow`, `~/dev/...` and `weights/hf` files are never
+moved or deleted. A relative YOLO / Ultralytics SAM path may not contain `..`.
+Sources, sizes and licences of every declared file: `docs/task_0021.md`.
+The GPU smoke and the task_0001 regression skip an example config until its
+models are ready under the weights root: on a GPU host run `--prepare` once per
+config (the adapter-contract tests keep their `DDD_*` paths).
+
 ### Pesos dos refinadores e do SegFormer
 
 Nada é baixado em tempo de execução (`local_files_only=True`); um peso
@@ -1076,7 +1104,7 @@ ausente gera `ConfigError` com o comando exato. No servidor, dentro do repo
 ```bash
 ~/.local/bin/uv run --extra infer python -c "from huggingface_hub import snapshot_download as d; [d(r, cache_dir='weights/hf', allow_patterns=['*.json', 'model.safetensors']) for r in ('facebook/sam2.1-hiera-large', 'yonigozlan/EdgeTAM-hf', 'syscv-community/sam-hq-vit-huge')]; d('nvidia/segformer-b5-finetuned-cityscapes-1024-1024', cache_dir='weights/hf', allow_patterns=['*.json', 'pytorch_model.bin'])"
 # opcionais: d('facebook/sam-vit-base', …) / d('facebook/sam3', …) com o mesmo filtro (sam3: HF_TOKEN com acesso aprovado)
-curl -fL -o ~/dev/ultralytics/_testbed/weights/mobile_sam.pt https://github.com/ultralytics/assets/releases/download/v8.4.0/mobile_sam.pt
+curl -fL -o weights/ultralytics/mobile_sam.pt https://github.com/ultralytics/assets/releases/download/v8.4.0/mobile_sam.pt   # or --prepare
 ```
 
 | Peso | Bytes | Uso |
@@ -1094,9 +1122,9 @@ curl -fL -o ~/dev/ultralytics/_testbed/weights/mobile_sam.pt https://github.com/
 | `depth-anything/DA3METRIC-LARGE` / `DA3-LARGE-1.1` (`model.safetensors`) | 1 336 734 448 / 1 643 843 860 | DA3 no notebook (`weights/hf`) |
 
 As quatro últimas linhas são os pesos do exemplo leve, baixados pelos
-comandos de [Execução no notebook](#execução-no-notebook-gpu-de-4-gb). O DA3
-é a exceção ao `local_files_only` acima: um checkpoint ausente é baixado em
-execução.
+comandos de [Execução no notebook](#execução-no-notebook-gpu-de-4-gb). Since
+task_0021 DA3 also reads with `local_files_only=True`: a missing checkpoint is
+an error naming `--prepare`.
 
 ---
 

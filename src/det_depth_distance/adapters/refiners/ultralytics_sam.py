@@ -8,7 +8,9 @@ Ultralytics letterboxes SAM 2.x inputs instead of the square resize of
 the original SAM 2: prefer the `sam2` refiner for SAM 2.1. The weights
 file must exist and keep its canonical name (e.g. mobile_sam.pt), from which
 Ultralytics picks the architecture; it is checked before importing
-ultralytics, which would otherwise download it. No object score. The
+ultralytics, which would otherwise download it. A relative `weights` (a bare
+file name) resolves under `<weights root>/ultralytics/` and release names are
+declared as URL assets for `--prepare` (adapters._ultralytics). No object score. The
 Ultralytics environment policy (offline, no auto-install) is applied when
 this module is imported. Ultralytics is AGPL-3.0.
 """
@@ -20,7 +22,14 @@ from typing import Any
 
 import numpy as np
 
+from det_depth_distance.adapters._ultralytics import (
+    ASSETS_URL,
+    check_weights,
+    resolve_weights,
+    weights_asset,
+)
 from det_depth_distance.adapters._ultralytics_env import apply_ultralytics_env
+from det_depth_distance.adapters._weights import INFER_EXTRA, not_prepared, under_root
 from det_depth_distance.adapters.refiners.box_prompt import (
     BoxPromptOptions,
     BoxPromptRefiner,
@@ -29,6 +38,7 @@ from det_depth_distance.adapters.refiners.box_prompt import (
 from det_depth_distance.core.components import LoadContext
 from det_depth_distance.core.options import ConfigError
 from det_depth_distance.core.registry import register
+from det_depth_distance.core.requirements import Requirements
 from det_depth_distance.core.types import ContractError
 from det_depth_distance.runtime import package_version
 
@@ -50,7 +60,6 @@ ULTRALYTICS_SAM_WEIGHTS: tuple[str, ...] = (
     "sam2.1_b.pt",
     "sam2.1_l.pt",
 )
-_ASSETS = "https://github.com/ultralytics/assets/releases/download/v8.4.0"
 
 
 @dataclass(frozen=True, slots=True)
@@ -76,6 +85,7 @@ class UltralyticsSamRefiner(BoxPromptRefiner):
         def __post_init__(self) -> None:
             # Explicit base call: zero-arg super() fails in slots dataclasses.
             BoxPromptOptions.__post_init__(self)
+            check_weights(self.weights)
             if self.imgsz < 32 or self.imgsz % 32:
                 raise ValueError(
                     f"imgsz must be a positive multiple of 32, got {self.imgsz}"
@@ -91,19 +101,32 @@ class UltralyticsSamRefiner(BoxPromptRefiner):
             )
         self._predictor = None
 
+    @classmethod
+    def requirements(cls, options: Options) -> Requirements:
+        asset = weights_asset(
+            options.weights, "provide the Ultralytics SAM checkpoint (canonical name)"
+        )
+        return Requirements(
+            assets=() if asset is None else (asset,),
+            packages=("torch", "ultralytics"),
+            extra=INFER_EXTRA,
+        )
+
     def default_name(self) -> str:
         """Stem of the weights file, e.g. "mobile_sam"."""
         return self.options.weights.stem
 
     def _load(self, ctx: LoadContext) -> None:
         options = self.options
-        weights = options.weights.expanduser()
+        weights = resolve_weights(options.weights)
         # Checked first: ultralytics would otherwise try to download a missing file.
         if not weights.is_file():
+            if under_root(weights) is not None:
+                raise not_prepared("weights", "file", weights)
             asset = next(n for n in ULTRALYTICS_SAM_WEIGHTS if weights.name.endswith(n))
             raise ConfigError(
                 f"weights: file not found: {weights}; download it with:\n"
-                f"  curl -fL -o {weights} {_ASSETS}/{asset}"
+                f"  curl -fL -o {weights} {ASSETS_URL}/{asset}"
             )
         # ultralytics only creates its settings dir when the parent already exists.
         Path(os.environ["YOLO_CONFIG_DIR"]).mkdir(parents=True, exist_ok=True)

@@ -1,16 +1,102 @@
-"""Offline loading of Hugging Face checkpoints (transformers adapters).
+"""Offline loading and requirement declaration of Hugging Face checkpoints.
 
 Weights are never downloaded at run time: `from_pretrained` runs with
-local_files_only=True against `hf_cache` (or the default HF cache), and a
-missing checkpoint becomes a ConfigError carrying the exact download command,
-filtered to the one weights file the adapter loads (an unfiltered
-snapshot_download also fetches duplicate .pt/.bin files).
+local_files_only=True against `hf_cache`, whose default is the project cache
+`<weights root>/hf` (`default_cache`); an explicit `hf_cache` in the YAML
+(relative to the working directory) overrides it. A missing checkpoint becomes
+a ConfigError naming `--prepare` and the equivalent download command, filtered
+to the one weights file the adapter loads (an unfiltered snapshot_download
+also fetches duplicate .pt/.bin files).
+
+`hf_asset` declares the same files (weights file + `*.json`) as a
+`HuggingFaceAsset` in that cache layout, so an existing `weights/hf` cache
+counts as ready unchanged. Sizes and licences of the repos the project ships
+(read from the Hugging Face API, task_0021) are in `HF_FACTS`; any other repo
+is declared without them. Local checkpoint directories are not declared.
 """
 
 from pathlib import Path
 from typing import Any
 
+from det_depth_distance.adapters._weights import under_root
 from det_depth_distance.core.options import ConfigError
+from det_depth_distance.core.requirements import HuggingFaceAsset, weights_root
+
+HF_DIR = "hf"  # <weights root>/hf: the Hugging Face cache layout
+
+# repo -> (weights file bytes, licence tag, gated); Hugging Face API, 2026-10-31.
+HF_FACTS: dict[str, tuple[int, str, bool]] = {
+    "depth-anything/DA3-SMALL": (137_248_940, "apache-2.0", False),
+    "depth-anything/DA3-BASE": (541_518_028, "apache-2.0", False),
+    "depth-anything/DA3-LARGE": (1_643_843_860, "cc-by-nc-4.0", False),
+    "depth-anything/DA3-LARGE-1.1": (1_643_843_860, "apache-2.0", False),
+    "depth-anything/DA3-GIANT": (5_422_814_644, "cc-by-nc-4.0", False),
+    "depth-anything/DA3-GIANT-1.1": (5_422_814_644, "cc-by-nc-4.0", False),
+    "depth-anything/DA3MONO-LARGE": (1_336_734_448, "apache-2.0", False),
+    "depth-anything/DA3METRIC-LARGE": (1_336_734_448, "apache-2.0", False),
+    "depth-anything/DA3NESTED-GIANT-LARGE": (6_759_558_100, "cc-by-nc-4.0", False),
+    "depth-anything/DA3NESTED-GIANT-LARGE-1.1": (
+        6_759_558_100,
+        "cc-by-nc-4.0",
+        False,
+    ),
+    "facebook/sam2.1-hiera-large": (897_897_416, "apache-2.0", False),
+    "yonigozlan/EdgeTAM-hf": (55_912_824, "apache-2.0", False),
+    "facebook/sam3": (3_439_938_512, "other (SAM License)", True),
+    "facebook/sam-vit-huge": (2_564_432_288, "apache-2.0", False),
+    "syscv-community/sam-hq-vit-huge": (2_570_816_384, "apache-2.0", False),
+    "nvidia/segformer-b5-finetuned-cityscapes-1024-1024": (
+        338_896_453,
+        "other (NVIDIA)",
+        False,
+    ),
+    "nvidia/segformer-b0-finetuned-cityscapes-640-1280": (
+        14_957_601,
+        "other (NVIDIA)",
+        False,
+    ),
+}
+
+
+def default_cache() -> Path:
+    """`<weights root>/hf`: where `hf_cache: null` reads and Prepare writes."""
+    return weights_root() / HF_DIR
+
+
+def resolve_cache(hf_cache: Path | None) -> Path:
+    """The cache an adapter reads: the explicit `hf_cache` or the default."""
+    return default_cache() if hf_cache is None else Path(hf_cache).expanduser()
+
+
+def is_repo_id(ref: str) -> bool:
+    """True for an `org/name` Hugging Face id, False for a local directory."""
+    if ref.startswith(("/", ".", "~")) or Path(ref).expanduser().exists():
+        return False
+    parts = ref.split("/")
+    return len(parts) == 2 and all(parts)
+
+
+def hf_asset(
+    key: str, repo: str, hf_cache: Path | None, weights_file: str
+) -> HuggingFaceAsset | None:
+    """`repo`'s `weights_file` + `*.json` in the cache layout under the weights
+    root, or None (local directory, or an explicit cache outside the root)."""
+    if not is_repo_id(repo):
+        return None
+    target = under_root(resolve_cache(hf_cache))
+    if target is None:
+        return None
+    size, licence, gated = HF_FACTS.get(repo, (None, None, False))
+    return HuggingFaceAsset(
+        key=key,
+        target=target,
+        repo=repo,
+        files=(weights_file,),
+        patterns=("*.json",),
+        size_bytes=size,
+        license=licence,
+        gated=gated,
+    )
 
 
 def download_command(
@@ -29,22 +115,21 @@ def download_command(
 def from_pretrained_offline(
     cls: Any, repo: str, hf_cache: Path | None, weights_file: str, **kwargs: Any
 ) -> Any:
-    """`cls.from_pretrained(repo, ...)` from the local cache only.
+    """`cls.from_pretrained(repo, ...)` from the local cache only (`hf_cache`,
+    default `<weights root>/hf`).
 
     Raises:
         ConfigError: the checkpoint is not in the cache (message prefixed with
-            "model:" and ending with the download command).
+            "model:", naming `--prepare` and ending with the download command).
     """
+    cache = resolve_cache(hf_cache)
     try:
         return cls.from_pretrained(
-            repo,
-            cache_dir=None if hf_cache is None else str(hf_cache),
-            local_files_only=True,
-            **kwargs,
+            repo, cache_dir=str(cache), local_files_only=True, **kwargs
         )
     except OSError:
-        where = hf_cache or "the default Hugging Face cache"
         raise ConfigError(
-            f"model: {repo} is not in {where} (nothing is downloaded at run time); "
-            f"download it with:\n  {download_command(repo, hf_cache, weights_file)}"
+            f"model: {repo} is not in {cache} (nothing is downloaded at run time); "
+            "run `det-depth-distance --config <yaml> --prepare` or download it "
+            f"with:\n  {download_command(repo, cache, weights_file)}"
         ) from None

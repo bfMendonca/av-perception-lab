@@ -115,6 +115,17 @@ class EstimatedIntrinsics(IntrinsicsProvider):
         )
 
 
+def focal_estimate_config(cfg: CameraConfig) -> EstimateConfig | None:
+    """`camera.estimate` when a run would use it (no `focal_px`, and either no
+    calibration or `calibration.cross_check`), else None. Only matters when the
+    depth model needs intrinsics."""
+    if cfg.focal_px is not None or cfg.estimate is None:
+        return None
+    if cfg.calibration is not None and not cfg.calibration.cross_check:
+        return None
+    return cfg.estimate
+
+
 def build_intrinsics_provider(cfg: CameraConfig) -> IntrinsicsProvider | None:
     """`camera.focal_px` takes precedence over `camera.estimate`; None if neither is set.
 

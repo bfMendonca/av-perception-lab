@@ -54,7 +54,7 @@ still pending.
 | Web front-end (`web/`, not Python) | React 18.3.1, TypeScript 5.9, Vite 8, `yaml` 2 (raw-YAML field editor); tests with vitest 5 + Testing Library + jsdom; Node 24 LTS installed without sudo (README); `web/node_modules` and `web/dist` are not versioned |
 | `eval` extra (optional) | `matplotlib>=3.8` (locked 3.11.2): plots of `det-depth-distance-evaluate --plot` only; imported lazily |
 | `infer` extra (GPU hosts: `gpu-host`; optionally the laptop's 4 GB GPU in an isolated env, `UV_PROJECT_ENVIRONMENT=_testbed/venv-infer`) | torch 2.8.0 + torchvision 0.23.0 + xformers 0.0.32.post2 from the PyTorch cu128 index; `rfdetr` @ git 1f2af2ea; `depth-anything-3` @ git 3d835ec; `addict` (imported by depth-anything-3 but not declared by it); `ultralytics==8.4.175` (YOLO26 and the optional `ultralytics_sam` refiner; **AGPL-3.0** — acceptable for this internal research prototype, optional extra); `transformers>=5.1,<6` (locked 5.19.0; previously only transitive via rfdetr; SAM-family refiners and SegFormer); `timm>=1.0.17` (locked 1.0.30; only for EdgeTAM's TimmWrapper backbone) |
-| External code (GPU hosts) | TwinLiteNet+ clone `~/dev/TwinLiteNetPlus` @ 90f1b86 (MIT; not a package, imported with a temporary `sys.path` entry; weights in its `pretrained/`) |
+| External code (GPU hosts) | TwinLiteNet+ clone @ 90f1b86 (MIT; not a package, imported with a temporary `sys.path` entry), default `weights/_code/TwinLiteNetPlus` (cloned by `--prepare`; `repo:` overrides, e.g. `~/dev/TwinLiteNetPlus`); `pretrained/<variant>.pth` is user-provided (upstream Google Drive) |
 | Model licences (task_0005) | Apache-2.0: SAM, SAM 2.1, SAM-HQ, EdgeTAM, MobileSAM, `timm`; "SAM License", gated: SAM 3 (`sam3_tracker`, optional, never a default); `other` (NVIDIA terms, read before non-academic use): SegFormer checkpoints; MIT: TwinLiteNet+; AGPL-3.0: ultralytics |
 | Dev group | pytest, ruff |
 | Video I/O | system ffmpeg/ffprobe |
@@ -89,7 +89,9 @@ det-depth-distance/
 │   ├── adapters/depth/      # da3.py (DA3Depth + geometry/focal/unit helpers)
 │   ├── adapters/refiners/   # box_prompt.py (BoxPromptRefiner, numpy), hf_sam.py (HFSamRefiner + sam2/edgetam/sam_hq/sam/sam3_tracker), ultralytics_sam.py
 │   ├── adapters/semantic/   # segformer.py (SegformerSegmenter), twinlitenet.py (TwinLiteNetSegmenter)
-│   ├── adapters/_hf_hub.py  # offline from_pretrained + exact download command
+│   ├── adapters/_hf_hub.py  # offline from_pretrained (default cache <weights root>/hf), hf_asset() declaration, HF_FACTS (sizes/licences), download command
+│   ├── adapters/_weights.py # under_root() (explicit path inside the weights root?), not_prepared() error naming --prepare
+│   ├── adapters/_ultralytics.py  # ultralytics/assets v8.4.0 table (YOLO26, SAM), resolve_weights (relative -> weights/ultralytics/), weights_asset
 │   ├── adapters/_ultralytics_env.py  # YOLO_OFFLINE / YOLO_AUTOINSTALL / YOLO_CONFIG_DIR policy (YOLO and SAM)
 │   ├── motion/              # pure numpy, per-track 2D motion: config.py (MotionConfig, MeasurementConfig, PredictionConfig, CameraMount), measurement.py (box -> (x, z) + covariance, project_points), models.py (MotionModel/MotionFilter, registered "cv" and "ctrv" EKF), ego.py (EgoMotionProvider, registered "csv", PlanarTransform), estimator.py (MotionEstimator, build_motion)
 │   ├── io/                  # video.py (ffmpeg pipes), source.py (FrameSource, FrameTransform, VideoSource), sinks.py (CSV/video/npz/metrics), quicktime.py (stdlib MOV metadata reader: moov/meta + trak/udta metas)
@@ -220,8 +222,17 @@ Per run: `video.mp4`, `detections.csv` (one row per box; task_0001 columns then 
   `UltralyticsSamRefiner` (`ultralytics_sam`, predictor API, BGR) as a second
   backend. Options are layered `RefinerOptions` -> `BoxPromptOptions` ->
   `HFSamOptions` -> family `Options`. Weights are read with
-  `local_files_only=True` from `hf_cache` (example configs: `weights/hf`);
+  `local_files_only=True` from `hf_cache` (default `<weights root>/hf`);
   nothing is downloaded at run time.
+- Requirements (task_0021): every adapter implements `requirements(options)`
+  (torch-free, from validated options): DA3/HF refiners/SegFormer ->
+  `HuggingFaceAsset` in `<weights root>/hf`; RF-DETR -> `UrlAsset`
+  `weights/rfdetr/<file>` (loaded with `pretrain_weights=`); YOLO and
+  Ultralytics SAM -> `UrlAsset` for `ultralytics/assets` v8.4.0 names, else
+  `UserProvided`; TwinLiteNet+ -> `CodeRepo` + `UserProvided` weights; packages
+  = import names, `extra="infer"`. Explicit paths outside the weights root are
+  not declared (the adapter checks them at load). `cli.config_requirements()`
+  adds the `camera.estimate` focal model.
 - Semantic segmenters: `SemanticSegmenter` (template `__call__` validating
   `SemanticMap` against the frame and `class_names`); `name` is required in
   the YAML and namespaces excluded labels (`scene.road`); a prefix is checked
@@ -286,7 +297,8 @@ The pipeline has no network API; its interface is the CLI `det-depth-distance` /
 `python -m det_depth_distance --config run.yaml [VIDEO] [--set key=value]...`
 and `--list-models`; `--config run.yaml --prepare` builds the components
 (nothing loaded, the video is not probed), downloads their declared weights and
-pinned code under the weights root (`DDD_WEIGHTS_ROOT`, default `weights/`),
+pinned code under the weights root (`DDD_WEIGHTS_ROOT`, default `weights/`;
+also the focal model of `camera.estimate`),
 prints a status table and exits 0 only when every component is ready (1
 otherwise, 2 for configuration errors). Plus two auxiliary console scripts:
 `det-depth-distance-calibrate calibrate|board|inspect` and
@@ -494,9 +506,8 @@ gated `facebook/sam3` checkpoint additionally needs approved access and
 - Three test levels: unit (each module, fixed doubles); smoke (`-m smoke`, `tests/smoke/`, ~8 s): the real CLI entry point in process on a synthetic 320x180 grey-level video of known depth planes, with frame-reading test doubles (detector, box-prompt refiner, semantic segmenter) inserted into the registry by `monkeypatch` and the real `DA3Depth` with a fake network; a pairwise matrix of 9 configurations checks every output and every distance analytically, plus the all-off = task_0002 invariant and a calibrate -> run -> evaluate chain; `tests/run_outputs.py` checks any run folder's structure; gpu (`-m gpu`, on `gpu-host`).
 - GPU tests (adapter contracts + 60-frame regression against task_0001 + a 5-frame smoke of 10 example configs, one per real adapter family plus the light 4 GB example, which skips where its weights are missing): `uv run --extra infer pytest -m gpu -v` on `gpu-host`.
 - `utils/gpu_pending.sh` (run ON `gpu-host`): every pending GPU step of tasks 0002-0008 in dependency order, a log per step and `summary.tsv` in `_testbed/outputs/gpu_pending_<stamp>/`; `list`, `run --dry-run|--from|--only|--skip-long`; downloads only with `--allow-downloads` plus a per-item confirmation (task_0004 downloads only printed).
-- Refiner and SegFormer weights: Hugging Face cache `weights/hf` in the repo (git-ignored and excluded from the rsync push), downloaded explicitly with `snapshot_download(..., allow_patterns=['*.json', 'model.safetensors'])` (SegFormer: `pytorch_model.bin`) — command in the README; MobileSAM `mobile_sam.pt` beside the YOLO weights; TwinLiteNet+ weights in its clone.
-- Light example (task_0010, `configs/yolo_light_da3.yaml`, for the laptop's RTX A1000 4 GB): YOLO26s-seg in `~/dev/ultralytics/_testbed/weights`, SegFormer-B0 `nvidia/segformer-b0-finetuned-cityscapes-640-1280` and the DA3 checkpoints in `weights/hf`, TwinLiteNet+ `small.pth` in its clone. Estimated peak ~2.4 GB allocated (main phase) and ~3 GB in the focal phase, which is not recorded in `metrics.json`; VRAM on the 4 GB GPU still to be measured. DA3 downloads a missing checkpoint at run time (no `local_files_only`).
-- Weights live outside the repo on the GPU host: RF-DETR (incl. Seg, ~135–155 MB each, downloaded and MD5-checked by `rfdetr` on first construction) in `~/.roboflow/models`; YOLO26 (`yolo26*.pt`, `*-objv1-150.pt`, `*-seg.pt`, `*-objv1-seg.pt`, from the `ultralytics/assets` v8.4.0 release, fetched manually — the adapter never downloads) in `~/dev/ultralytics/_testbed/weights`. GPU tests skip when a weight is missing.
+- Weights (task_0021): everything under the weights root (`weights/`, git-ignored and excluded from the rsync push; `DDD_WEIGHTS_ROOT` / `--weights-root`), fetched by `--prepare`; nothing is downloaded at run time (DA3 included). Layout: `hf/` (Hugging Face cache: DA3, SAM family, SegFormer; an existing cache keeps working), `rfdetr/<library file name>` (Apache-2.0, ~135–405 MB), `ultralytics/<name>.pt` (YOLO26 COCO/Objects365 and SAM/MobileSAM from the `ultralytics/assets` v8.4.0 release; any other `.pt` is user-provided), `_code/TwinLiteNetPlus` (pinned clone; `pretrained/<variant>.pth` user-provided). Existing `~/.roboflow`, `~/dev/...` files are untouched and usable as explicit YAML paths. Sources, sizes and licences: `docs/task_0021.md`.
+- Light example (task_0010, `configs/yolo_light_da3.yaml`, for the laptop's RTX A1000 4 GB): YOLO26s-seg, SegFormer-B0 `nvidia/segformer-b0-finetuned-cityscapes-640-1280`, the DA3 checkpoints and TwinLiteNet+ `small.pth`, all under the weights root. Estimated peak ~2.4 GB allocated (main phase) and ~3 GB in the focal phase, which is not recorded in `metrics.json`; VRAM on the 4 GB GPU still to be measured. GPU tests skip when a weight is missing.
 - GPU host: `utils/sync_gpu_host.sh push`, then on `gpu-host`
   `~/.local/bin/uv sync --extra infer`; outputs fetched with
   `utils/sync_gpu_host.sh pull`.
