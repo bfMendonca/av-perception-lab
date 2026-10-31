@@ -219,15 +219,15 @@ docs/task_0002.md   # Segunda task
 
 **Cada arquivo contém:**
 
-- **Descrição** — escopo breve, porém completo.
-- **Escopo** — todos os arquivos alterados/criados/removidos, com detalhe.
-- **Planejamento** — plano de implementação passo a passo.
-- **Análise de Impacto** — matriz de risco e possíveis bugs.
-- **Verificação** — procedimentos de teste automatizado e manual.
-- **Dependências** — tarefas que precisam ser executadas antes desta.
-- **Detalhes de Implementação** — (após a conclusão) o que foi realmente
+- **Description** — escopo breve, porém completo.
+- **Scope** — todos os arquivos alterados/criados/removidos, com detalhe.
+- **Planning** — plano de implementação passo a passo.
+- **Impact Analysis** — matriz de risco e possíveis bugs.
+- **Verification** — procedimentos de teste automatizado e manual.
+- **Dependencies** — tarefas que precisam ser executadas antes desta.
+- **Implementation details** — (após a conclusão) o que foi realmente
   feito, incluindo desvios do plano original.
-- **Caderno de Testes** — (após a conclusão) checklist manual para o usuário
+- **Test notebook** — (após a conclusão) checklist manual para o usuário
   validar que as mudanças não introduziram regressões.
 
 **Ordem de execução:** as tasks são numeradas na ordem recomendada de
@@ -247,32 +247,32 @@ trabalhe neste projeto.
 Antes de escrever qualquer código, é **obrigatório** verificar se existe um
 arquivo `docs/task_DDDD.md` correspondente ao trabalho. Se não existir, um
 novo arquivo **DEVE** ser criado antes de iniciar a implementação, seguindo o
-formato padrão (Descrição, Escopo, Planejamento, Análise de Impacto,
-Verificação, Dependências). Use o próximo número disponível na sequência.
+formato padrão (Description, Scope, Planning, Impact Analysis,
+Verification, Dependencies). Use o próximo número disponível na sequência.
 
-### 2. Tarefas concluídas DEVEM ser marcadas com `(CONCLUÍDA)`
+### 2. Tarefas concluídas DEVEM ser marcadas com `(COMPLETED)`
 
-Ao finalizar uma tarefa, é **obrigatório** anexar `(CONCLUÍDA)` à linha de
+Ao finalizar uma tarefa, é **obrigatório** anexar `(COMPLETED)` à linha de
 título `#`. Exemplo:
 
 ```markdown
-# Task 0001: Título Descritivo da Tarefa (CONCLUÍDA)
+# Task 0001: Título Descritivo da Tarefa (COMPLETED)
 ```
 
-### 3. Tarefas concluídas DEVEM incluir "Detalhes de Implementação"
+### 3. Tarefas concluídas DEVEM incluir "Implementation details"
 
 Após finalizar, adicionar ao fim do arquivo uma seção
-`## Detalhes de Implementação` contendo:
+`## Implementation details` contendo:
 
 - **O que foi feito** — resumo objetivo da implementação real.
 - **Desvios do plano original** — qualquer alteração em relação ao
   Planejamento. Se não houve desvios, declarar isso explicitamente.
 - **Observações** — notas, avisos ou itens de acompanhamento relevantes.
 
-### 4. Tarefas concluídas DEVEM incluir "Caderno de Testes"
+### 4. Tarefas concluídas DEVEM incluir "Test notebook"
 
-Após finalizar, adicionar uma seção `## Caderno de Testes` logo após
-`## Detalhes de Implementação`. É um **checklist manual** que o usuário segue
+Após finalizar, adicionar uma seção `## Test notebook` logo após
+`## Implementation details`. É um **checklist manual** que o usuário segue
 para validar que as mudanças não introduziram regressões.
 
 **Diretrizes:**
@@ -283,12 +283,12 @@ para validar que as mudanças não introduziram regressões.
 - Incluir **testes negativos** quando relevante.
 - Itens curtos e objetivos, verbo no imperativo (Abrir, Clicar, Verificar).
 - Usar checkbox Markdown (`- [ ]`).
-- Escrever em **português (pt-BR)**.
+- Escrever em **inglês** (arquivos de task antigos em pt-BR não são migrados).
 - Não duplicar o que já é coberto por testes automatizados.
 
 ### 5. Atualizações do arquivo de tarefa fazem parte do commit da implementação
 
-O marcador `(CONCLUÍDA)`, `Detalhes de Implementação` e `Caderno de Testes`
+O marcador `(COMPLETED)`, `Implementation details` e `Test notebook`
 devem estar no **mesmo commit/PR** que entrega a implementação — nunca em
 commit separado.
 
@@ -317,12 +317,12 @@ diretamente nele. Antes de qualquer implementação:
 
 ## Convenções de Commit
 
-Commits seguem **Conventional Commits** com assunto em **pt-BR**, no formato:
+Commits seguem **Conventional Commits** com assunto em **inglês** (decisão de 2026-10-31; commits antigos ficam em pt-BR), no formato:
 
 ```
-<type>(<scope>): <assunto em pt-BR, imperativo, ≤50 chars, sem ponto final>
+<type>(<scope>): <subject in English, imperativo, ≤50 chars, sem ponto final>
 
-<corpo opcional em pt-BR explicando o porquê, wrap em 72 chars>
+<optional body in English explicando o porquê, wrap em 72 chars>
 ```
 
 - **Tipos** (inglês, minúsculo): `feat`, `fix`, `perf`, `refactor`, `docs`,
@@ -356,11 +356,11 @@ Commits seguem **Conventional Commits** com assunto em **pt-BR**, no formato:
 - Ao trabalhar numa task documentada, referenciá-la no assunto ou corpo:
   `(task_DDDD)`.
 - **Commits atômicos**: um commit = uma preocupação lógica. O fechamento do
-  arquivo de tarefa (`(CONCLUÍDA)`, `Detalhes de Implementação`, `Caderno de
-  Testes`) entra no **mesmo commit** da implementação.
+  arquivo de tarefa (`(COMPLETED)`, `Implementation details`, `Test
+  notebook`) entra no **mesmo commit** da implementação.
 - **`CHANGELOG.md` é obrigatório e vivo**: toda feature, correção ou mudança
   relevante entregue ganha entrada no `CHANGELOG.md` (formato
-  `## [AAAA-MM-DD] Titulo Descritivo`, pt-BR), mantido homogêneo com os
+  `## [AAAA-MM-DD] Titulo Descritivo`; texto novo em inglês), mantido homogêneo com os
   demais projetos da casa.
 
 - **Casos especiais deste repositório:**
@@ -370,4 +370,4 @@ Commits seguem **Conventional Commits** com assunto em **pt-BR**, no formato:
   - `_testbed/` (vídeos de teste, saídas, logs) e `weights/` nunca são
     versionados (`.gitignore`).
   - Sem CI: a validação de inferência é manual, no servidor GPU, seguindo o
-    Caderno de Testes de cada task.
+    Test notebook de cada task.

@@ -499,19 +499,19 @@ gated `facebook/sam3` checkpoint additionally needs approved access and
 
 ## 11. Conventions Summary
 
-- Code, docstrings, comments in English; task files, AGENTS.md, CLAUDE.md,
-  README in pt-BR; CHANGELOG in pt-BR ASCII.
+- Code, docstrings, comments in English; AGENTS.md, CLAUDE.md, README in pt-BR
+  (existing); new docs and task files in English; CHANGELOG pt-BR ASCII for old entries.
 - Ruff defaults; snake_case functions/modules, PascalCase classes.
-- Conventional Commits with pt-BR subject; scopes: core, adapters, io, distance, camera, render, cli, eval, configs, tests, utils, deps, docs.
+- Conventional Commits with an English subject (pt-BR in older commits); scopes: core, adapters, io, distance, camera, render, cli, eval, configs, tests, utils, deps, docs.
 - Never commit to `main`; work on `feat/`/`fix/` branches.
 
 ## 12. Task Documentation & Lifecycle (docs/)
 
 This project uses task-driven development: every implementation has a
-`docs/task_DDDD.md` file (Descrição, Escopo, Planejamento, Análise de
-Impacto, Verificação, Dependências) created before coding. On completion the
-title is marked `(CONCLUÍDA)` and the file gains `## Detalhes de
-Implementação` and `## Caderno de Testes` sections in the same commit as the
+`docs/task_DDDD.md` file (Description, Scope, Planning, Impact Analysis,
+Verification, Dependencies) created before coding. On completion the
+title is marked `(COMPLETED)` and the file gains `## Implementation
+details` and `## Test notebook` sections in the same commit as the
 implementation. See `AGENTS.md` for the mandatory rules. New documentation and task files are written in English (the task template is in English; existing pt-BR documents are not migrated).
 
 ## 13. What This Project Does NOT Have

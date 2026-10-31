@@ -1,6 +1,7 @@
 """Requirements declaration and the torch-free status check (task_0019)."""
 
 import hashlib
+import os
 import subprocess
 import sys
 from dataclasses import dataclass
@@ -175,8 +176,6 @@ def test_asset_target_escape_is_rejected(tmp_path):
         status = check(Requirements(assets=(asset,)), root)
         assert status.state == "failed"
         assert status.layers["assets"] == "invalid"
-    repo = Requirements(code=(CodeRepo(name="../evil", url="x", commit="a" * 40),))
-    assert check(repo, root).state == "failed"
     assert _asset(target="ok/w.bin").path(root) == root.resolve() / "ok/w.bin"
 
 
@@ -247,3 +246,144 @@ def test_weights_root_precedence(tmp_path, monkeypatch):
     assert rq.weights_root() == tmp_path / "set"
     rq.set_weights_root(None)
     assert rq.weights_root() == tmp_path / "env"
+
+
+def test_code_repo_name_must_be_one_plain_component():
+    for bad in ("", ".", "..", "../evil", "a/b", "/abs", "a\\b", "x\0y"):
+        with pytest.raises(rq.UnsafePathError):
+            CodeRepo(name=bad, url="x", commit="a" * 40)
+    CodeRepo(name="ok-1.2_x", url="x", commit="a" * 40)
+
+
+@pytest.mark.skipif(os.geteuid() == 0, reason="root ignores file modes")
+def test_unreadable_paths_do_not_raise(tmp_path):
+    locked = tmp_path / "locked"
+    _write(locked / "w.bin", b"x")
+    locked.chmod(0)
+    try:
+        status = check(Requirements(assets=(_asset(target="locked/w.bin"),)), tmp_path)
+    finally:
+        locked.chmod(0o755)
+    assert status.state == "missing"
+    assert status.layers["assets"] in ("partial", "missing")
+    f = _write(tmp_path / "m/w.bin", b"x")
+    f.chmod(0)
+    try:
+        status = check(Requirements(assets=(_asset(sha256="0" * 64),)), tmp_path)
+    finally:
+        f.chmod(0o644)
+    assert status.layers["assets"] == "partial"
+    assert "cannot inspect" in (status.message or "")
+
+
+def test_symlink_loop_and_nul_byte_do_not_raise(tmp_path):
+    (tmp_path / "a").symlink_to(tmp_path / "b")
+    (tmp_path / "b").symlink_to(tmp_path / "a")
+    loop = check(Requirements(assets=(_asset(target="a/x"),)), tmp_path)
+    assert loop.state in ("missing", "failed")
+    nul = check(Requirements(assets=(_asset(target="x\0y"),)), tmp_path)
+    assert nul.state == "failed"
+    assert nul.layers["assets"] == "invalid"
+
+
+# --- Hugging Face cache layout as the hub writes it: snapshot files are
+# symlinks into blobs/<hash>.
+
+
+def _hf(**kw) -> HuggingFaceAsset:
+    base = {"key": "hf", "target": "hf", "repo": "org/name"}
+    return HuggingFaceAsset(**{**base, **kw})
+
+
+def _hf_link(root: Path, rev: str, name: str, data: bytes | None = b"x") -> Path:
+    """Snapshot `name` as a symlink to a blob (dangling when data is None)."""
+    base = root / "hf" / "models--org--name"
+    blob = base / "blobs" / hashlib.sha1(f"{rev}/{name}".encode()).hexdigest()
+    if data is not None:
+        _write(blob, data)
+    link = base / "snapshots" / rev / name
+    link.parent.mkdir(parents=True, exist_ok=True)
+    link.symlink_to(os.path.relpath(blob, link.parent))
+    return link
+
+
+def _assets(tmp_path, asset) -> str:
+    return check(Requirements(assets=(asset,)), tmp_path).layers["assets"]
+
+
+def test_hf_symlinked_snapshot_with_nested_file_is_ready(tmp_path):
+    _hf_link(tmp_path, "r1", "config.json")
+    _hf_link(tmp_path, "r1", "sub/dir/model.safetensors", b"abcdef")
+    asset = _hf(files=("config.json", "sub/dir/model.safetensors"), size_bytes=7)
+    assert _assets(tmp_path, asset) == "ready"
+    assert _assets(tmp_path, _hf(patterns=("sub/*/*.safetensors",))) == "ready"
+    assert _assets(
+        tmp_path, _hf(files=("sub/dir/model.safetensors",), size_bytes=99)
+    ) == ("partial")
+
+
+def test_hf_dangling_blob_symlink_is_not_present(tmp_path):
+    _hf_link(tmp_path, "r1", "config.json")
+    _hf_link(tmp_path, "r1", "model.safetensors", data=None)
+    asset = _hf(files=("config.json", "model.safetensors"))
+    status = check(Requirements(assets=(asset,)), tmp_path)
+    assert status.layers["assets"] == "partial"
+    assert "model.safetensors" in (status.message or "")
+
+
+def test_hf_incomplete_blob_is_partial(tmp_path):
+    _hf_link(tmp_path, "r1", "config.json")
+    blobs = tmp_path / "hf" / "models--org--name" / "blobs"
+    _write(blobs / "abc123.incomplete", b"half")
+    assert _assets(tmp_path, _hf(files=("config.json",))) == "partial"
+
+
+def test_hf_explicit_revision_via_ref_and_commit_name(tmp_path):
+    base = tmp_path / "hf" / "models--org--name"
+    _hf_link(tmp_path, "c0ffee", "config.json")
+    _write(base / "refs" / "main", b"c0ffee\n")
+    assert _assets(tmp_path, _hf(files=("config.json",), revision="main")) == "ready"
+    assert _assets(tmp_path, _hf(files=("config.json",), revision="c0ffee")) == "ready"
+    assert _assets(tmp_path, _hf(files=("config.json",), revision="v9")) == "missing"
+
+
+def test_hf_ref_pointing_to_missing_snapshot_is_missing(tmp_path):
+    base = tmp_path / "hf" / "models--org--name"
+    _hf_link(tmp_path, "old", "config.json")
+    _write(base / "refs" / "main", b"new")
+    assert _assets(tmp_path, _hf(files=("config.json",), revision="main")) == "missing"
+
+
+def test_hf_pinned_revision_ignores_stale_snapshot_next_to_partial_one(tmp_path):
+    base = tmp_path / "hf" / "models--org--name"
+    _hf_link(tmp_path, "old", "config.json")
+    _hf_link(tmp_path, "old", "model.safetensors")
+    _hf_link(tmp_path, "new", "config.json")  # newer snapshot lacks the weights
+    _write(base / "refs" / "main", b"new")
+    files = ("config.json", "model.safetensors")
+    assert _assets(tmp_path, _hf(files=files, revision="main")) == "partial"
+    assert _assets(tmp_path, _hf(files=files, revision="old")) == "ready"
+
+
+def test_hf_revision_and_ref_are_confined(tmp_path):
+    for bad in ("../..", "../x", "/etc", "a/b", "..", ""):
+        with pytest.raises(rq.UnsafePathError):
+            _hf(revision=bad)
+    _hf(revision="refs-pr_1.0")
+    outside = tmp_path / "hf" / "models--org--name" / "snapshots"
+    _hf_link(tmp_path, "r1", "config.json")
+    base = outside.parent
+    _write(base / "refs" / "main", b"../../../../etc")
+    status = check(
+        Requirements(assets=(_hf(files=("passwd",), revision="main"),)), tmp_path
+    )
+    assert status.state == "failed"
+    assert status.layers["assets"] == "invalid"
+    # a snapshot that is a symlink leaving the cache is rejected too
+    evil = tmp_path / "elsewhere"
+    _write(evil / "config.json")
+    (outside / "evil").symlink_to(evil)
+    status = check(
+        Requirements(assets=(_hf(files=("config.json",), revision="evil"),)), tmp_path
+    )
+    assert status.layers["assets"] == "invalid"

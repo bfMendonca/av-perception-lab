@@ -21,6 +21,7 @@ import fnmatch
 import hashlib
 import importlib.util
 import os
+import re
 import subprocess
 from dataclasses import dataclass
 from pathlib import Path, PurePath
@@ -104,6 +105,15 @@ def asset_kinds() -> dict[str, type[Asset]]:
     return dict(_ASSET_KINDS)
 
 
+_REVISION_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]*")
+
+
+def _check_revision(value: str, what: str = "revision") -> None:
+    """Branch, tag or commit names only: no separators, no `..`, not absolute."""
+    if not _REVISION_RE.fullmatch(value) or ".." in value:
+        raise UnsafePathError(f"unsafe {what} {value!r}")
+
+
 def _sha256(path: Path) -> str:
     digest = hashlib.sha256()
     with path.open("rb") as handle:
@@ -169,12 +179,23 @@ class HuggingFaceAsset(Asset):
     patterns: tuple[str, ...] = ()
     revision: str | None = None
 
+    def __post_init__(self) -> None:
+        if self.revision is not None:
+            _check_revision(self.revision)
+
     def _snapshots(self, repo_dir: Path) -> list[Path]:
         snaps = repo_dir / "snapshots"
         if self.revision is not None:
+            _check_revision(self.revision)
             ref = repo_dir / "refs" / self.revision
             rev = ref.read_text().strip() if ref.is_file() else self.revision
-            return [snaps / rev] if (snaps / rev).is_dir() else []
+            _check_revision(rev, "ref content")  # a hostile ref file is not trusted
+            snap = snaps / rev
+            if not snap.is_dir():
+                return []
+            if not snap.resolve().is_relative_to(repo_dir.resolve()):
+                raise UnsafePathError(f"snapshot {rev!r} resolves outside the cache")
+            return [snap]
         return (
             sorted(p for p in snaps.glob("*") if p.is_dir()) if snaps.is_dir() else []
         )
@@ -233,6 +254,18 @@ class CodeRepo:
     name: str
     url: str
     commit: str
+
+    def __post_init__(self) -> None:
+        n = self.name
+        if (
+            not n
+            or n in (".", "..")
+            or "/" in n
+            or "\\" in n
+            or "\0" in n
+            or PurePath(n).is_absolute()
+        ):
+            raise UnsafePathError(f"unsafe code folder name {n!r}: one plain component")
 
     def path(self, root: Path) -> Path:
         return contained(root, f"{CODE_DIR}/{self.name}")
@@ -338,8 +371,10 @@ def check(req: Requirements, root: Path | None = None) -> ModelStatus:
         nonlocal unknown_size, size
         try:
             result = probe()
-        except UnsafePathError as exc:
+        except (UnsafePathError, ValueError) as exc:
             result = AssetState("invalid", f"{label}: {exc}")
+        except (OSError, RuntimeError) as exc:  # unreadable, symlink loop...
+            result = AssetState("partial", f"{label}: cannot inspect ({exc})")
         if result.state != "ready":
             missing.append(label)
             if result.detail:
