@@ -50,7 +50,7 @@ still pending.
 | Language | Python 3.11 (`requires-python >=3.11,<3.12`) |
 | Env / deps | Astral uv, `pyproject.toml` + versioned `uv.lock` |
 | Base deps | numpy<2 (required by depth-anything-3), opencv-python (also calibration: `calibrateCameraExtended`, `findChessboardCornersSB`, `cv2.aruco` ChArUco, `FileStorage`, undistortion; no `opencv-contrib`), pillow, pyyaml>=6 (run configuration and field references, read in the light env) |
-| `web` extra (optional) | `fastapi`, `uvicorn`, `python-multipart`, `httpx` (locked; python-multipart 0.0.32 added by task_0013): backend of the web interface (`det_depth_distance.web`), torch-free; the other three were already transitive via `infer` |
+| `web` extra (optional) | `fastapi`, `uvicorn`, `python-multipart`, `httpx`, `av` (locked; python-multipart 0.0.32 added by task_0013; `av` (PyAV 18.1) declared by task_0016 for the `.h264` remux, already transitive via `infer`): backend of the web interface (`det_depth_distance.web`), torch-free |
 | Web front-end (`web/`, not Python) | React 18.3.1, TypeScript 5.9, Vite 8, `yaml` 2 (raw-YAML field editor); tests with vitest 5 + Testing Library + jsdom; Node 24 LTS installed without sudo (README); `web/node_modules` and `web/dist` are not versioned |
 | `eval` extra (optional) | `matplotlib>=3.8` (locked 3.11.2): plots of `det-depth-distance-evaluate --plot` only; imported lazily |
 | `infer` extra (GPU hosts: `gpu-host`; optionally the laptop's 4 GB GPU in an isolated env, `UV_PROJECT_ENVIRONMENT=_testbed/venv-infer`) | torch 2.8.0 + torchvision 0.23.0 + xformers 0.0.32.post2 from the PyTorch cu128 index; `rfdetr` @ git 1f2af2ea; `depth-anything-3` @ git 3d835ec; `addict` (imported by depth-anything-3 but not declared by it); `ultralytics==8.4.175` (YOLO26 and the optional `ultralytics_sam` refiner; **AGPL-3.0** — acceptable for this internal research prototype, optional extra); `transformers>=5.1,<6` (locked 5.19.0; previously only transitive via rfdetr; SAM-family refiners and SegFormer); `timm>=1.0.17` (locked 1.0.30; only for EdgeTAM's TimmWrapper backbone) |
@@ -67,7 +67,7 @@ still pending.
 det-depth-distance/
 ├── pyproject.toml           # uv manifest; "infer" extra holds the GPU stack, "eval" extra matplotlib, "web" extra FastAPI; 4 console scripts; pytest "gpu" marker
 ├── uv.lock
-├── web/                     # front-end (Vite React TS): src/api (types, client), src/editor (yamlState store, Lanes, ModuleCard, Inspector, fieldControls, DiffView, registry), src/ui (Shell, theme.css); built to web/dist (not versioned)
+├── web/                     # front-end (Vite React TS): src/api (types, client, video), src/editor (yamlState store, Lanes, ModuleCard, Inspector, fieldControls, DiffView, registry), src/video (VideoDeck, DropZone, Player, SegmentBar, JobPanel, segment.ts, useVideoSession, useJobs, useProcess), src/runs (RunView), src/ui (Shell, route.ts, theme.css); built to web/dist (not versioned)
 ├── configs/                 # example run YAMLs: rfdetr_da3, yolo_o365_da3, multi_detector(_fused), *_seg_da3, rfdetr_sam2_da3, yolo_o365_sam2_da3, rfdetr_semantic_da3, rfdetr_lanes_scene_da3, rfdetr_da3_track, rfdetr_da3_calibrated, yolo_light_da3, rfdetr_da3_motion, rfdetr_sam2_lanes_motion_da3
 │   ├── labels/              # versioned label maps: coco_driving, objects365_driving
 │   └── references/          # example_references.yaml (fictitious field-reference template)
@@ -95,7 +95,7 @@ det-depth-distance/
 │   ├── calibration.py       # TargetSpec, CalibrationTarget (ChessboardTarget, CharucoTarget), detect_views, select_views, coverage, calibrate_views, focal_px_from_35mm
 │   ├── evaluation/          # references.py (ReferenceSet), run_data.py (RunData, load_run), matching.py, stats.py (ErrorStats, summarize), evaluate.py, report.py
 │   ├── tools/               # calibrate.py (det-depth-distance-calibrate), evaluate.py (det-depth-distance-evaluate)
-│   ├── web/                 # web backend (extra `web`, torch-free): paths.py (WebPaths, safe_join), stages.py (stage list from core.registry), schema.py (options_schema, module_catalog, validate_config), app.py (create_app), jobs.py (JobQueue), worker.py, history.py (scan_runs, load_run), gpu.py (free_memory_mib), server.py (det-depth-distance-web); app.py also serves web/dist at / with an SPA fallback
+│   ├── web/                 # web backend (extra `web`, torch-free): paths.py (WebPaths, safe_join), stages.py (stage list from core.registry), schema.py (options_schema, module_catalog, validate_config), app.py (create_app), jobs.py (JobQueue), worker.py, history.py (scan_runs, load_run), gpu.py (free_memory_mib), library.py (Library, VideoRecord, probe, .h264 remux, background preview), uploads.py (streaming multipart reader), server.py (det-depth-distance-web); app.py also serves web/dist at / with an SPA fallback
 │   ├── config.py            # RunConfig + sections, load_config, config_from_mapping, apply_overrides (--set); registers the built-in pipeline stages
 │   ├── distance.py          # pure numpy: box -> map pixels -> robust stats -> distance
 │   ├── temporal.py          # pure numpy: SmoothingConfig, distance_sigma, white_accel_cov, KalmanFilter1D / EmaFilter / MedianFilter (FILTERS), TrackSmoother
@@ -314,6 +314,29 @@ writes `config.yaml`, `web_run.json` (`status`, `video_id`, `started_at`) and
 `output.out_root`, tolerating old folders. `cli.run(cfg, on_frame=None)` and
 `VideoSink(on_frame=...)` expose the composed frames.
 
+Video library and Process (task_0016): `GET /api/videos`, `GET
+/api/videos/roots`, `POST /api/videos` (multipart `file` + optional `meta`,
+streamed to disk by `web/uploads.py`, never held in memory), `POST
+/api/videos/import` (`{path}`: absolute, must resolve inside a `--data-root`,
+default `data`; 403 otherwise; referenced, not copied), `GET
+/api/videos/{id}` and `GET /api/videos/{id}/{file|preview|thumb}`.
+`web/library.py`: one folder per video under `--library-root` (default
+`_testbed/library`), id = first 12 hex of the sha256 (dedupe), probed with
+ffprobe (size after rotation, avg fps, duration) plus first/last-frame decode
+checks (non-video or truncated -> `InvalidVideo`, 422, nothing left behind:
+entries are assembled in `.incoming/` and renamed into place);
+`.h264` + `.meta.json` remuxed to VFR `.mkv` with the `SensorTimestamp`s
+(PyAV; ffmpeg CLI fallback at the mean rate); `preview.mp4` (H.264,
+longest side <= 1280, source timestamps) encoded in one background thread,
+`preview: null` until ready. `POST /api/runs` rejects (422) a `video_id` not
+in the library and fills a missing `source.video` from it. Front-end: a video
+deck above the editor (drop anywhere / browse / server path / library,
+player looping the segment, two-handle segment bar with start/length/stride
+and a live estimate at 2 fps, Process and Process entire video, a GPU
+confirmation below 4000 MiB free, a job panel with queue position, progress,
+live `preview.jpg`, cancel, failure log tail) and a minimal run view behind
+hash routes (`#/runs/<id>`) that a finished job opens.
+
 Front-end (task_0015, `web/`, English, dark theme only): a pipeline editor
 built entirely from `/api/catalog`. Lanes follow `stages` (non-general) in
 `order`, consecutive stages sharing a `group` merged into one lane; adapter stages show one card per spec and an "+ Add" menu of the
@@ -425,4 +448,4 @@ implementation. See `AGENTS.md` for the mandatory rules.
 - No fusion of masks across models (a fused instance keeps one member's mask) and no fusion of semantic maps (each segmenter keeps its own map); no FastSAM (not one-mask-per-box), no native `sam3` package (the SAM 3 tracker is used through `transformers`); no semantic CSV columns or video colour legend; no appearance-based (ReID) or ultralytics tracker, no 3D association (the tracker still matches by image IoU) and no per-track colour in the video. Motion: no IMM (one model per track), no learned trajectory predictor, no map/lane constraints and no visual ego-motion (only a CSV provider). Instance masks are never saved to disk (semantic labels are, on the depth-map grid, with `save_depth`).
 - No score calibration across detectors (fusion weights are fixed per detector); no new dependency for fusion (no `ensemble-boxes`, `torchvision.ops` or `scipy` in the core).
 - No interactive reference annotation tool (reference YAML is edited by hand), no per-frame intrinsics for stabilisation, no focal from the 35 mm equivalent, no `opencv-contrib`; no `pandas` in evaluation.
-- No CI, no Docker, no git remote; the web UI has no auth, no run/video views yet (task_0016/0017) and no light theme or translations.
+- No CI, no Docker, no git remote; the web UI has no auth, only a minimal run view (results/comparison are task_0017), no light theme or translations, no video deletion from the library and no resumable uploads.

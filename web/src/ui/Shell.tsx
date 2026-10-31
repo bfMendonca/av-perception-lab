@@ -1,5 +1,5 @@
-// App frame: navigation rail, top bar and the screen. Later views (video,
-// runs) plug into the rail and the top bar.
+// App frame: navigation rail, top bar and the screen. Views plug into the
+// rail (with an optional count badge, e.g. jobs in progress) and the top bar.
 import type { ReactNode } from "react";
 import { Icon } from "./icons";
 
@@ -10,6 +10,8 @@ export interface NavItem {
   active?: boolean;
   disabled?: boolean;
   hint?: string;
+  /** Small count on the icon (e.g. jobs in progress); hidden when undefined. */
+  badge?: number | string;
   onSelect?: () => void;
 }
 
@@ -51,7 +53,14 @@ export function Shell({ title, nav, status, actions, banners, children }: ShellP
             title={item.hint ?? item.label}
             onClick={item.onSelect}
           >
-            <Icon name={item.icon} size={19} />
+            <span className="rail__icon">
+              <Icon name={item.icon} size={19} />
+              {item.badge !== undefined ? (
+                <span className="rail__badge" aria-label={`${item.badge} in progress`}>
+                  {item.badge}
+                </span>
+              ) : null}
+            </span>
             <span>{item.label}</span>
           </button>
         ))}

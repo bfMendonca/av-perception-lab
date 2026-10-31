@@ -19,7 +19,7 @@ def main(argv: Sequence[str] | None = None) -> None:
         type=Path,
         action="append",
         default=[],
-        help="server folder videos may be imported from (repeatable)",
+        help="server folder videos may be imported from (repeatable; default: data)",
     )
     parser.add_argument(
         "--static-dir",
@@ -33,6 +33,7 @@ def main(argv: Sequence[str] | None = None) -> None:
 
     from det_depth_distance.web.app import create_app
 
-    paths = WebPaths(args.out_root, args.library_root, tuple(args.data_root))
+    data_roots = tuple(args.data_root) or (Path("data"),)
+    paths = WebPaths(args.out_root, args.library_root, data_roots)
     extra = {} if args.static_dir is None else {"static_dir": args.static_dir}
     uvicorn.run(create_app(paths, **extra), host=args.host, port=args.port)

@@ -2,6 +2,7 @@
 
 import dataclasses
 import json
+import shutil
 import sys
 from collections.abc import AsyncIterator, Callable
 from contextlib import asynccontextmanager
@@ -9,13 +10,21 @@ from pathlib import Path, PurePosixPath
 from typing import Any
 
 import yaml
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from pydantic import BaseModel
+from starlette.concurrency import run_in_threadpool
+from starlette.requests import ClientDisconnect
 
 from det_depth_distance import config
-from det_depth_distance.web import gpu, history, schema
+from det_depth_distance.web import gpu, history, schema, uploads
 from det_depth_distance.web.jobs import Job, JobQueue, valid_video_id
+from det_depth_distance.web.library import (
+    InvalidVideo,
+    Library,
+    OutsideRoots,
+    VideoRecord,
+)
 from det_depth_distance.web.paths import WebPaths, safe_join
 
 # Built front-end (`cd web && npm run build`); not committed, served when present.
@@ -40,6 +49,13 @@ class RunBody(BaseModel):
     video_id: str | None = None
 
 
+class ImportBody(BaseModel):
+    path: str
+
+
+VIDEO_FILES = ("file", "preview", "thumb")
+
+
 def default_worker_argv(config_path: Path) -> list[str]:
     """Command line of the worker subprocess for a config file."""
     return [sys.executable, "-m", "det_depth_distance.web.worker", str(config_path)]
@@ -56,7 +72,7 @@ def create_app(
     worker_argv: Callable[[Path], list[str]] = default_worker_argv,
     static_dir: Path = DEFAULT_STATIC_DIR,
 ) -> FastAPI:
-    """Build the application: catalog, config, runs, jobs and history.
+    """Build the application: catalog, config, videos, runs, jobs and history.
 
     `worker_argv` builds the worker command line (tests inject a fake).
     `static_dir` is the built front-end, served at `/` (any path outside
@@ -64,21 +80,30 @@ def create_app(
     up per request, so a build made after start-up is picked up.
     """
     jobs = JobQueue(paths, worker_argv)
+    library = Library(paths.library_root, paths.data_roots)
 
     @asynccontextmanager
     async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
         yield
         await jobs.aclose()  # kills a running worker
+        library.close()  # and a running preview encode
 
     app = FastAPI(title="det-depth-distance", lifespan=lifespan)
     app.state.paths = paths
     app.state.jobs = jobs
+    app.state.library = library
 
     def job_or_404(job_id: str) -> Job:
         try:
             return jobs.get(job_id)
         except KeyError:
             raise HTTPException(404, f"unknown job {job_id!r}") from None
+
+    def video_or_404(video_id: str) -> VideoRecord:
+        try:
+            return library.get(video_id)
+        except KeyError:
+            raise HTTPException(404, f"unknown video {video_id!r}") from None
 
     def run_folder_or_404(run_id: str) -> Path:
         try:
@@ -113,14 +138,103 @@ def create_app(
         merged = {**body.config, **body.extras}
         return {"yaml": yaml.safe_dump(merged, sort_keys=False, allow_unicode=True)}
 
+    @app.get("/api/videos")
+    def list_videos() -> list[dict[str, Any]]:
+        return [r.to_dict() for r in library.list()]
+
+    @app.get("/api/videos/roots")
+    def video_roots() -> dict[str, list[str]]:
+        return {"roots": [str(r) for r in library.allowed_roots()]}
+
+    @app.post("/api/videos")
+    async def upload_video(request: Request) -> dict[str, Any]:
+        # Streamed to the library's disk part by part (uploads.receive_files);
+        # whatever is left in the staging folder is removed in any case.
+        stage = await run_in_threadpool(library.staging_dir)
+        try:
+            try:
+                parts = await uploads.receive_files(
+                    request.headers.get("content-type", ""),
+                    request.stream(),
+                    stage,
+                    ("file", "meta"),
+                )
+            except uploads.UploadError as exc:
+                raise HTTPException(400, str(exc)) from None
+            except ClientDisconnect:
+                raise HTTPException(400, "the client disconnected") from None
+            if "file" not in parts:
+                raise HTTPException(400, "the upload has no `file` part")
+            video, meta = parts["file"], parts.get("meta")
+            try:
+                record = await run_in_threadpool(
+                    library.add_staged,
+                    stage,
+                    video.path,
+                    video.filename,
+                    video.sha256,
+                    meta.path if meta else None,
+                )
+            except InvalidVideo as exc:
+                raise HTTPException(422, str(exc)) from None
+            return record.to_dict()
+        finally:
+            await run_in_threadpool(shutil.rmtree, stage, True)
+
+    @app.post("/api/videos/import")
+    def import_video(body: ImportBody) -> dict[str, Any]:
+        try:
+            return library.add_from_path(Path(body.path)).to_dict()
+        except OutsideRoots as exc:
+            raise HTTPException(403, str(exc)) from None
+        except FileNotFoundError as exc:
+            raise HTTPException(404, str(exc)) from None
+        except InvalidVideo as exc:
+            raise HTTPException(422, str(exc)) from None
+
+    @app.get("/api/videos/{video_id}")
+    def get_video(video_id: str) -> dict[str, Any]:
+        return video_or_404(video_id).to_dict()
+
+    @app.get("/api/videos/{video_id}/{name}")
+    def video_file(video_id: str, name: str) -> FileResponse:
+        record = video_or_404(video_id)
+        if name not in VIDEO_FILES:
+            raise HTTPException(404, f"unknown video file {name!r}")
+        files = {"file": record.original, "preview": record.preview}
+        path = files.get(name, record.thumb)
+        if path is None:
+            raise HTTPException(404, "the preview is not ready")
+        if not path.is_file():
+            raise HTTPException(404, f"{name} not available")
+        return FileResponse(path)
+
     @app.post("/api/runs", response_model=None)
     async def start_run(body: RunBody) -> Any:
-        errors = schema.validate_config(body.config)
-        if body.video_id is not None and not valid_video_id(body.video_id):
-            errors.append({"path": "video_id", "message": "invalid video id"})
+        config = body.config
+        errors: list[dict[str, str]] = []
+        if body.video_id is not None:
+            try:
+                if not valid_video_id(body.video_id):
+                    raise KeyError(body.video_id)
+                record = library.get(body.video_id)
+            except KeyError:
+                errors.append({"path": "video_id", "message": "unknown video id"})
+            else:
+                # The front-end sends source.video itself; a config without
+                # one runs the library video.
+                source = config.get("source")
+                if source is None or (
+                    isinstance(source, dict) and not source.get("video")
+                ):
+                    config = {
+                        **config,
+                        "source": {**(source or {}), "video": str(record.original)},
+                    }
+        errors += schema.validate_config(config)
         if errors:
             return JSONResponse({"errors": errors}, status_code=422)
-        job = jobs.submit(body.config, body.video_id)
+        job = jobs.submit(config, body.video_id)
         return {"job_id": job.id}
 
     @app.get("/api/jobs/{job_id}")

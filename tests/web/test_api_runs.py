@@ -72,8 +72,12 @@ def test_start_past_end_surfaces_readable_error(web_paths):
     )
 
 
-def test_run_lifecycle_history_and_files(api, web_paths):
-    job_id = api.post("/api/runs", json={"config": VALID, "video_id": "abc"}).json()[
+def test_run_lifecycle_history_and_files(api, web_paths, video_factory):
+    clip = video_factory("v.mp4")
+    video_id = api.post(
+        "/api/videos", files={"file": ("v.mp4", clip.read_bytes(), "video/mp4")}
+    ).json()["id"]
+    job_id = api.post("/api/runs", json={"config": VALID, "video_id": video_id}).json()[
         "job_id"
     ]
     events = events_of(api, job_id)

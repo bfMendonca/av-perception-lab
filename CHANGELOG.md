@@ -4,6 +4,36 @@ Todas as mudancas relevantes do det-depth-distance serao documentadas neste arqu
 
 ---
 
+## [2026-10-31] Biblioteca de videos, trecho e processamento na interface web
+
+Quarta entrega da interface web (task_0016): o botao Process passa a rodar
+o trecho escolhido de um video enviado ou importado.
+
+### Novo
+
+- **Biblioteca de videos** (`web/library.py`): envio multipart gravado em
+  disco por blocos, importacao de caminho do servidor so dentro de
+  `--data-root` (padrao `data`), deduplicacao por sha256, metadados por
+  ffprobe, miniatura, recusa de arquivo que nao e video ou truncado sem deixar
+  nada, conversao de `.h264` + `.meta.json` para `.mkv` VFR com os
+  `SensorTimestamp` e previa MP4 em segundo plano.
+- **Rotas** `/api/videos`, `/api/videos/roots`, `/api/videos/import`,
+  `/api/videos/{id}` e `/api/videos/{id}/{file|preview|thumb}`.
+- **Painel de video** acima do editor: soltar em qualquer ponto da pagina,
+  player imediato, barra de trecho com duas alcas, stride e estimativa ao
+  vivo, Process e Process entire video, confirmacao com pouca memoria de GPU,
+  painel de jobs (fila, progresso, quadro ao vivo, Cancel, cauda do log) e
+  vista minima da execucao em `#/runs/<id>`.
+
+### Alterado
+
+- `POST /api/runs` recusa `video_id` fora da biblioteca e preenche
+  `source.video` ausente com o original do video.
+- `det-depth-distance-web --data-root` passa a ter padrao `data`.
+- `av` (PyAV) declarado no extra `web`.
+
+---
+
 ## [2026-10-31] Editor visual de pipeline da interface web
 
 Terceira entrega da interface web (task_0015): o front-end em `web/` (React +

@@ -37,6 +37,7 @@
 - [Avaliação contra referências](#avaliação-contra-referências)
 - [Interface web (API de esquema e validação)](#interface-web-api-de-esquema-e-validação)
 - [Interface web: front-end e editor de pipeline](#interface-web-front-end-e-editor-de-pipeline)
+- [Interface web: vídeos, trecho e processamento](#interface-web-vídeos-trecho-e-processamento)
 - [Pesos dos refinadores e do SegFormer](#pesos-dos-refinadores-e-do-segformer)
 - [Saídas](#saídas)
 - [Como a distância é calculada](#como-a-distância-é-calculada)
@@ -162,7 +163,7 @@ det-depth-distance/
 │   ├── io/                  # video.py (ffmpeg), source.py (VideoSource, FrameTransform), sinks.py (CSV, vídeo, npz, métricas), quicktime.py (metadados de câmera do MOV)
 │   ├── evaluation/          # references, run_data, matching, stats, evaluate, report: erro contra referências de campo
 │   ├── tools/               # CLIs auxiliares: calibrate.py, evaluate.py
-│   ├── web/                 # backend da interface web (extra `web`, sem torch): catálogo de módulos, esquema de opções, validação do YAML, fila de execuções, worker e histórico; serve o build do front-end
+│   ├── web/                 # backend da interface web (extra `web`, sem torch): catálogo de módulos, esquema de opções, validação do YAML, fila de execuções, worker, histórico e biblioteca de vídeos; serve o build do front-end
 │   ├── camera.py            # provedores de intrínsecos (fixa, estimada, calibrada), Calibration, Undistorter, build_camera
 │   ├── calibration.py       # alvos (tabuleiro, ChArUco), detecção de vistas, ajuste com rejeição de vistas atípicas
 │   ├── config.py            # RunConfig, load_config, --set; registra os estágios do pipeline
@@ -905,13 +906,56 @@ O editor:
   primeira vez, avisa que comentários e ordem das chaves se perdem. O painel
   **Changes** mostra o diff contra o último YAML aberto ou salvo. O rascunho
   fica no `localStorage` do navegador entre recarregamentos.
-- **Process** fica desabilitado até a `task_0016`.
+- **Process** roda o trecho escolhido no painel de vídeo (próxima seção).
 
 À prova de futuro: nada em `web/src` nomeia estágio, modelo ou campo; um
 estágio novo vira uma pista genérica, um tipo de campo novo cai no editor
 YAML e um `catalog_version` maior que o suportado mostra só um aviso. Telas
 próprias entram por `registerStageView(yamlKey, view)` e
 `registerFieldControl(match, control)` (`web/src/editor/registry.ts`).
+
+### Interface web: vídeos, trecho e processamento
+
+A `task_0016` liga o **Process**. Acima do editor fica o painel de vídeo:
+
+- **Entrada**: solte um vídeo em qualquer ponto da página (ou "Choose
+  video"); MP4/MOV/MKV tocam na hora. Um `.h264` da Raspberry Pi vai junto
+  com o seu `.meta.json` (arraste os dois) e é convertido para `.mkv` de
+  taxa variável com os `SensorTimestamp` (mesmo algoritmo de
+  `data/s000032/remux_vfr.py`; com PyAV, extra `web`, os timestamps são
+  idênticos aos do script). Também dá para colar um caminho do servidor —
+  só dentro das pastas `--data-root` (padrão `data`; o arquivo é
+  referenciado, não copiado; `../`, symlink para fora e caminho relativo dão
+  403) — ou escolher um vídeo já na biblioteca.
+- **Biblioteca** em `--library-root` (padrão `_testbed/library`): uma pasta
+  por vídeo com id = 12 hex do sha256 (reenvio não duplica), `record.json`,
+  original, `thumb.jpg` e `preview.mp4` (H.264 que o navegador toca, gerado em
+  segundo plano com `nice`; o registro mostra `preview: null` até ficar
+  pronto). O envio é gravado em disco por blocos (nunca em memória), montado
+  em `.incoming/` e só entra na biblioteca completo: arquivo que não é vídeo
+  ou truncado dá 422 sem deixar nada.
+- **Trecho**: barra com duas alças (arrastar alça ou o trecho, setas do
+  teclado; Shift = ×10), cabeça de reprodução, campos Start/Length/Stride,
+  botões In/Out na posição do player e estimativa ao vivo
+  ("65 frames · ~33 s at 2 fps"). O player repete o trecho.
+- **Process** (barra superior ou painel) envia `POST /api/runs` com o YAML do
+  editor mais `source.video` (caminho do original no servidor),
+  `source.start`, `source.duration`, `source.stride`, `output.tag` único e
+  `video_id`; **Process entire video** usa `start = 0` e `duration = 0`. Com
+  menos de 4000 MiB livres na GPU (`GET /api/gpu`) pede confirmação. Vários
+  cliques entram na fila.
+- **Jobs**: posição na fila, progresso (quadros / esperados), último quadro
+  anotado (`preview.jpg`, atualizado pelos eventos SSE `frame`), Cancel; ao
+  terminar abre a execução em `#/runs/<id>` (vista mínima com o vídeo
+  anotado e os arquivos; a `task_0017` traz resultados e comparação); em
+  falha mostra o erro (ex.: "no frames decoded … is source.start past the
+  end of the video?") e a cauda do log.
+
+Rotas: `GET /api/videos`, `GET /api/videos/roots`, `POST /api/videos`
+(multipart: `file` e, para `.h264`, `meta`), `POST /api/videos/import`
+(`{path}`), `GET /api/videos/{id}` e `GET /api/videos/{id}/{file|preview|thumb}`
+(com `Range`). `POST /api/runs` recusa (422) um `video_id` que não está na
+biblioteca e, sem `source.video` no YAML, usa o original do vídeo.
 
 ### Pesos dos refinadores e do SegFormer
 

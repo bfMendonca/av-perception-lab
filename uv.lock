@@ -384,6 +384,7 @@ infer = [
     { name = "xformers" },
 ]
 web = [
+    { name = "av" },
     { name = "fastapi" },
     { name = "httpx" },
     { name = "python-multipart" },
@@ -399,6 +400,7 @@ dev = [
 [package.metadata]
 requires-dist = [
     { name = "addict", marker = "extra == 'infer'", specifier = ">=2.4.0" },
+    { name = "av", marker = "extra == 'web'" },
     { name = "depth-anything-3", marker = "extra == 'infer'", git = "https://github.com/ByteDance-Seed/Depth-Anything-3?rev=3d835ec1a5802d64a8b8b15f817a1ab54809bfe4" },
     { name = "fastapi", marker = "extra == 'web'" },
     { name = "httpx", marker = "extra == 'web'" },

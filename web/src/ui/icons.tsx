@@ -18,6 +18,12 @@ const PATHS: Record<string, string> = {
   info: "M12 11v5M12 8v.01M12 21a9 9 0 100-18 9 9 0 000 18z",
   spark: "M12 3v4M12 17v4M3 12h4M17 12h4M6 6l2.5 2.5M15.5 15.5L18 18M6 18l2.5-2.5M15.5 8.5L18 6",
   file: "M14 3H7a2 2 0 00-2 2v14a2 2 0 002 2h10a2 2 0 002-2V8zM14 3v5h5",
+  film: "M4 5h16v14H4zM8 5v14M16 5v14M4 9h4M4 15h4M16 9h4M16 15h4",
+  "chevron-down": "M6 9l6 6 6-6",
+  "chevron-up": "M6 15l6-6 6 6",
+  stop: "M7 7h10v10H7z",
+  "mark-in": "M8 5v14M8 12h10M14 8l4 4-4 4",
+  "mark-out": "M16 5v14M16 12H6M10 8l-4 4 4 4",
   diff: "M6 3v12M6 15a3 3 0 100 6 3 3 0 000-6zM18 21V9M18 9a3 3 0 100-6 3 3 0 000 6zM6 9l12 0",
 };
 

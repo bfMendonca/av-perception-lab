@@ -35,6 +35,7 @@ web = [
     "uvicorn",
     "python-multipart",
     "httpx",  # TestClient
+    "av",  # .h264 + meta.json remux with sensor timestamps (library)
 ]
 
 [project.scripts]

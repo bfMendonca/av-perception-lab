@@ -1,14 +1,23 @@
 // Composition root of the UI: loads the catalog, wires the editor store to the
-// shell (open/save YAML, validation status, banners) and the editor screen.
+// shell (open/save YAML, validation status, banners), the video deck (library,
+// segment, Process, jobs) and the screens (editor, runs) behind hash routes.
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { ApiClient } from "./api/client";
 import type { Catalog, ValidationError } from "./api/types";
+import { createVideoApi, type VideoApi } from "./api/video";
 import { SUPPORTED_CATALOG_VERSION, stageByKey } from "./editor/catalog";
 import { EditorView } from "./editor/EditorView";
 import { createEditorStore, EditorProvider, useEditor, type Draft, type EditorStore, type Selection } from "./editor/yamlState";
 import { Dialog } from "./ui/Dialog";
 import { Icon } from "./ui/icons";
+import { useHashRoute } from "./ui/route";
 import { Shell } from "./ui/Shell";
+import { RunView } from "./runs/RunView";
+import { classifyFiles, isRawH264, type DroppedFiles } from "./video/DropZone";
+import { useJobs } from "./video/useJobs";
+import { useProcess } from "./video/useProcess";
+import { useVideoSession } from "./video/useVideoSession";
+import { VideoDeck } from "./video/VideoDeck";
 
 const DRAFT_KEY = "ddd.editor.draft.v1";
 const SAVE_WARNING_KEY = "ddd.editor.saveWarningSeen";
@@ -32,6 +41,8 @@ function storageSet(key: string, value: string | null) {
 
 export interface AppProps {
   client: ApiClient;
+  /** Video library, runs and GPU routes (default: the HTTP client). */
+  videoApi?: VideoApi;
   store?: EditorStore;
   /** Keep the working pipeline in localStorage across reloads (off in tests). */
   persistDraft?: boolean;
@@ -39,8 +50,9 @@ export interface AppProps {
 
 type CatalogState = { status: "loading" } | { status: "error"; message: string } | { status: "ready"; catalog: Catalog };
 
-export function App({ client, store: given, persistDraft = false }: AppProps) {
+export function App({ client, videoApi, store: given, persistDraft = false }: AppProps) {
   const [store] = useState(() => given ?? createEditorStore(client));
+  const [video] = useState(() => videoApi ?? createVideoApi());
   const [catalog, setCatalog] = useState<CatalogState>({ status: "loading" });
   const [attempt, setAttempt] = useState(0);
 
@@ -85,13 +97,17 @@ export function App({ client, store: given, persistDraft = false }: AppProps) {
 
   return (
     <EditorProvider store={store}>
-      <Studio client={client} catalog={catalog} onRetry={() => setAttempt((n) => n + 1)} />
+      <Studio client={client} video={video} remember={persistDraft} catalog={catalog} onRetry={() => setAttempt((n) => n + 1)} />
     </EditorProvider>
   );
 }
 
-function Studio({ client, catalog, onRetry }: { client: ApiClient; catalog: CatalogState; onRetry: () => void }) {
+function Studio({ client, video, remember, catalog, onRetry }: { client: ApiClient; video: VideoApi; remember: boolean; catalog: CatalogState; onRetry: () => void }) {
   const editor = useEditor();
+  const [route, navigate] = useHashRoute();
+  const session = useVideoSession(video, { remember });
+  const jobs = useJobs(video, { onDone: (runId) => navigate({ view: "runs", runId }) });
+  const process = useProcess(video, session, jobs, editor);
   const fileInput = useRef<HTMLInputElement>(null);
   const [saveDialog, setSaveDialog] = useState(false);
   const [saving, setSaving] = useState(false);
@@ -160,6 +176,18 @@ function Studio({ client, catalog, onRetry }: { client: ApiClient; catalog: Cata
     return () => clearTimeout(t);
   }, [notice, dismissNotice]);
 
+  const addVideo = useCallback(
+    (files: DroppedFiles) => {
+      if (!files.video) return;
+      if (isRawH264(files.video.name) && !files.meta) {
+        editor.notify({ tone: "warn", text: `${files.video.name} is a raw H.264 stream: drop it together with its .meta.json (sensor timestamps).` });
+        return;
+      }
+      void session.uploadFile(files.video, files.meta);
+    },
+    [editor, session],
+  );
+
   const ready = catalog.status === "ready";
   const newer = ready && catalog.catalog.catalog_version > SUPPORTED_CATALOG_VERSION;
 
@@ -201,15 +229,26 @@ function Studio({ client, catalog, onRetry }: { client: ApiClient; catalog: Cata
       onDrop={(e) => {
         e.preventDefault();
         setDragging(false);
-        const file = e.dataTransfer.files[0];
-        if (file && ready) void openFile(file);
+        const files = classifyFiles(Array.from(e.dataTransfer.files));
+        if (files.video) {
+          if (route.view !== "editor") navigate({ view: "editor" });
+          addVideo(files);
+        } else if (files.yaml && ready) void openFile(files.yaml);
+        else if (e.dataTransfer.files.length) editor.notify({ tone: "warn", text: "Drop a video (MP4, MOV, MKV, .h264 with its .meta.json) or a pipeline YAML." });
       }}
     >
       <Shell
-        title="Pipeline editor"
+        title={route.view === "runs" ? "Runs" : "Pipeline editor"}
         nav={[
-          { id: "editor", label: "Editor", icon: "layers", active: true },
-          { id: "runs", label: "Runs", icon: "history", disabled: true, hint: "Runs and comparison: coming soon" },
+          { id: "editor", label: "Editor", icon: "layers", active: route.view === "editor", onSelect: () => navigate({ view: "editor" }) },
+          {
+            id: "runs",
+            label: "Runs",
+            icon: "history",
+            active: route.view === "runs",
+            badge: jobs.jobs.filter((j) => j.status === "queued" || j.status === "running").length || undefined,
+            onSelect: () => navigate({ view: "runs", runId: route.view === "runs" ? route.runId : null }),
+          },
         ]}
         status={ready ? <StatusChips /> : null}
         actions={
@@ -232,36 +271,57 @@ function Studio({ client, catalog, onRetry }: { client: ApiClient; catalog: Cata
             <button type="button" className="btn" disabled={!editor.loaded || saving} onClick={requestSave} title="Save YAML (Ctrl+S)">
               <Icon name="save" size={15} /> {saving ? "Saving…" : "Save YAML"}
             </button>
-            <button type="button" className="btn btn--primary" disabled title="Processing a video segment arrives with the video panel">
+            <button
+              type="button"
+              className="btn btn--primary"
+              disabled={Boolean(process.blocked) || process.busy}
+              title={process.blocked ?? "Process the selected segment"}
+              onClick={() => void process.process(false)}
+            >
               <Icon name="play" size={14} /> Process
             </button>
           </>
         }
         banners={banners}
       >
-        {catalog.status === "loading" ? <LoadingCanvas /> : null}
-        {catalog.status === "error" ? (
-          <div className="state-panel" role="alert">
-            <Icon name="alert" size={28} />
-            <h2>Could not reach the server</h2>
-            <p>
-              The catalog request failed: <code>{catalog.message}</code>
-            </p>
-            <button type="button" className="btn btn--primary" onClick={onRetry}>
-              Retry
-            </button>
+        {route.view === "runs" ? (
+          <RunView api={video} runId={route.runId} onSelect={(runId) => navigate({ view: "runs", runId })} />
+        ) : (
+          <div className="workspace">
+            <VideoDeck
+              session={session}
+              jobs={jobs}
+              process={process}
+              previewUrl={(runId) => video.runFileUrl(runId, "preview")}
+              onFiles={addVideo}
+              onOpenRun={(runId) => navigate({ view: "runs", runId })}
+            />
+            {catalog.status === "loading" ? <LoadingCanvas /> : null}
+            {catalog.status === "error" ? (
+              <div className="state-panel" role="alert">
+                <Icon name="alert" size={28} />
+                <h2>Could not reach the server</h2>
+                <p>
+                  The catalog request failed: <code>{catalog.message}</code>
+                </p>
+                <button type="button" className="btn btn--primary" onClick={onRetry}>
+                  Retry
+                </button>
+              </div>
+            ) : null}
+            {ready ? <EditorView onOpen={() => fileInput.current?.click()} /> : null}
           </div>
-        ) : null}
-        {ready ? <EditorView onOpen={() => fileInput.current?.click()} /> : null}
+        )}
       </Shell>
       {dragging ? (
         <div className="dropzone" aria-hidden="true">
           <div>
-            <Icon name="file" size={28} />
-            <p>Drop a YAML file to open it</p>
+            <Icon name="film" size={28} />
+            <p>Drop a video to load it, or a pipeline YAML to open it</p>
           </div>
         </div>
       ) : null}
+      {process.dialog}
       <Dialog
         open={saveDialog}
         title="Save as regenerated YAML"
