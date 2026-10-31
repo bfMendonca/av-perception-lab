@@ -130,5 +130,25 @@ def test_validate_does_not_mutate_input(recommended_yaml):
 
 
 def test_server_imports_without_torch():
-    code = "import det_depth_distance.web.app, sys; assert 'torch' not in sys.modules"
+    code = (
+        "import sys\n"
+        "import det_depth_distance.web.app as app\n"
+        "from det_depth_distance.web import schema\n"
+        "assert schema.module_catalog()['modules']['detector']\n"
+        "cfg = {'detectors': [{'type': 'rfdetr'}], 'depth': {'type': 'da3'}}\n"
+        "assert schema.validate_config(cfg) == [], schema.validate_config(cfg)\n"
+        "assert schema.validate_config({'detectors': [{'type': 'x'}]})\n"
+        "assert 'torch' not in sys.modules\n"
+    )
     subprocess.run([sys.executable, "-I", "-c", code], check=True)
+
+
+def test_distance_section_includes_lifted_run_config_fields():
+    catalog = schema.module_catalog()
+    sch = catalog["sections"]["distance"]["schema"]
+    assert _field(sch, "box_shrink")["type"] == "float"
+    assert _field(sch, "exclude_sky")["type"] == "bool"
+    region = _field(sch, "region")
+    assert region["type"] == "enum" and "mask" in region["choices"]
+    assert _field(sch, "exclude_semantic")["type"] == "any"
+    assert [f["name"] for f in sch["fields"]].count("region") == 1

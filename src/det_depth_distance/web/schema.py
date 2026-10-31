@@ -112,6 +112,19 @@ def options_schema(cls: type) -> dict[str, Any]:
     return {"fields": out}
 
 
+def _section_schema(stage: registry.Stage) -> dict[str, Any]:
+    """Schema of a config section: its dataclass fields plus the fields the
+    stage declares as written under it but stored in another dataclass."""
+    fields = options_schema(stage.config_cls)["fields"]
+    if stage.lifted_from is not None:
+        fields += [
+            f
+            for f in options_schema(stage.lifted_from)["fields"]
+            if f["name"] in stage.lifted
+        ]
+    return {"fields": fields}
+
+
 def module_catalog() -> dict[str, Any]:
     """Everything the UI needs to render any pipeline: stages, the options of
     every registered adapter by family, and the options of the config sections."""
@@ -127,7 +140,7 @@ def module_catalog() -> dict[str, Any]:
         for kind, classes in registry.available().items()
     }
     sections = {
-        s.yaml_key: {"schema": options_schema(s.config_cls)}
+        s.yaml_key: {"schema": _section_schema(s)}
         for s in registry.stages()
         if s.config_cls is not None
     }

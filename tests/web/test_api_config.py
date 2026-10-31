@@ -55,6 +55,23 @@ def test_dump_roundtrips_through_load_config(client, recommended_yaml, tmp_path)
     assert load_config(out) == load_config(original)
 
 
+def test_lifted_distance_keys_round_trip(client, recommended_yaml):
+    data = yaml.safe_load(recommended_yaml)
+    data["distance"] = {
+        **(data.get("distance") or {}),
+        "exclude_sky": False,
+        "region": "box",
+        "exclude_semantic": [],
+    }
+    r = client.post("/api/config/validate", json={"config": data})
+    assert r.json() == {"errors": []}
+    text = client.post("/api/config/dump", json={"config": data}).json()["yaml"]
+    parsed = client.post("/api/config/parse", json={"yaml": text}).json()
+    assert parsed["config"]["distance"]["region"] == "box"
+    assert parsed["config"]["distance"]["exclude_sky"] is False
+    assert parsed["extras"] == {}
+
+
 def test_safe_join_rejects_traversal(tmp_path):
     root = tmp_path / "root"
     root.mkdir()

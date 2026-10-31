@@ -467,6 +467,8 @@ for _stage in (
         order=120,
         config_cls=DistanceConfig,
         general=True,
+        lifted_from=RunConfig,
+        lifted=PIPELINE_DISTANCE_KEYS,
     ),
     Stage(
         yaml_key="agreement",

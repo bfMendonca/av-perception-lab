@@ -81,6 +81,11 @@ class Stage:
     multiple: bool = False  # a list of specs instead of one
     optional: bool = False  # the stage can be absent (null)
     general: bool = False  # shown in "General settings", not in the lane
+    # Fields of `lifted_from` (a dataclass) written under this section in the
+    # YAML but stored elsewhere (e.g. RunConfig fields set in `distance`);
+    # UIs merge them into the section's form.
+    lifted_from: type | None = None
+    lifted: tuple[str, ...] = ()
 
 
 _STAGES: dict[str, Stage] = {}
