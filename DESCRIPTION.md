@@ -78,6 +78,7 @@ det-depth-distance/
 │   │   ├── components.py    # LoadContext, Component (+ requirements(options) hook), DetectorOptions, Detector, DepthEstimator, RefinerOptions, MaskRefiner, SemanticSegmenter, TrackerOptions, Tracker (ABCs)
 │   │   ├── registry.py      # @register, build, available, load_adapters (ADAPTER_MODULES)
 │   │   ├── requirements.py  # Requirements (assets, CodeRepo, packages), registered Asset kinds (HuggingFaceAsset, UrlAsset, UserProvided; present(root)), weights_root, ModelStatus, check() (torch-free)
+│   │   ├── provision/       # provisioning engine (framework-free): engine.py (Source protocol, register_source, ProvisionError/ProvisionCancelled, prepare(req, root, progress, cancel) -> ModelStatus), sources.py (built-in sources: Hugging Face snapshot_download (lazy import), URL via urllib (.part, Range resume, sha256, atomic rename), git clone + pinned checkout, UserProvided never downloads)
 │   │   ├── labels.py        # Vocabulary, COCO / OBJECTS365 presets, identify_vocabulary, resolve_classes, LabelMap, SEMANTIC_NAME_PATTERN, group_semantic_labels
 │   │   ├── boxes.py         # numpy box geometry: iou_matrix, label_groups, greedy_match, nms_clusters, wbf_clusters
 │   │   ├── aggregate.py     # Aggregator (bind_sources hook), Concat, FusionOptions, FusionAggregator, Nms, Wbf
@@ -102,7 +103,7 @@ det-depth-distance/
 │   ├── temporal.py          # pure numpy: SmoothingConfig, distance_sigma, white_accel_cov, KalmanFilter1D / EmaFilter / MedianFilter (FILTERS), TrackSmoother
 │   ├── render.py            # PIL boxes/labels/HUD (colour by class or source), predicted trajectories, top-view (BEV) inset, depth panel + legend
 │   ├── runtime.py           # DeviceMonitor (torch, lazy), package versions, git commit
-│   ├── cli.py               # --config/--set/--list-models; composition root
+│   ├── cli.py               # --config/--set/--list-models/--prepare; composition root
 │   └── __main__.py          # python -m det_depth_distance
 ├── tests/                   # pytest without GPU; tests/smoke/ (auto-marked "smoke", end-to-end); tests/gpu/ (auto-marked "gpu") runs on gpu-host
 ├── utils/sync_gpu_host.sh    # rsync push code / pull outputs with the GPU host
@@ -283,7 +284,11 @@ None. Local CLI tool; no users, sessions or network services.
 
 The pipeline has no network API; its interface is the CLI `det-depth-distance` /
 `python -m det_depth_distance --config run.yaml [VIDEO] [--set key=value]...`
-and `--list-models`, plus two auxiliary console scripts:
+and `--list-models`; `--config run.yaml --prepare` builds the components
+(nothing loaded, the video is not probed), downloads their declared weights and
+pinned code under the weights root (`DDD_WEIGHTS_ROOT`, default `weights/`),
+prints a status table and exits 0 only when every component is ready (1
+otherwise, 2 for configuration errors). Plus two auxiliary console scripts:
 `det-depth-distance-calibrate calibrate|board|inspect` and
 `det-depth-distance-evaluate --refs REFS.yaml RUN [RUN ...]`. The YAML schema (sections source, detectors, depth,
 camera, aggregation, refiners, semantic, tracking, smoothing, agreement, distance, render, output, device) is documented in the

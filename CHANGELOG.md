@@ -4,6 +4,29 @@ Todas as mudancas relevantes do det-depth-distance serao documentadas neste arqu
 
 ---
 
+## [2026-10-31] Provisioning engine and `--prepare`
+
+Obtain what a model declares (task_0020). Adapters declare nothing yet
+(`task_0021`), so every model is reported ready for now.
+
+### Added
+
+- `core/provision/`: framework-free engine `prepare(req, root, progress,
+  cancel) -> ModelStatus` (no-op when ready; failures end as `failed` with a
+  readable reason; cancel through a `threading.Event`) and a source registry
+  (`register_source`, duplicate kinds raise `ValueError`).
+- Built-in sources: Hugging Face (`snapshot_download` into the `weights/hf`
+  cache layout with `allow_patterns`, lazy import; gated, offline and 404
+  messages), URL (`urllib`, `<target>.part`, `Range` resume or clean restart,
+  size/sha256 check that deletes a bad `.part`, atomic rename), git (clone +
+  pinned checkout under `weights/_code/<name>`; an existing clone is moved to
+  the pin, never deleted) and user-provided ("provide this file", never
+  downloads). Every write path is confined to the weights root.
+- CLI flag `--prepare`: prepares every component of the YAML, prints a status
+  table, exit code 0 only when all are ready.
+
+---
+
 ## [2026-10-31] Model requirements declaration and torch-free status check
 
 Foundation of the "model readiness" work (task_0019); no behaviour change yet.

@@ -342,6 +342,7 @@ uv run --extra infer python -m det_depth_distance --config configs/rfdetr_da3.ya
 uv run --extra infer python -m det_depth_distance --config configs/multi_detector.yaml \
     _testbed/data/IMG_4022.MOV --set source.max_frames=300 --set render.show_stats=true
 uv run --extra infer python -m det_depth_distance --list-models
+uv run --extra infer python -m det_depth_distance --config configs/rfdetr_da3.yaml --prepare
 ```
 
 | Argumento | Efeito |
@@ -350,6 +351,7 @@ uv run --extra infer python -m det_depth_distance --list-models
 | `VIDEO` (opcional) | Sobrescreve `source.video` |
 | `--set chave=valor` | Repetível; caminho pontilhado com índice de lista (`detectors.0.threshold=0.3`); valor lido como YAML (`null`, `true`, números); um valor-mapa ou lista substitui a seção inteira (`--set 'aggregation={type: concat}'`) |
 | `--list-models` | Lista detectores, modelos de profundidade, agregadores, rastreadores, refinadores de máscara, segmentadores semânticos, modelos de movimento (`motion`) e provedores de ego-motion (`ego_motion`) registrados com suas opções e padrões |
+| `--prepare` | Downloads the weights and pinned code every configured model declares (under `DDD_WEIGHTS_ROOT`, default `weights/`; nothing is loaded and the video is not probed), prints a status table and exits: 0 only when every model is ready, 1 otherwise (the reason is listed: offline, HTTP 404, gated licence + `HF_TOKEN`, sha256 mismatch, "provide this file"). Downloads go to `<file>.part` and are renamed when verified; running it again resumes or is a no-op. Python packages are reported, not installed |
 
 Ferramentas auxiliares (ambiente leve, sem GPU; ver
 [Calibração da câmera](#calibração-da-câmera) e
@@ -1171,5 +1173,6 @@ Variáveis opcionais: `SYNC_HOST` (padrão `gpu-host`) e `SYNC_DEST` (padrão
 - [x] **Smoke test ponta a ponta** (`task_0008`) — smoke local sem GPU (cena sintética, dublês, matriz de configurações em pares, calibrar → rodar → avaliar), smoke `gpu` com os modelos reais e `utils/gpu_pending.sh` com todas as pendências de GPU em ordem. Execução no servidor GPU pendente.
 - [x] **Movimento por trilha e previsão de trajetória** (`task_0009`) — estágio `motion`: posição no plano, velocidade, rumo e taxa de giro com incertezas, modelos por classe (`cv`, `ctrv`), trajetória prevista com covariância no vídeo, no painel BEV e em `trajectories.jsonl`, ego-motion opcional por CSV. Validado no servidor GPU (`-m gpu` e passo `20-motion` do `gpu_pending.sh`); conferência visual dos vídeos pendente.
 - [x] **Model requirements and status check** (`task_0019`) — `core/requirements.py` declares what a model needs (weights, pinned code clones, packages) and `check()` reports readiness without importing torch; the provisioning engine, adapter migration and UI follow in `task_0020`–`task_0025`. New documentation is written in English.
+- [x] **Provisioning engine and `--prepare`** (`task_0020`) — `core/provision/` obtains a model's declared weights and code with registered sources (Hugging Face, URL with resume and sha256, pinned git clone; a new source kind is one class + `register_source`; Google Drive not yet), atomically, cancellably and idempotently; `det-depth-distance --config X.yaml --prepare` prepares every model of a YAML. Adapters declare their requirements in `task_0021`.
 - [ ] **Ego-motion pelo vídeo** (`task_0011`, futura) — odometria visual RGB-D com a profundidade do DA3 no fundo estático (ou só o *yaw* pela homografia do fundo distante) como provedor `ego_motion`.
 - [x] **Configuração leve** (`task_0010`) — `yolo_light_da3.yaml` para GPU de 4 GB (YOLO26s-seg, DA3METRIC-L, rastreamento, TwinLiteNet+ small, SegFormer-B0). Medição de VRAM no notebook pendente.

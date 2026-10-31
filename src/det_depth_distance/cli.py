@@ -4,7 +4,10 @@ Composition root: builds every component from the YAML (no model loaded
 yet, so configuration errors exit with code 2 in seconds), probes the video,
 composes the camera (calibration, lens check, undistortion: camera.build_camera),
 then runs source -> pipeline -> sinks. `--list-models` prints the registered adapters
-and their options. torch is imported only through runtime.DeviceMonitor.
+and their options. `--prepare` builds the components, obtains their declared
+requirements (weights, pinned code) under the weights root, prints a status
+table and exits (0 only when every component is ready). torch is imported
+only through runtime.DeviceMonitor.
 
 Writes <output.out_root>/<timestamp>_<video>_<detectors>_<depth>[_tag]/ with
 video.mp4, detections.csv, metrics.json, trajectories.jsonl (with motion)
@@ -14,10 +17,12 @@ and optionally depth.npz (see io.sinks).
 import argparse
 import dataclasses
 import sys
+import threading
 import time
 from collections.abc import Callable, Sequence
 from contextlib import ExitStack
 from pathlib import Path
+from typing import Any
 
 import numpy as np
 
@@ -26,6 +31,8 @@ from det_depth_distance.config import RunConfig, load_config
 from det_depth_distance.core import registry
 from det_depth_distance.core.options import ConfigError
 from det_depth_distance.core.pipeline import Pipeline
+from det_depth_distance.core.provision import prepare
+from det_depth_distance.core.requirements import ModelStatus, weights_root
 from det_depth_distance.io.sinks import (
     CsvSink,
     MetricsSink,
@@ -66,6 +73,13 @@ def build_parser() -> argparse.ArgumentParser:
         help="list the registered detectors, depth models, aggregators, trackers, "
         "mask refiners, semantic segmenters, motion models and ego-motion "
         "providers with their options",
+    )
+    p.add_argument(
+        "--prepare",
+        action="store_true",
+        help="download the weights and code every configured model needs "
+        "(under DDD_WEIGHTS_ROOT, default weights/), print their status and exit; "
+        "exit code 0 only when all are ready",
     )
     return p
 
@@ -207,6 +221,95 @@ def run(
     return run_dir
 
 
+def config_components(cfg: RunConfig) -> list[tuple[str, Any]]:
+    """`(path, component)` of every Component the config declares (options
+    validated, nothing loaded); raises ConfigError like `run`."""
+    found: list[tuple[str, Any]] = [
+        (f"detectors[{i}]", registry.build("detector", spec, path=f"detectors[{i}]"))
+        for i, spec in enumerate(cfg.detectors)
+    ]
+    found.append(("depth", registry.build("depth", cfg.depth, path="depth")))
+    found += [
+        (f"refiners[{i}]", registry.build("refiner", spec, path=f"refiners[{i}]"))
+        for i, spec in enumerate(cfg.refiners)
+    ]
+    found += [
+        (f"semantic[{i}]", registry.build("semantic", spec, path=f"semantic[{i}]"))
+        for i, spec in enumerate(cfg.semantic)
+    ]
+    if cfg.tracking is not None:
+        found.append(
+            ("tracking", registry.build("tracker", cfg.tracking, path="tracking"))
+        )
+    return found
+
+
+def _progress_printer(min_interval_s: float = 1.0):
+    """progress(label, done, total) printing at most once per second per item."""
+    last: dict[str, float] = {}
+
+    def show(label: str, done: int, total: int | None) -> None:
+        now = time.monotonic()
+        final = total is not None and done >= total
+        if label in last and not final and now - last[label] < min_interval_s:
+            return
+        last[label] = now
+        mb = done / 1e6
+        size = f"{mb:.1f}/{total / 1e6:.1f} MB" if total else f"{mb:.1f} MB"
+        print(f"  [prepare] {label}: {size}", flush=True)
+
+    return show
+
+
+def prepare_command(cfg: RunConfig, root: Path | None = None) -> int:
+    """`--prepare`: prepare every component of `cfg` and print a status table.
+
+    Returns 0 when every component is ready, 1 otherwise.
+    """
+    root = weights_root() if root is None else root
+    cancel = threading.Event()
+    rows: list[tuple[str, str, ModelStatus | str]] = []
+    for path, component in config_components(cfg):
+        label = f"{path} {component.name}"
+        try:
+            req = type(component).requirements(component.options)
+        except ValueError as exc:  # unsafe declaration (UnsafePathError)
+            rows.append((label, component.type_name, f"failed: {exc}"))
+            continue
+        print(f"[prepare] {label} ({component.type_name})", flush=True)
+        status = prepare(req, root, _progress_printer(), cancel)
+        rows.append((label, component.type_name, status))
+    print(f"\nweights root: {root}")
+    header = ("component", "type", "state", "assets", "code", "packages")
+    table = [header]
+    notes = []
+    for label, type_name, status in rows:
+        if isinstance(status, str):
+            table.append((label, type_name, "failed", "-", "-", "-"))
+            notes.append(f"{label}: {status}")
+            continue
+        layers = status.layers
+        table.append(
+            (
+                label,
+                type_name,
+                status.state,
+                layers.get("assets", "-"),
+                layers.get("code", "-"),
+                layers.get("packages", "-"),
+            )
+        )
+        if status.message:
+            notes.append(f"{label}: {status.message}")
+    widths = [max(len(r[i]) for r in table) for i in range(len(header))]
+    for row in table:
+        print("  ".join(c.ljust(w) for c, w in zip(row, widths, strict=True)).rstrip())
+    for note in notes:
+        print(f"  - {note}")
+    ready = all(not isinstance(s, str) and s.state == "ready" for _, _, s in rows)
+    return 0 if ready else 1
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     """Console entry point (`det-depth-distance`, `python -m det_depth_distance`)."""
     parser = build_parser()
@@ -217,7 +320,10 @@ def main(argv: Sequence[str] | None = None) -> int:
     if args.config is None:
         parser.error("--config is required (or use --list-models)")
     try:
-        run(load_config(args.config, args.overrides, args.video))
+        cfg = load_config(args.config, args.overrides, args.video)
+        if args.prepare:
+            return prepare_command(cfg)
+        run(cfg)
     # User/configuration errors only; bugs keep their traceback.
     except ConfigError as exc:
         print(f"error: {exc}", file=sys.stderr)

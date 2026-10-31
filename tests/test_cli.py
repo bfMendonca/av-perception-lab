@@ -169,3 +169,110 @@ def test_run_calls_on_frame_per_frame(tmp_path, monkeypatch):
     assert [i for i, _, _ in seen] == list(range(SCENE.n_frames))
     assert {(s, d) for _, s, d in seen} == {((180, 320, 3), np.dtype("uint8"))}
     assert (run_dir / "video.mp4").is_file()
+
+
+# --------------------------------------------------------------- --prepare (task_0020)
+
+
+def _prepare_config(tmp_path, detector_type: str):
+    path = tmp_path / "prep.yaml"
+    path.write_text(
+        yaml.safe_dump(
+            {
+                # The video is never probed by --prepare: it does not exist.
+                "source": {"video": str(tmp_path / "absent.mov")},
+                "detectors": [{"type": detector_type, "name": "fake"}],
+                "depth": {"type": "da3"},
+            }
+        )
+    )
+    return path
+
+
+def _fake_detector(asset):
+    from det_depth_distance.core.components import Detector, DetectorOptions
+    from det_depth_distance.core.requirements import Requirements
+
+    class _NeedsWeights(Detector):
+        Options = DetectorOptions
+
+        @classmethod
+        def requirements(cls, options):
+            return Requirements(assets=(asset,))
+
+        @property
+        def class_names(self):
+            return ["car"]
+
+        def _load(self, ctx):
+            raise AssertionError("a model was loaded by --prepare")
+
+        def _predict(self, rgb):
+            raise AssertionError("unreachable")
+
+    _NeedsWeights.type_name = "needs_weights"
+    return _NeedsWeights
+
+
+def test_cli_prepare_exit_code_and_table(tmp_path, monkeypatch, capsys):
+    from det_depth_distance.core import registry
+    from det_depth_distance.core.provision import sources
+    from det_depth_distance.core.requirements import UrlAsset
+
+    def no_models(*args, **kwargs):
+        raise AssertionError("a model was about to be loaded")
+
+    monkeypatch.setattr(cli.Pipeline, "load", no_models)
+    monkeypatch.setattr(cli, "run", no_models)
+    root = tmp_path / "weights"
+    monkeypatch.setenv("DDD_WEIGHTS_ROOT", str(root))
+    registry.load_adapters()
+    asset = UrlAsset(
+        key="ckpt", target="fake/ckpt.bin", url="https://example.invalid/c"
+    )
+    monkeypatch.setitem(
+        registry._REGISTRY["detector"], "needs_weights", _fake_detector(asset)
+    )
+    cfg = _prepare_config(tmp_path, "needs_weights")
+
+    # Offline download: failed, exit code 1, readable reason in the table notes.
+    def offline(*args, **kwargs):
+        raise sources.urllib.error.URLError("no network")
+
+    monkeypatch.setattr(sources.urllib.request, "urlopen", offline)
+    assert main(["--config", str(cfg), "--prepare"]) == 1
+    out = capsys.readouterr().out
+    assert "[prepare] detectors[0] fake (needs_weights)" in out
+    assert "component" in out and "packages" in out
+    table = {line.split()[0]: line.split() for line in out.splitlines() if line}
+    assert table["detectors[0]"][2:4] == ["needs_weights", "failed"]
+    assert table["depth"][2:4] == ["da3", "ready"]  # declares nothing yet
+    assert "offline or unreachable" in out
+
+    # Once the file is there every component is ready: exit code 0, no download.
+    (root / "fake").mkdir(parents=True, exist_ok=True)
+    (root / "fake/ckpt.bin").write_bytes(b"x")
+    assert main(["--config", str(cfg), "--prepare"]) == 0
+    out = capsys.readouterr().out
+    assert f"weights root: {root}" in out
+    table = {line.split()[0]: line.split() for line in out.splitlines() if line}
+    assert table["detectors[0]"][2:6] == ["needs_weights", "ready", "ready", "ready"]
+
+
+def test_cli_prepare_config_errors_exit_with_code_2(tmp_path, capsys):
+    cfg = _prepare_config(tmp_path, "no_such_detector")
+    assert main(["--config", str(cfg), "--prepare"]) == 2
+    assert "unknown detector 'no_such_detector'" in capsys.readouterr().err
+
+
+def test_cli_existing_invocations_unchanged(tmp_path, config, monkeypatch):
+    args = build_parser().parse_args(["--config", "run.yaml"])
+    assert args.prepare is False
+    calls = []
+    monkeypatch.setattr(cli, "run", lambda cfg: calls.append(cfg))
+    monkeypatch.setattr(
+        cli, "prepare_command", lambda cfg: pytest.fail("prepare without --prepare")
+    )
+    assert main(["--config", str(config)]) == 0
+    assert len(calls) == 1 and calls[0].depth["type"] == "da3"
+    assert main(["--list-models"]) == 0
