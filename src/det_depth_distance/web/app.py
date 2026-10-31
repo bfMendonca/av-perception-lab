@@ -17,7 +17,7 @@ from starlette.concurrency import run_in_threadpool
 from starlette.requests import ClientDisconnect
 
 from det_depth_distance import config
-from det_depth_distance.web import gpu, history, schema, uploads
+from det_depth_distance.web import compare, gpu, history, schema, uploads
 from det_depth_distance.web.jobs import Job, JobQueue, valid_video_id
 from det_depth_distance.web.library import (
     InvalidVideo,
@@ -104,6 +104,18 @@ def create_app(
             return library.get(video_id)
         except KeyError:
             raise HTTPException(404, f"unknown video {video_id!r}") from None
+
+    def results(compute: Callable[[], Any], *run_ids: str) -> Any:
+        """Run a web.compare call; unknown, invalid (traversal) and file-less
+        (`job-<id>`) runs are a readable 404, never a 500."""
+        try:
+            return compute()
+        except compare.NoRunFiles as exc:
+            raise HTTPException(404, str(exc)) from None
+        except (ValueError, FileNotFoundError):
+            raise HTTPException(
+                404, f"unknown run {' or '.join(repr(r) for r in run_ids)}"
+            ) from None
 
     def run_folder_or_404(run_id: str) -> Path:
         try:
@@ -214,15 +226,15 @@ def create_app(
             raise HTTPException(404, f"{name} not available")
         return FileResponse(path)
 
-    @app.post("/api/runs", response_model=None)
-    async def start_run(body: RunBody) -> Any:
-        config = body.config
+    def submit_run(config: dict[str, Any], video_id: str | None) -> Any:
+        """Validate and queue a run (`POST /api/runs` and rerun): 422 with
+        `errors` when the config or the video id is invalid."""
         errors: list[dict[str, str]] = []
-        if body.video_id is not None:
+        if video_id is not None:
             try:
-                if not valid_video_id(body.video_id):
-                    raise KeyError(body.video_id)
-                record = library.get(body.video_id)
+                if not valid_video_id(video_id):
+                    raise KeyError(video_id)
+                record = library.get(video_id)
             except KeyError:
                 errors.append({"path": "video_id", "message": "unknown video id"})
             else:
@@ -242,8 +254,12 @@ def create_app(
         errors += schema.validate_config(config)
         if errors:
             return JSONResponse({"errors": errors}, status_code=422)
-        job = jobs.submit(config, body.video_id)
+        job = jobs.submit(config, video_id)
         return {"job_id": job.id}
+
+    @app.post("/api/runs", response_model=None)
+    async def start_run(body: RunBody) -> Any:
+        return submit_run(body.config, body.video_id)
 
     @app.get("/api/jobs/{job_id}")
     async def get_job(job_id: str) -> dict[str, Any]:
@@ -280,6 +296,82 @@ def create_app(
             return history.load_run(paths.out_root, run_id).to_dict()
         except (ValueError, FileNotFoundError):
             raise HTTPException(404, f"unknown run {run_id!r}") from None
+
+    # Results and comparison (web.compare). Declared before the
+    # /api/runs/{run_id}/{name} file route, which would match their names.
+    @app.get("/api/compare")
+    def compare_runs(a: str, b: str) -> dict[str, Any]:
+        return results(lambda: compare.compare_runs(paths.out_root, a, b), a, b)
+
+    @app.get("/api/runs/{run_id}/summary")
+    def run_summary(run_id: str) -> dict[str, Any]:
+        summary = results(lambda: compare.run_summary(paths.out_root, run_id), run_id)
+        return {"summary": summary, "metrics": list(compare.SUMMARY_METRICS)}
+
+    @app.get("/api/runs/{run_id}/series")
+    def run_series(run_id: str, track: int | None = None) -> dict[str, Any]:
+        return results(
+            lambda: compare.distance_series(paths.out_root, run_id, track), run_id
+        )
+
+    @app.get("/api/runs/{run_id}/artifacts")
+    def run_artifacts(run_id: str) -> list[dict[str, Any]]:
+        return results(lambda: compare.list_artifacts(paths.out_root, run_id), run_id)
+
+    @app.get("/api/runs/{run_id}/files/{rel:path}")
+    def run_artifact(run_id: str, rel: str) -> FileResponse:
+        path = results(
+            lambda: compare.artifact_path(paths.out_root, run_id, rel), run_id
+        )
+        return FileResponse(path, media_type=compare.media_type(path.name))
+
+    def recorded_config(run_id: str) -> tuple[dict[str, Any], str]:
+        found = results(
+            lambda: compare.effective_config(paths.out_root, run_id), run_id
+        )
+        if found is None:
+            raise HTTPException(404, f"run {run_id} recorded no configuration")
+        return found
+
+    @app.post("/api/runs/{run_id}/reopen")
+    def reopen_run(run_id: str) -> dict[str, Any]:
+        config, origin = recorded_config(run_id)
+        known = _known_keys()
+        stem = run_id if not run_id.startswith("job-") else f"{run_id}_config"
+        return {
+            "config": {k: v for k, v in config.items() if k in known},
+            "extras": {k: v for k, v in config.items() if k not in known},
+            "origin": origin,
+            "file_name": f"{stem}.yaml",
+        }
+
+    @app.post("/api/runs/{run_id}/rerun", response_model=None)
+    async def rerun(run_id: str) -> Any:
+        config, _origin = recorded_config(run_id)
+        record = results(lambda: history.load_run(paths.out_root, run_id), run_id)
+        config = {k: v for k, v in config.items() if k in _known_keys()}
+        if record.video_id is not None:
+            return submit_run(config, record.video_id)
+        # Not a library video: rerun its source.video only from an import
+        # folder (the same rule as importing a server path).
+        source = config.get("source")
+        video = source.get("video") if isinstance(source, dict) else None
+        if not isinstance(video, str) or not video:
+            raise HTTPException(409, f"run {run_id} recorded no source video")
+        real = (Path.cwd() / video).resolve()
+        roots = library.allowed_roots()
+        if not any(real == r or real.is_relative_to(r) for r in roots):
+            raise HTTPException(
+                409,
+                f"{Path(video).name} is not in the video library nor in an import "
+                "folder: import it (or start the server with --data-root on its "
+                "folder) and process it from the editor",
+            )
+        if not real.is_file():
+            raise HTTPException(
+                409, f"{Path(video).name} no longer exists on the server"
+            )
+        return submit_run(config, None)
 
     @app.get("/api/runs/{run_id}/{name}")
     def run_file(run_id: str, name: str) -> FileResponse:

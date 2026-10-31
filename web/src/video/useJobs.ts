@@ -125,9 +125,10 @@ export function useJobs(api: VideoApi, options: JobsOptions = {}) {
     [api, finish, onEvent],
   );
 
-  const submit = useCallback(
-    async (config: ConfigDict, videoId: string | undefined, meta: { label: string; expected: number }) => {
-      const id = await api.submitRun(config, videoId);
+  /** Follow a job queued elsewhere (e.g. a rerun from the runs view). */
+  const track = useCallback(
+    (id: string, meta: { label: string; expected: number }) => {
+      if (jobsRef.current.some((j) => j.id === id)) return;
       const job: SessionJob = {
         id,
         label: meta.label,
@@ -143,9 +144,17 @@ export function useJobs(api: VideoApi, options: JobsOptions = {}) {
       };
       setJobs((list) => [job, ...list]);
       subscribe(id);
+    },
+    [subscribe],
+  );
+
+  const submit = useCallback(
+    async (config: ConfigDict, videoId: string | undefined, meta: { label: string; expected: number }) => {
+      const id = await api.submitRun(config, videoId);
+      track(id, meta);
       return id;
     },
-    [api, subscribe],
+    [api, track],
   );
 
   const cancel = useCallback(
@@ -187,7 +196,7 @@ export function useJobs(api: VideoApi, options: JobsOptions = {}) {
     };
   }, []);
 
-  return { jobs, submit, cancel, dismiss };
+  return { jobs, submit, track, cancel, dismiss };
 }
 
 export type Jobs = ReturnType<typeof useJobs>;

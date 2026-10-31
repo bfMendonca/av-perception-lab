@@ -56,6 +56,10 @@ export interface RunRecord {
   complete: boolean;
   has_config: boolean;
   error: string | null;
+  /** Library video the run processed (null for CLI runs). */
+  video_id?: string | null;
+  /** Last log lines of a failed job without a run folder. */
+  log_tail?: string[];
   [key: string]: unknown;
 }
 

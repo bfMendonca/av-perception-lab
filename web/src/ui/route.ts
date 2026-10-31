@@ -1,26 +1,32 @@
-// Hash routes (`#/runs/<run id>`): run folder names can contain dots, and a
-// path route whose last segment has one 404s on a hard reload.
+// Hash routes (`#/runs/<run id>`, `#/runs/<run id>/vs/<run id>`): run folder
+// names can contain dots, and a path route whose last segment has one 404s
+// on a hard reload. Ids are always URI-encoded, so they never contain "/".
 import { useCallback, useEffect, useState } from "react";
 
-export type Route = { view: "editor" } | { view: "runs"; runId: string | null };
+export type Route = { view: "editor" } | { view: "runs"; runId: string | null; compareId?: string | null };
+
+function decode(part: string | undefined): string | null {
+  if (!part) return null;
+  try {
+    return decodeURIComponent(part);
+  } catch {
+    return null;
+  }
+}
 
 export function parseHash(hash: string): Route {
   const parts = hash.replace(/^#\/?/, "").split("/");
   if (parts[0] !== "runs") return { view: "editor" };
-  let runId: string | null = null;
-  if (parts[1]) {
-    try {
-      runId = decodeURIComponent(parts.slice(1).join("/"));
-    } catch {
-      runId = null;
-    }
-  }
-  return { view: "runs", runId };
+  const runId = decode(parts[1]);
+  const compareId = runId && parts[2] === "vs" ? decode(parts[3]) : null;
+  return { view: "runs", runId, compareId };
 }
 
 export function routeHash(route: Route): string {
   if (route.view === "editor") return "#/";
-  return route.runId ? `#/runs/${encodeURIComponent(route.runId)}` : "#/runs";
+  if (!route.runId) return "#/runs";
+  const base = `#/runs/${encodeURIComponent(route.runId)}`;
+  return route.compareId ? `${base}/vs/${encodeURIComponent(route.compareId)}` : base;
 }
 
 export function useHashRoute(): [Route, (route: Route) => void] {

@@ -4,6 +4,39 @@ Todas as mudancas relevantes do det-depth-distance serao documentadas neste arqu
 
 ---
 
+## [2026-10-31] Historico e comparacao de execucoes na interface web
+
+Quinta e ultima entrega da interface web (task_0017): resultados de cada
+execucao e comparacao de duas.
+
+### Novo
+
+- **`web/compare.py`**: resumo por execucao (mediana da distancia, jitter
+  bruto e suavizado por trilha, vazao, quadros, caixas, trilhas), serie de
+  distancia por trilha reduzida a <= 1500 pontos com o tempo no video
+  anotado, diff plano do YAML efetivo, comparacao com deltas e lista dos
+  artefatos da pasta; pastas antigas sem metrics.json/config.yaml/colunas
+  novas sao toleradas.
+- **Rotas** `GET /api/compare`, `GET /api/runs/{id}/{summary,series,artifacts}`,
+  `GET /api/runs/{id}/files/{caminho}`, `GET /api/runs/{id}/metrics`,
+  `POST /api/runs/{id}/reopen` e `POST /api/runs/{id}/rerun`.
+- **Tela Runs & comparison**: historico filtravel, video anotado, cartoes de
+  indicadores com delta assinado (melhora/piora), diff do YAML, grafico de
+  distancia (B sobre A, bruta em cinza; clique salta o video), artefatos
+  descobertos com registro de visoes (`registerArtifactView`), arvore
+  generica do metrics.json, Reopen in editor e Rerun; rota
+  `#/runs/<id>/vs/<id>`.
+
+### Alterado
+
+- `evaluation.run_data.read_columns` extraido de `load_run` (mesmo leitor do
+  CSV para a avaliacao e a web).
+- `RunRecord` ganha `video_id` e `log_tail`; `has_config` tambem conta o
+  `config` do metrics.json.
+- `POST /api/runs` e o rerun compartilham a mesma validacao.
+
+---
+
 ## [2026-10-31] Biblioteca de videos, trecho e processamento na interface web
 
 Quarta entrega da interface web (task_0016): o botao Process passa a rodar

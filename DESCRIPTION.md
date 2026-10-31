@@ -67,7 +67,7 @@ still pending.
 det-depth-distance/
 ├── pyproject.toml           # uv manifest; "infer" extra holds the GPU stack, "eval" extra matplotlib, "web" extra FastAPI; 4 console scripts; pytest "gpu" marker
 ├── uv.lock
-├── web/                     # front-end (Vite React TS): src/api (types, client, video), src/editor (yamlState store, Lanes, ModuleCard, Inspector, fieldControls, DiffView, registry), src/video (VideoDeck, DropZone, Player, SegmentBar, JobPanel, segment.ts, useVideoSession, useJobs, useProcess), src/runs (RunView), src/ui (Shell, route.ts, theme.css); built to web/dist (not versioned)
+├── web/                     # front-end (Vite React TS): src/api (types, client, video), src/editor (yamlState store, Lanes, ModuleCard, Inspector, fieldControls, DiffView, registry), src/video (VideoDeck, DropZone, Player, SegmentBar, JobPanel, segment.ts, useVideoSession, useJobs, useProcess), src/api/runs.ts, src/runs (RunsView, RunList, RunDetail, CompareView (KpiCards, ConfigDiff), DistanceChart, JsonTree, Artifacts, artifactViews registry, format.ts), src/ui (Shell, route.ts, theme.css); built to web/dist (not versioned)
 ├── configs/                 # example run YAMLs: rfdetr_da3, yolo_o365_da3, multi_detector(_fused), *_seg_da3, rfdetr_sam2_da3, yolo_o365_sam2_da3, rfdetr_semantic_da3, rfdetr_lanes_scene_da3, rfdetr_da3_track, rfdetr_da3_calibrated, yolo_light_da3, rfdetr_da3_motion, rfdetr_sam2_lanes_motion_da3
 │   ├── labels/              # versioned label maps: coco_driving, objects365_driving
 │   └── references/          # example_references.yaml (fictitious field-reference template)
@@ -95,7 +95,7 @@ det-depth-distance/
 │   ├── calibration.py       # TargetSpec, CalibrationTarget (ChessboardTarget, CharucoTarget), detect_views, select_views, coverage, calibrate_views, focal_px_from_35mm
 │   ├── evaluation/          # references.py (ReferenceSet), run_data.py (RunData, load_run), matching.py, stats.py (ErrorStats, summarize), evaluate.py, report.py
 │   ├── tools/               # calibrate.py (det-depth-distance-calibrate), evaluate.py (det-depth-distance-evaluate)
-│   ├── web/                 # web backend (extra `web`, torch-free): paths.py (WebPaths, safe_join), stages.py (stage list from core.registry), schema.py (options_schema, module_catalog, validate_config), app.py (create_app), jobs.py (JobQueue), worker.py, history.py (scan_runs, load_run), gpu.py (free_memory_mib), library.py (Library, VideoRecord, probe, .h264 remux, background preview), uploads.py (streaming multipart reader), server.py (det-depth-distance-web); app.py also serves web/dist at / with an SPA fallback
+│   ├── web/                 # web backend (extra `web`, torch-free): paths.py (WebPaths, safe_join), stages.py (stage list from core.registry), schema.py (options_schema, module_catalog, validate_config), app.py (create_app), jobs.py (JobQueue), worker.py, history.py (scan_runs, load_run, job_data), compare.py (run_summary, distance_series, config_diff, compare_runs, list_artifacts, effective_config), gpu.py (free_memory_mib), library.py (Library, VideoRecord, probe, .h264 remux, background preview), uploads.py (streaming multipart reader), server.py (det-depth-distance-web); app.py also serves web/dist at / with an SPA fallback
 │   ├── config.py            # RunConfig + sections, load_config, config_from_mapping, apply_overrides (--set); registers the built-in pipeline stages
 │   ├── distance.py          # pure numpy: box -> map pixels -> robust stats -> distance
 │   ├── temporal.py          # pure numpy: SmoothingConfig, distance_sigma, white_accel_cov, KalmanFilter1D / EmaFilter / MedianFilter (FILTERS), TrackSmoother
@@ -338,8 +338,43 @@ deck above the editor (drop anywhere / browse / server path / library,
 player looping the segment, two-handle segment bar with start/length/stride
 and a live estimate at 2 fps, Process and Process entire video, a GPU
 confirmation below 4000 MiB free, a job panel with queue position, progress,
-live `preview.jpg`, cancel, failure log tail) and a minimal run view behind
-hash routes (`#/runs/<id>`) that a finished job opens.
+live `preview.jpg`, cancel, failure log tail) and the runs view (below) that a finished job opens.
+
+Results and comparison (task_0017, `web/compare.py`): `GET
+/api/runs/{id}/summary` (`{summary, metrics}`), `GET /api/compare?a=ID&b=ID`
+(`{a, b, metrics, summary_a, summary_b, deltas: {key: {abs, rel}} (b - a, only
+metrics both runs have), config_diff: [{path, a, b, change, server_set}] |
+null, config_origin}`), `GET /api/runs/{id}/series?track=N` (`{track, found,
+tracks: [{id, rows, t0, t1, class_name}], t, raw, smoothed|null, video_t,
+points, downsampled}`; default track = the longest; min/max decimation to
+<= 1500 points; `video_t` = (frame - round(start*fps))/fps, the time in
+`video.mp4`), `GET /api/runs/{id}/artifacts` (every file of the run folder:
+`{name, size, media_type, modified, role, url}`, hidden/temporary files left
+out) and `GET /api/runs/{id}/files/{path}`, `GET /api/runs/{id}/metrics`,
+`POST /api/runs/{id}/reopen` (`{config, extras, origin, file_name}` from
+`config.yaml`, else the `config` recorded in metrics.json, else the job
+record) and `POST /api/runs/{id}/rerun` (`{job_id}`: same config, same
+`video_id`; without one, `source.video` only inside a `--data-root`, else
+409). Summary (`SUMMARY_METRICS`, each with label, unit and `better`
+lower|higher|null): median distance, jitter (median over tracks of the
+median |Δ distance_m| between consecutive processed frames), smoothed
+jitter (same on `distance_smooth_m`), throughput (`end_to_end_fps`), frames,
+boxes, tracks; detections.csv is read by `evaluation.run_data.read_columns`
+(columns frame, t, track_id, distance_m, distance_smooth_m, class_name;
+cached per file version); missing files/columns give null plus `notes`.
+`job-<id>` entries answer 404 "has no files" on every file route.
+`RunRecord` gained `video_id` and `log_tail`; `has_config` also counts the
+config in metrics.json. Front-end runs view (`#/runs/<id>/vs/<id>`, ids
+URI-encoded): filterable history (selected run in teal, comparison in
+violet, per-entry compare button), annotated video, KPI cards with signed
+deltas coloured good/bad by `better`, configuration diff (server-set
+`output.tag`/`out_root` hidden behind a toggle), SVG distance chart (this
+run smoothed over raw in grey, the comparison run dashed; hover readout,
+keyboard cursor, click/Enter seeks the video, playhead follows it), the
+discovered artifacts with inline views from `registerArtifactView(match,
+view)` (built-ins: JSON tree, image, MP4) and `metrics.json` as a generic
+collapsible tree; Reopen in editor and Rerun (the job joins the job
+panel).
 
 Front-end (task_0015, `web/`, English, dark theme only): a pipeline editor
 built entirely from `/api/catalog`. Lanes follow `stages` (non-general) in
@@ -452,4 +487,4 @@ implementation. See `AGENTS.md` for the mandatory rules.
 - No fusion of masks across models (a fused instance keeps one member's mask) and no fusion of semantic maps (each segmenter keeps its own map); no FastSAM (not one-mask-per-box), no native `sam3` package (the SAM 3 tracker is used through `transformers`); no semantic CSV columns or video colour legend; no appearance-based (ReID) or ultralytics tracker, no 3D association (the tracker still matches by image IoU) and no per-track colour in the video. Motion: no IMM (one model per track), no learned trajectory predictor, no map/lane constraints and no visual ego-motion (only a CSV provider). Instance masks are never saved to disk (semantic labels are, on the depth-map grid, with `save_depth`).
 - No score calibration across detectors (fusion weights are fixed per detector); no new dependency for fusion (no `ensemble-boxes`, `torchvision.ops` or `scipy` in the core).
 - No interactive reference annotation tool (reference YAML is edited by hand), no per-frame intrinsics for stabilisation, no focal from the 35 mm equivalent, no `opencv-contrib`; no `pandas` in evaluation.
-- No CI, no Docker, no git remote; the web UI has no auth, only a minimal run view (results/comparison are task_0017), no light theme or translations, no video deletion from the library and no resumable uploads.
+- No CI, no Docker, no git remote; the web UI has no auth, no run deletion, no cross-run track matching (comparisons pair equal track ids), no light theme or translations, no video deletion from the library and no resumable uploads.

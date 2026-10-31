@@ -12,7 +12,9 @@ import { Dialog } from "./ui/Dialog";
 import { Icon } from "./ui/icons";
 import { useHashRoute } from "./ui/route";
 import { Shell } from "./ui/Shell";
-import { RunView } from "./runs/RunView";
+import { RunsView } from "./runs/RunsView";
+import { createRunsApi, type RunsApi } from "./api/runs";
+import type { RunRecord } from "./api/video";
 import { classifyFiles, isRawH264, type DroppedFiles } from "./video/DropZone";
 import { useJobs } from "./video/useJobs";
 import { useProcess } from "./video/useProcess";
@@ -43,6 +45,8 @@ export interface AppProps {
   client: ApiClient;
   /** Video library, runs and GPU routes (default: the HTTP client). */
   videoApi?: VideoApi;
+  /** Results, comparison, reopen and rerun routes (default: the HTTP client). */
+  runsApi?: RunsApi;
   store?: EditorStore;
   /** Keep the working pipeline in localStorage across reloads (off in tests). */
   persistDraft?: boolean;
@@ -50,9 +54,10 @@ export interface AppProps {
 
 type CatalogState = { status: "loading" } | { status: "error"; message: string } | { status: "ready"; catalog: Catalog };
 
-export function App({ client, videoApi, store: given, persistDraft = false }: AppProps) {
+export function App({ client, videoApi, runsApi, store: given, persistDraft = false }: AppProps) {
   const [store] = useState(() => given ?? createEditorStore(client));
   const [video] = useState(() => videoApi ?? createVideoApi());
+  const [runs] = useState(() => runsApi ?? createRunsApi());
   const [catalog, setCatalog] = useState<CatalogState>({ status: "loading" });
   const [attempt, setAttempt] = useState(0);
 
@@ -97,12 +102,12 @@ export function App({ client, videoApi, store: given, persistDraft = false }: Ap
 
   return (
     <EditorProvider store={store}>
-      <Studio client={client} video={video} remember={persistDraft} catalog={catalog} onRetry={() => setAttempt((n) => n + 1)} />
+      <Studio client={client} video={video} runs={runs} remember={persistDraft} catalog={catalog} onRetry={() => setAttempt((n) => n + 1)} />
     </EditorProvider>
   );
 }
 
-function Studio({ client, video, remember, catalog, onRetry }: { client: ApiClient; video: VideoApi; remember: boolean; catalog: CatalogState; onRetry: () => void }) {
+function Studio({ client, video, runs, remember, catalog, onRetry }: { client: ApiClient; video: VideoApi; runs: RunsApi; remember: boolean; catalog: CatalogState; onRetry: () => void }) {
   const editor = useEditor();
   const [route, navigate] = useHashRoute();
   const session = useVideoSession(video, { remember });
@@ -147,6 +152,35 @@ function Studio({ client, video, remember, catalog, onRetry }: { client: ApiClie
       setSaving(false);
     }
   }, [client, editor]);
+
+  const reopenRun = useCallback(
+    async (run: RunRecord) => {
+      if (editor.dirty && !window.confirm("Discard the unsaved changes in the editor and open this run's configuration?")) return;
+      try {
+        const parsed = await runs.reopen(run.id);
+        editor.loadParsed({ config: parsed.config, extras: parsed.extras }, parsed.file_name);
+        navigate({ view: "editor" });
+        editor.notify({ tone: "info", text: `Opened the configuration of ${run.video ?? run.id} (from ${parsed.origin}).` });
+      } catch (exc) {
+        editor.notify({ tone: "error", text: `Could not reopen the run: ${exc instanceof Error ? exc.message : String(exc)}` });
+      }
+    },
+    [editor, navigate, runs],
+  );
+
+  const rerunRun = useCallback(
+    async (run: RunRecord) => {
+      try {
+        const jobId = await runs.rerun(run.id);
+        jobs.track(jobId, { label: `Rerun · ${run.video ?? run.id}`, expected: run.frames ?? 0 });
+        editor.notify({ tone: "info", text: `Rerun queued (job ${jobId}). Its progress shows in the editor's job panel; the new run opens here when it ends.` });
+      } catch (exc) {
+        editor.notify({ tone: "error", text: `Could not rerun: ${exc instanceof Error ? exc.message : String(exc)}` });
+      }
+    },
+    [editor, jobs, runs],
+  );
+  const finishedJobs = jobs.jobs.filter((j) => j.status === "done").length;
 
   const sessionWarned = useRef(false);
   const requestSave = () => {
@@ -238,7 +272,7 @@ function Studio({ client, video, remember, catalog, onRetry }: { client: ApiClie
       }}
     >
       <Shell
-        title={route.view === "runs" ? "Runs" : "Pipeline editor"}
+        title={route.view === "runs" ? "Runs & comparison" : "Pipeline editor"}
         nav={[
           { id: "editor", label: "Editor", icon: "layers", active: route.view === "editor", onSelect: () => navigate({ view: "editor" }) },
           {
@@ -247,7 +281,7 @@ function Studio({ client, video, remember, catalog, onRetry }: { client: ApiClie
             icon: "history",
             active: route.view === "runs",
             badge: jobs.jobs.filter((j) => j.status === "queued" || j.status === "running").length || undefined,
-            onSelect: () => navigate({ view: "runs", runId: route.view === "runs" ? route.runId : null }),
+            onSelect: () => navigate(route.view === "runs" ? route : { view: "runs", runId: null }),
           },
         ]}
         status={ready ? <StatusChips /> : null}
@@ -285,7 +319,16 @@ function Studio({ client, video, remember, catalog, onRetry }: { client: ApiClie
         banners={banners}
       >
         {route.view === "runs" ? (
-          <RunView api={video} runId={route.runId} onSelect={(runId) => navigate({ view: "runs", runId })} />
+          <RunsView
+            videoApi={video}
+            api={runs}
+            runId={route.runId}
+            compareId={route.compareId ?? null}
+            onRoute={(runId, compareId) => navigate({ view: "runs", runId, compareId })}
+            onReopen={reopenRun}
+            onRerun={rerunRun}
+            refreshKey={finishedJobs}
+          />
         ) : (
           <div className="workspace">
             <VideoDeck

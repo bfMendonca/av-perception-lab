@@ -9,7 +9,7 @@ missing estimators are left out of the report.
 
 import csv
 import json
-from collections.abc import Mapping
+from collections.abc import Collection, Mapping
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -177,6 +177,45 @@ class RunData:
         return len(self.columns["frame"])
 
 
+def read_columns(
+    csv_path: Path,
+    required: Collection[str] = REQUIRED_COLUMNS,
+    only: Collection[str] | None = None,
+) -> dict[str, np.ndarray]:
+    """The CSV_FIELDS columns of a detections.csv (all, or those in `only`)
+    present in its header: float64 with empty cells as NaN, TEXT_COLUMNS as
+    object arrays. Unknown header names are ignored; a short row reads as
+    empty cells, a blank line is skipped.
+
+    Raises:
+        ConfigError: a `required` column is missing from the header.
+    """
+    with open(csv_path, newline="") as fh:
+        reader = csv.reader(fh)
+        header = next(reader, [])
+        missing = [c for c in required if c not in header]
+        if missing:
+            raise ConfigError(f"{csv_path}: missing columns {', '.join(missing)}")
+        known = [c for c in CSV_FIELDS if c in header and (only is None or c in only)]
+        index = [header.index(c) for c in known]
+        cells: list[list[str]] = [[] for _ in known]
+        for row in reader:
+            if not row:  # blank line (csv.DictReader skips them too)
+                continue
+            for values, i in zip(cells, index, strict=True):
+                values.append(row[i] if i < len(row) else "")
+    return {
+        c: (
+            np.array(values, dtype=object)
+            if c in TEXT_COLUMNS
+            else np.array(
+                [float(v) if v != "" else np.nan for v in values], dtype=np.float64
+            )
+        )
+        for c, values in zip(known, cells, strict=True)
+    }
+
+
 # metrics.json keys read by RunData (written since task_0002/0006).
 _METRICS_PATHS: tuple[tuple[str, ...], ...] = (
     ("video", "path"),
@@ -212,25 +251,5 @@ def load_run(run_dir: Path) -> RunData:
                     f"{metrics_path}: missing {'.'.join(keys)} (run older than task_0002?)"
                 )
             node = node[key]
-    with open(csv_path, newline="") as fh:
-        reader = csv.DictReader(fh)
-        header = reader.fieldnames or []
-        missing = [c for c in REQUIRED_COLUMNS if c not in header]
-        if missing:
-            raise ConfigError(f"{csv_path}: missing columns {', '.join(missing)}")
-        known = [c for c in CSV_FIELDS if c in header]
-        cells: dict[str, list[str]] = {c: [] for c in known}
-        for row in reader:
-            for c in known:
-                cells[c].append(row[c])
-    columns = {
-        c: (
-            np.array(values, dtype=object)
-            if c in TEXT_COLUMNS
-            else np.array(
-                [float(v) if v != "" else np.nan for v in values], dtype=np.float64
-            )
-        )
-        for c, values in cells.items()
-    }
+    columns = read_columns(csv_path)
     return RunData(run_dir, columns, metrics)

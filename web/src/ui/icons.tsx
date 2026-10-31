@@ -24,6 +24,9 @@ const PATHS: Record<string, string> = {
   stop: "M7 7h10v10H7z",
   "mark-in": "M8 5v14M8 12h10M14 8l4 4-4 4",
   "mark-out": "M16 5v14M16 12H6M10 8l-4 4 4 4",
+  external: "M14 4h6v6M20 4l-9 9M18 14v5a1 1 0 01-1 1H5a1 1 0 01-1-1V7a1 1 0 011-1h5",
+  compare: "M8 4v16M16 4v16M4 8h4M16 16h4M4 16h4M16 8h4",
+  search: "M11 18a7 7 0 100-14 7 7 0 000 14zM20 20l-4-4",
   diff: "M6 3v12M6 15a3 3 0 100 6 3 3 0 000-6zM18 21V9M18 9a3 3 0 100-6 3 3 0 000 6zM6 9l12 0",
 };
 

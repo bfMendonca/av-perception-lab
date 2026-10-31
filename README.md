@@ -949,8 +949,7 @@ A `task_0016` liga o **Process**. Acima do editor fica o painel de vídeo:
   cliques entram na fila.
 - **Jobs**: posição na fila, progresso (quadros / esperados), último quadro
   anotado (`preview.jpg`, atualizado pelos eventos SSE `frame`), Cancel; ao
-  terminar abre a execução em `#/runs/<id>` (vista mínima com o vídeo
-  anotado e os arquivos; a `task_0017` traz resultados e comparação); em
+  terminar abre a execução em `#/runs/<id>` (próxima seção); em
   falha mostra o erro (ex.: "no frames decoded … is source.start past the
   end of the video?") e a cauda do log.
 
@@ -960,6 +959,49 @@ Rotas: `GET /api/videos`, `GET /api/videos/roots`, `POST /api/videos`
 (com `Range`). `POST /api/runs` recusa (422) um `video_id` que não está na
 biblioteca ou cujo arquivo sumiu, e com `video_id` o `source.video` é sempre
 o original do vídeo (o do cliente é sobrescrito).
+
+### Interface web: execuções e comparação
+
+A `task_0017` substitui a vista mínima pela tela **Runs & comparison**
+(`#/runs/<id>`, ou `#/runs/<id>/vs/<id>` para comparar; ids na URL, nunca o
+nome da pasta como caminho):
+
+- **Histórico** à esquerda, com filtro: a execução selecionada fica em
+  verde-água, a de comparação em violeta; o botão de comparar aparece ao
+  passar o mouse sobre outra execução (ou use o menu "Compare with").
+  Jobs que falharam antes de criar a pasta (`job-<id>`) mostram o erro e a
+  cauda do log, sem player.
+- **Vídeo anotado** (`video.mp4`), **indicadores** com delta assinado contra a
+  execução de comparação (verde quando melhora, vermelho quando piora:
+  *jitter* menor e vazão maior são melhores) e **diff do YAML efetivo**
+  (caminhos pontilhados; `output.tag`/`out_root`, que o servidor sempre
+  define, ficam escondidos atrás de um botão).
+- **Distância ao longo do tempo** por trilha: esta execução suavizada sobre a
+  medida bruta em cinza e a de comparação tracejada; passar o mouse mostra os
+  valores, clicar (ou setas + Enter) salta o vídeo para aquele instante e a
+  linha vertical acompanha o vídeo. Ao comparar, a trilha inicial é a mais
+  longa que existe nas duas execuções (os ids são por execução).
+- **Artefatos**: todos os arquivos da pasta (tamanho, tipo, abrir, baixar);
+  JSON vira árvore recolhível, e o `metrics.json` aparece inteiro em
+  **Metrics** — um sink ou seção nova aparece sem mudar a interface
+  (`docs/web_extending.md`, item d).
+- **Reopen in editor** carrega o YAML efetivo (`config.yaml`, senão o
+  `config` do `metrics.json`) no editor; **Rerun** põe na fila a mesma
+  configuração e o mesmo vídeo da biblioteca (sem `video_id`, só se o
+  `source.video` estiver numa `--data-root`; senão 409 com a explicação).
+
+Indicadores (`web/compare.py`, lidos do `detections.csv` por
+`evaluation.run_data.read_columns` e do `metrics.json`): mediana de
+`distance_m`; *jitter* = mediana, entre trilhas (`track_id`), da mediana de
+|Δ`distance_m`| entre quadros processados consecutivos (passo =
+`source.stride`; lacunas da trilha não contam); *jitter* suavizado (o mesmo
+em `distance_smooth_m`); vazão (`end_to_end_fps`); quadros, caixas e trilhas.
+Pastas antigas sem `metrics.json`, `config.yaml`, `track_id` ou colunas
+suavizadas aparecem com `n/a` e uma nota. Rotas: `GET /api/runs/{id}/summary`,
+`GET /api/compare?a=ID&b=ID` (deltas `b − a`), `GET
+/api/runs/{id}/series?track=N` (≤ 1500 pontos, redução min/máx),
+`GET /api/runs/{id}/artifacts`, `GET /api/runs/{id}/files/{caminho}`,
+`POST /api/runs/{id}/reopen` e `POST /api/runs/{id}/rerun`.
 
 ### Pesos dos refinadores e do SegFormer
 

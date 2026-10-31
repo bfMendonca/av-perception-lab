@@ -2,7 +2,8 @@
 
 A interface web é derivada dos registros do pipeline: o catálogo
 (`GET /api/catalog`) é função de `core.registry` (adaptadores e estágios) e
-dos metadados dos campos das dataclasses. Nada em `src/det_depth_distance/web/`
+dos metadados dos campos das dataclasses; os resultados de uma execução
+(artefatos, métricas) são descobertos na pasta, não enumerados. Nada em `src/det_depth_distance/web/`
 nomeia um modelo ou um estágio (o teste
 `test_web_package_has_no_hardcoded_adapter_names` garante). Os testes de
 `tests/web/test_extensibility.py` provam os itens abaixo.
@@ -57,6 +58,32 @@ registerStageView("planners", PlannerLane);
 
 O registro mais recente vence; ambas as funções devolvem a função que
 desfaz o registro. Sem registro, valem os padrões genéricos.
+
+## (d) Novo artefato ou nova seção de métricas
+
+A vista de execuções (`#/runs/<id>`) não enumera arquivos: `GET
+/api/runs/{id}/artifacts` lista toda a pasta da execução (nome, tamanho,
+tipo de mídia, `role` quando é um arquivo conhecido de
+`web.history.RUN_FILES`) e `GET /api/runs/{id}/files/{caminho}` serve
+qualquer um deles. Um sink novo que grave `minha_saida.parquet` aparece na
+lista com Abrir/Baixar sem nenhuma mudança; qualquer `.json` (o
+`metrics.json` inclusive) vira uma árvore chave/valor recolhível, de modo que
+uma seção nova de métricas aparece sozinha. Para uma visão própria, um
+registro no front-end (`web/src/runs/artifactViews.tsx`):
+
+```ts
+import { registerArtifactView } from "./runs/artifactViews";
+
+registerArtifactView((a) => a.name.endsWith(".parquet"), ParquetTable);
+```
+
+O predicado recebe `{name, size, media_type, role, url}`; o registro mais
+recente vence os embutidos (árvore JSON, imagem, MP4) e a função devolvida o
+desfaz. Os indicadores do resumo e da comparação vêm de
+`web.compare.SUMMARY_METRICS` (rótulo, unidade e se é melhor `lower` ou
+`higher`): um indicador novo é uma entrada ali e um valor em `run_summary`;
+o front-end renderiza a lista como vier (cartão, delta com sinal e cor de
+melhora/piora).
 
 ## Versão do catálogo
 

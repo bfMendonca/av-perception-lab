@@ -21,6 +21,7 @@ RUN_FILES = {
     "preview": "preview.jpg",
     "config": "config.yaml",
     "detections": "detections.csv",
+    "metrics": "metrics.json",
 }
 _MARKERS = ("detections.csv", "metrics.json", "web_run.json", "video.mp4")
 JOBS_DIR = (
@@ -44,6 +45,8 @@ class RunRecord:
     complete: bool = False  # metrics.json written and the run finished
     has_config: bool = False
     error: str | None = None  # why a job failed (job records only)
+    video_id: str | None = None  # library video (web_run.json or job record)
+    log_tail: list[str] = field(default_factory=list)  # job records only
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -56,6 +59,10 @@ def _read_json(path: Path) -> dict[str, Any]:
     except (OSError, ValueError):
         return {}
     return data if isinstance(data, dict) else {}
+
+
+def _str_or_none(value: Any) -> str | None:
+    return value if isinstance(value, str) else None
 
 
 def _csv_frames(path: Path) -> int | None:
@@ -106,7 +113,10 @@ def _record(folder: Path) -> RunRecord:
         wall_s=float(wall) if isinstance(wall, int | float) else None,
         status=status,
         complete=has_metrics and status == "done",
-        has_config=(folder / "config.yaml").is_file(),
+        # config.yaml (web runs) or the config recorded by the CLI in metrics
+        has_config=(folder / "config.yaml").is_file()
+        or isinstance(metrics.get("config"), dict),
+        video_id=_str_or_none(web.get("video_id")),
     )
 
 
@@ -121,12 +131,16 @@ def _job_record(path: Path, out_root: Path) -> RunRecord | None:
     config = data.get("config") if isinstance(data.get("config"), dict) else {}
     source = config.get("source") if isinstance(config.get("source"), dict) else {}
     video = source.get("video")
+    tail = data.get("log_tail")
     return RunRecord(
         id=f"job-{data['id']}",
         created=str(data.get("created") or ""),
         video=Path(video).name if isinstance(video, str) else None,
         status=status,
-        error=data.get("error") if isinstance(data.get("error"), str) else None,
+        error=_str_or_none(data.get("error")),
+        video_id=_str_or_none(data.get("video_id")),
+        log_tail=[str(x) for x in tail] if isinstance(tail, list) else [],
+        has_config=bool(config),
     )
 
 
@@ -162,6 +176,15 @@ def run_folder(out_root: Path, run_id: str) -> Path:
     if not folder.is_dir():
         raise FileNotFoundError(run_id)
     return folder
+
+
+def job_data(out_root: Path, run_id: str) -> dict[str, Any] | None:
+    """The job record behind a `job-<id>` history entry (None for any other id,
+    or when it lists no such entry); never resolves outside `out_root`."""
+    if not run_id.startswith("job-") or not run_id[4:].isalnum():
+        return None
+    path = out_root / JOBS_DIR / f"{run_id[4:]}.json"
+    return _read_json(path) if _job_record(path, out_root) is not None else None
 
 
 def load_run(out_root: Path, run_id: str) -> RunRecord:
