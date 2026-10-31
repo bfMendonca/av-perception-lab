@@ -114,3 +114,24 @@ def test_refiners_and_segmenters_are_registered():
         "segformer": SegformerSegmenter,
         "twinlitenet": TwinLiteNetSegmenter,
     }
+
+
+def test_builtin_stages_are_registered_in_order():
+    from det_depth_distance import config  # noqa: F401  (registers the stages)
+
+    stages = registry.stages()
+    keys = [s.yaml_key for s in stages]
+    assert keys[:3] == ["source", "detectors", "aggregation"]
+    assert [s.order for s in stages] == sorted(s.order for s in stages)
+    by_key = {s.yaml_key: s for s in stages}
+    assert by_key["detectors"].kind == "detector" and by_key["detectors"].multiple
+    assert by_key["smoothing"].config_cls is not None and by_key["smoothing"].optional
+    assert by_key["render"].general and not by_key["depth"].general
+    assert {s.kind for s in stages if s.kind} <= set(registry.available())
+
+
+def test_duplicate_stage_is_an_error():
+    from det_depth_distance import config  # noqa: F401
+
+    with pytest.raises(ValueError, match="already registered"):
+        registry.register_stage(registry.Stage(yaml_key="depth", title="x", order=1))

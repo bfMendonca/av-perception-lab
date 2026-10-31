@@ -35,6 +35,7 @@
 - [Estimação de movimento e trajetórias](#estimação-de-movimento-e-trajetórias)
 - [Calibração da câmera](#calibração-da-câmera)
 - [Avaliação contra referências](#avaliação-contra-referências)
+- [Interface web (API de esquema e validação)](#interface-web-api-de-esquema-e-validação)
 - [Pesos dos refinadores e do SegFormer](#pesos-dos-refinadores-e-do-segformer)
 - [Saídas](#saídas)
 - [Como a distância é calculada](#como-a-distância-é-calculada)
@@ -131,7 +132,7 @@ rodam sem torch.
 
 ```
 det-depth-distance/
-├── pyproject.toml           # manifesto uv; extra "infer" com a stack GPU, extra "eval" (matplotlib)
+├── pyproject.toml           # manifesto uv; extra "infer" com a stack GPU, extra "eval" (matplotlib), extra "web" (FastAPI)
 ├── uv.lock                  # lock versionado
 ├── configs/                 # exemplos de YAML: rfdetr_da3, yolo_o365_da3, multi_detector(_fused), rfdetr_seg_da3, yolo_seg_da3, yolo_o365_seg_da3, rfdetr_sam2_da3, yolo_o365_sam2_da3, rfdetr_semantic_da3, rfdetr_lanes_scene_da3, rfdetr_da3_track, rfdetr_da3_calibrated, yolo_light_da3, rfdetr_da3_motion, rfdetr_sam2_lanes_motion_da3
 │   ├── labels/              # mapas de rótulos por vocabulário: coco_driving, objects365_driving
@@ -141,7 +142,7 @@ det-depth-distance/
 │   │   ├── types.py         # Frame, Instances, DepthResult, FrameResult, RefinedMasks, SemanticMap, TrackEstimate, MotionEstimate, Trajectory, MapGeometry, CameraIntrinsics
 │   │   ├── options.py       # ConfigError, from_mapping (YAML -> dataclass com caminho nos erros)
 │   │   ├── components.py    # Component, Detector, DepthEstimator, MaskRefiner, SemanticSegmenter, Tracker (ABCs) e opções base
-│   │   ├── registry.py      # @register, build, available, load_adapters
+│   │   ├── registry.py      # @register, build, available, load_adapters; Stage, register_stage, stages
 │   │   ├── labels.py        # vocabulários COCO/Objects365, presets de classes, LabelMap, rótulos <nome>.<classe>
 │   │   ├── boxes.py         # IoU, casamento guloso, clusters de NMS e WBF (numpy puro)
 │   │   ├── aggregate.py     # Aggregator, Concat, FusionAggregator, Nms, Wbf
@@ -159,9 +160,10 @@ det-depth-distance/
 │   ├── io/                  # video.py (ffmpeg), source.py (VideoSource, FrameTransform), sinks.py (CSV, vídeo, npz, métricas), quicktime.py (metadados de câmera do MOV)
 │   ├── evaluation/          # references, run_data, matching, stats, evaluate, report: erro contra referências de campo
 │   ├── tools/               # CLIs auxiliares: calibrate.py, evaluate.py
+│   ├── web/                 # backend da interface web (extra `web`, sem torch): catálogo de módulos, esquema de opções, validação do YAML
 │   ├── camera.py            # provedores de intrínsecos (fixa, estimada, calibrada), Calibration, Undistorter, build_camera
 │   ├── calibration.py       # alvos (tabuleiro, ChArUco), detecção de vistas, ajuste com rejeição de vistas atípicas
-│   ├── config.py            # RunConfig, load_config, --set
+│   ├── config.py            # RunConfig, load_config, --set; registra os estágios do pipeline
 │   ├── distance.py          # numpy puro: caixa ou máscara -> pixels do mapa -> estatísticas robustas
 │   ├── temporal.py          # numpy puro: suavização por trilha (Kalman 1D, EMA, mediana) e SmoothingConfig
 │   ├── render.py            # caixas, máscaras, rótulos, HUD, painel de profundidade + legenda
@@ -803,6 +805,31 @@ uv run --extra eval det-depth-distance-evaluate --refs refs/IMG_4100.yaml RUN_A 
   `<execução>/eval_<nome das referências>/` ou `--out` (obrigatório com
   várias execuções). Vídeo diferente entre referências e execução é erro
   (`--force` avalia mesmo assim).
+
+### Interface web (API de esquema e validação)
+
+A `task_0013` cria o pacote `det_depth_distance.web`, o primeiro passo da
+interface web (editor visual de pipeline). Esta entrega é só o backend de
+esquema e validação, sem torch:
+
+```bash
+export UV_PROJECT_ENVIRONMENT=_testbed/venv-infer
+uv sync --extra infer --extra web
+uv run --extra infer --extra web det-depth-distance-web    # 127.0.0.1:8000
+curl -s localhost:8000/api/catalog | head -c 400
+```
+
+- `GET /api/catalog`: estágios (de `core.registry.stages()`), opções de cada
+  adaptador por família e de cada seção de configuração, com `catalog_version`.
+- `POST /api/config/validate`: `{config}` -> `{errors: [{path, message}]}`
+  (sempre 200; vazio = válido).
+- `POST /api/config/parse` / `dump`: YAML <-> mapeamento; chaves de topo
+  desconhecidas voltam em `extras` (comentários e ordem das chaves se perdem).
+
+Nada em `web/` cita um modelo ou estágio: o catálogo é função dos registros.
+Para dicas de interface (rótulo, unidade, faixa) use
+`field(default=..., metadata={"ui": {...}})` no campo. Checklist para novos
+modelos, estágios e visões em `docs/web_extending.md`.
 
 ### Pesos dos refinadores e do SegFormer
 

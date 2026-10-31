@@ -29,10 +29,19 @@ eval = [
     "matplotlib>=3.8",
 ]
 
+# Web interface backend (torch-free): uv sync --extra infer --extra web
+web = [
+    "fastapi",
+    "uvicorn",
+    "python-multipart",
+    "httpx",  # TestClient
+]
+
 [project.scripts]
 det-depth-distance = "det_depth_distance.cli:main"
 det-depth-distance-calibrate = "det_depth_distance.tools.calibrate:main"
 det-depth-distance-evaluate = "det_depth_distance.tools.evaluate:main"
+det-depth-distance-web = "det_depth_distance.web.server:main"
 
 [dependency-groups]
 dev = ["pytest>=8", "ruff>=0.6"]

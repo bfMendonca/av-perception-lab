@@ -11,10 +11,17 @@ entry in ADAPTER_MODULES; pipeline, config and CLI do not change. Besides
 the components, the families "aggregator", "motion" (motion models) and
 "ego_motion" (ego-motion providers) hold registered classes that are not
 Components.
+
+Pipeline stages are described, for user interfaces, by `Stage` descriptors in
+a second registry (`register_stage` / `stages`): the YAML key, title, adapter
+family or config dataclass, cardinality and order of each stage. The built-in
+stages are registered at the bottom of `config.py` (this module cannot import
+it); a UI renders whatever is registered, so a new stage needs no UI change.
 """
 
 import importlib
 from collections.abc import Callable, Mapping
+from dataclasses import dataclass
 from typing import Any, TypeVar
 
 from det_depth_distance.core.components import Component
@@ -55,6 +62,44 @@ def register(kind: str, type_name: str) -> Callable[[type[T]], type[T]]:
         return cls
 
     return decorator
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class Stage:
+    """UI-facing descriptor of one pipeline stage (one top-level YAML key).
+
+    `kind` (an adapter family: the stage holds registered specs
+    `{type, **options}`) or `config_cls` (a plain options dataclass) describes
+    the stage's content.
+    """
+
+    yaml_key: str
+    title: str
+    order: int  # position in the pipeline lane
+    kind: str | None = None  # adapter family of the spec(s)
+    config_cls: type | None = None  # dataclass of a plain config section
+    multiple: bool = False  # a list of specs instead of one
+    optional: bool = False  # the stage can be absent (null)
+    general: bool = False  # shown in "General settings", not in the lane
+
+
+_STAGES: dict[str, Stage] = {}
+
+
+def register_stage(stage: Stage) -> None:
+    """Register a pipeline stage descriptor.
+
+    Raises:
+        ValueError: `stage.yaml_key` is already registered.
+    """
+    if stage.yaml_key in _STAGES:
+        raise ValueError(f"stage {stage.yaml_key!r} is already registered")
+    _STAGES[stage.yaml_key] = stage
+
+
+def stages() -> tuple[Stage, ...]:
+    """Registered stages sorted by `order` (registration order breaks ties)."""
+    return tuple(sorted(_STAGES.values(), key=lambda s: s.order))
 
 
 def load_adapters() -> None:

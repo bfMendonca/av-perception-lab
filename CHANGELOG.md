@@ -4,6 +4,35 @@ Todas as mudancas relevantes do det-depth-distance serao documentadas neste arqu
 
 ---
 
+## [2026-10-31] API de esquema e validacao da interface web
+
+Primeiro passo da interface web: um backend FastAPI, sem torch, que descreve
+o pipeline para um editor visual e valida o YAML. A task_0013 cria o pacote
+`det_depth_distance.web` e o registro de estagios; a regra central e que um
+modelo ou estagio novo aparece na interface sem editar nada em `web/`.
+
+### Novo: Registro de estagios e dicas de interface
+
+- **`Stage`, `register_stage`, `stages`** em `core/registry.py`: chave do YAML,
+  titulo, familia de adaptador ou dataclass de configuracao, cardinalidade e
+  ordem; os estagios nativos sao registrados no fim de `config.py`.
+- **Metadados `ui`** nos campos das dataclasses (rotulo, unidade, faixa,
+  passo, avancado, ajuda), semeados nos campos do Kalman e do rastreador IoU.
+
+### Novo: Pacote `web` (extra `web`)
+
+- `GET /api/catalog` e `POST /api/config/{validate,parse,dump}`; erros de
+  validacao com o caminho pontilhado (`detectors[0].treshold`), nunca 500.
+- `WebPaths` e `safe_join` (recusa `..`, caminho absoluto e symlink para fora).
+- `det-depth-distance-web` (127.0.0.1 por padrao) e `docs/web_extending.md`.
+
+### Alterado
+
+- `config.config_from_mapping` extraido de `load_config` (a validacao da web
+  usa o mesmo codigo); `uv.lock` ganha o extra `web` (`python-multipart`).
+
+---
+
 ## [2026-10-23] Movimento por trilha e previsao de trajetoria
 
 Ate aqui o pipeline media so a distancia de cada objeto e, com a suavizacao,

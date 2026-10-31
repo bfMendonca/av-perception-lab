@@ -338,6 +338,7 @@ Commits seguem **Conventional Commits** com assunto em **pt-BR**, no formato:
   | `render` | `src/det_depth_distance/render.py` |
   | `cli` | `src/det_depth_distance/cli.py`, `__main__.py`, `__init__.py`, `config.py`, `runtime.py` (composição, configuração, ambiente) e `tools/` (CLIs auxiliares) |
   | `eval` | `src/det_depth_distance/evaluation/` (avaliação contra referências de campo) |
+  | `web` | `src/det_depth_distance/web/` e `web/` (interface web: API, fila, front-end) |
   | `configs` | `configs/` |
   | `tests` | `tests/` (inclui `tests/gpu/`) |
   | `utils` | `utils/` |

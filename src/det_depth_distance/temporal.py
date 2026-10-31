@@ -24,7 +24,7 @@ import math
 from abc import ABC, abstractmethod
 from collections import deque
 from collections.abc import Callable, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Literal
 
 import numpy as np
@@ -41,15 +41,76 @@ class SmoothingConfig:
     Defaults were chosen on the task_0001 videos (see docs/task_0006.md)."""
 
     filter: FilterName = "kalman"
-    accel_std: float = 2.0  # kalman: white acceleration std q, m/s^2
-    std_scale: float = 0.5  # sigma = max(std_scale * box std, rel_floor * distance)
-    rel_floor: float = 0.01
+    accel_std: float = field(  # kalman: white acceleration std q, m/s^2
+        default=2.0,
+        metadata={
+            "ui": {
+                "label": "Acceleration noise",
+                "unit": "m/s²",
+                "min": 0.1,
+                "max": 10.0,
+                "step": 0.1,
+                "help": "Kalman process noise: higher follows speed changes faster.",
+            }
+        },
+    )
+    # sigma = max(std_scale * box std, rel_floor * distance)
+    std_scale: float = field(
+        default=0.5,
+        metadata={
+            "ui": {
+                "label": "Box std scale",
+                "min": 0.0,
+                "max": 2.0,
+                "step": 0.05,
+                "help": "Weight of the per-box depth std in the measurement noise.",
+            }
+        },
+    )
+    rel_floor: float = field(
+        default=0.01,
+        metadata={
+            "ui": {
+                "label": "Relative noise floor",
+                "min": 0.0,
+                "max": 0.1,
+                "step": 0.005,
+                "help": "Measurement noise never goes below this fraction of the distance.",
+            }
+        },
+    )
     init_speed_std: float = 5.0  # kalman: initial speed std, m/s
-    tau_s: float = 0.1  # ema: alpha = 1 - exp(-dt / tau_s)
+    # ema: alpha = 1 - exp(-dt / tau_s)
+    tau_s: float = field(
+        default=0.1,
+        metadata={
+            "ui": {
+                "label": "EMA time constant",
+                "unit": "s",
+                "min": 0.01,
+                "max": 2.0,
+                "step": 0.01,
+                "advanced": True,
+                "help": "Only for the ema filter: larger smooths more.",
+            }
+        },
+    )
     # median: causal window, samples with t_i >= t - window_s (5 frames at 30 fps)
     window_s: float = 0.15
     # state dropped after this long without a measurement of the track
-    reset_after_s: float = 1.0
+    reset_after_s: float = field(
+        default=1.0,
+        metadata={
+            "ui": {
+                "label": "Reset after",
+                "unit": "s",
+                "min": 0.1,
+                "max": 10.0,
+                "step": 0.1,
+                "help": "Drop a track's filter state after this long without a measurement.",
+            }
+        },
+    )
 
     def __post_init__(self) -> None:
         if self.filter not in FILTERS:

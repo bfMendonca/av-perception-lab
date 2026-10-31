@@ -22,8 +22,10 @@ import cv2
 import yaml
 
 from det_depth_distance.adapters.depth.da3 import ProcessResMethod
+from det_depth_distance.core import registry
 from det_depth_distance.core.labels import SEMANTIC_NAME_PATTERN, group_semantic_labels
 from det_depth_distance.core.options import ConfigError, from_mapping
+from det_depth_distance.core.registry import Stage, register_stage
 from det_depth_distance.distance import DistanceConfig, RegionPolicy
 from det_depth_distance.motion.config import MotionConfig
 from det_depth_distance.temporal import SmoothingConfig
@@ -354,6 +356,18 @@ def load_config(
         if not isinstance(source, dict):
             raise ConfigError("source: expected a mapping")
         data["source"] = {**source, "video": str(video)}
+    return config_from_mapping(data)
+
+
+def config_from_mapping(data: dict[str, Any]) -> RunConfig:
+    """Split the PIPELINE_DISTANCE_KEYS off `data["distance"]` and validate.
+
+    `data` is the parsed YAML mapping (modified in place: the split keys move
+    to the top level, as RunConfig fields).
+
+    Raises:
+        ConfigError: invalid configuration (dotted path in the message).
+    """
     distance = data.get("distance") or {}
     if not isinstance(distance, dict):
         raise ConfigError("distance: expected a mapping")
@@ -364,3 +378,117 @@ def load_config(
             data[key] = distance.pop(key)
     data["distance"] = distance
     return from_mapping(RunConfig, data, "")
+
+
+def motion_spec_errors(cfg: RunConfig) -> list[ConfigError]:
+    """Errors of the motion model and ego-motion specs nested in `cfg.motion`.
+
+    The same `registry.build` calls as `motion.build_motion`, without opening
+    the ego-motion data; used to validate a configuration without running it.
+    """
+    errors: list[ConfigError] = []
+    if cfg.motion is None:
+        return errors
+    for name, spec in cfg.motion.models.items():
+        try:
+            registry.build("motion", spec, path=f"motion.models.{name}")
+        except ConfigError as exc:
+            errors.append(exc)
+    if cfg.motion.ego_motion is not None:
+        try:
+            registry.build(
+                "ego_motion", cfg.motion.ego_motion, path="motion.ego_motion"
+            )
+        except ConfigError as exc:
+            errors.append(exc)
+    return errors
+
+
+# UI-facing pipeline stages (core.registry.Stage), in lane order; the gaps in
+# `order` leave room for stages registered later.
+for _stage in (
+    Stage(yaml_key="source", title="Source", order=10, config_cls=SourceConfig),
+    Stage(
+        yaml_key="detectors",
+        title="Detectors",
+        order=20,
+        kind="detector",
+        multiple=True,
+    ),
+    Stage(yaml_key="aggregation", title="Aggregation", order=30, kind="aggregator"),
+    Stage(
+        yaml_key="refiners",
+        title="Mask refiners",
+        order=40,
+        kind="refiner",
+        multiple=True,
+        optional=True,
+    ),
+    Stage(
+        yaml_key="semantic",
+        title="Semantic segmentation",
+        order=45,
+        kind="semantic",
+        multiple=True,
+        optional=True,
+    ),
+    Stage(yaml_key="depth", title="Depth", order=50, kind="depth"),
+    Stage(
+        yaml_key="tracking",
+        title="Tracking",
+        order=60,
+        kind="tracker",
+        optional=True,
+    ),
+    Stage(
+        yaml_key="smoothing",
+        title="Smoothing",
+        order=70,
+        config_cls=SmoothingConfig,
+        optional=True,
+    ),
+    Stage(
+        yaml_key="motion",
+        title="Motion",
+        order=80,
+        config_cls=MotionConfig,
+        optional=True,
+    ),
+    Stage(
+        yaml_key="camera",
+        title="Camera",
+        order=110,
+        config_cls=CameraConfig,
+        general=True,
+    ),
+    Stage(
+        yaml_key="distance",
+        title="Distance",
+        order=120,
+        config_cls=DistanceConfig,
+        general=True,
+    ),
+    Stage(
+        yaml_key="agreement",
+        title="Agreement",
+        order=130,
+        config_cls=AgreementConfig,
+        general=True,
+    ),
+    Stage(
+        yaml_key="render",
+        title="Render",
+        order=140,
+        config_cls=RenderConfig,
+        general=True,
+    ),
+    Stage(
+        yaml_key="output",
+        title="Output",
+        order=150,
+        config_cls=OutputConfig,
+        general=True,
+    ),
+):
+    register_stage(_stage)
+del _stage

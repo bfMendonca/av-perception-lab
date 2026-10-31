@@ -50,6 +50,7 @@ still pending.
 | Language | Python 3.11 (`requires-python >=3.11,<3.12`) |
 | Env / deps | Astral uv, `pyproject.toml` + versioned `uv.lock` |
 | Base deps | numpy<2 (required by depth-anything-3), opencv-python (also calibration: `calibrateCameraExtended`, `findChessboardCornersSB`, `cv2.aruco` ChArUco, `FileStorage`, undistortion; no `opencv-contrib`), pillow, pyyaml>=6 (run configuration and field references, read in the light env) |
+| `web` extra (optional) | `fastapi`, `uvicorn`, `python-multipart`, `httpx` (locked; python-multipart 0.0.32 added by task_0013): backend of the web interface (`det_depth_distance.web`), torch-free; the other three were already transitive via `infer` |
 | `eval` extra (optional) | `matplotlib>=3.8` (locked 3.11.2): plots of `det-depth-distance-evaluate --plot` only; imported lazily |
 | `infer` extra (GPU hosts: `gpu-host`; optionally the laptop's 4 GB GPU in an isolated env, `UV_PROJECT_ENVIRONMENT=_testbed/venv-infer`) | torch 2.8.0 + torchvision 0.23.0 + xformers 0.0.32.post2 from the PyTorch cu128 index; `rfdetr` @ git 1f2af2ea; `depth-anything-3` @ git 3d835ec; `addict` (imported by depth-anything-3 but not declared by it); `ultralytics==8.4.175` (YOLO26 and the optional `ultralytics_sam` refiner; **AGPL-3.0** — acceptable for this internal research prototype, optional extra); `transformers>=5.1,<6` (locked 5.19.0; previously only transitive via rfdetr; SAM-family refiners and SegFormer); `timm>=1.0.17` (locked 1.0.30; only for EdgeTAM's TimmWrapper backbone) |
 | External code (GPU hosts) | TwinLiteNet+ clone `~/dev/TwinLiteNetPlus` @ 90f1b86 (MIT; not a package, imported with a temporary `sys.path` entry; weights in its `pretrained/`) |
@@ -63,7 +64,7 @@ still pending.
 
 ```
 det-depth-distance/
-├── pyproject.toml           # uv manifest; "infer" extra holds the GPU stack, "eval" extra matplotlib; 3 console scripts; pytest "gpu" marker
+├── pyproject.toml           # uv manifest; "infer" extra holds the GPU stack, "eval" extra matplotlib, "web" extra FastAPI; 4 console scripts; pytest "gpu" marker
 ├── uv.lock
 ├── configs/                 # example run YAMLs: rfdetr_da3, yolo_o365_da3, multi_detector(_fused), *_seg_da3, rfdetr_sam2_da3, yolo_o365_sam2_da3, rfdetr_semantic_da3, rfdetr_lanes_scene_da3, rfdetr_da3_track, rfdetr_da3_calibrated, yolo_light_da3, rfdetr_da3_motion, rfdetr_sam2_lanes_motion_da3
 │   ├── labels/              # versioned label maps: coco_driving, objects365_driving
@@ -92,7 +93,8 @@ det-depth-distance/
 │   ├── calibration.py       # TargetSpec, CalibrationTarget (ChessboardTarget, CharucoTarget), detect_views, select_views, coverage, calibrate_views, focal_px_from_35mm
 │   ├── evaluation/          # references.py (ReferenceSet), run_data.py (RunData, load_run), matching.py, stats.py (ErrorStats, summarize), evaluate.py, report.py
 │   ├── tools/               # calibrate.py (det-depth-distance-calibrate), evaluate.py (det-depth-distance-evaluate)
-│   ├── config.py            # RunConfig + sections, load_config, apply_overrides (--set)
+│   ├── web/                 # web backend (extra `web`, torch-free): paths.py (WebPaths, safe_join), stages.py (stage list from core.registry), schema.py (options_schema, module_catalog, validate_config), app.py (create_app), server.py (det-depth-distance-web)
+│   ├── config.py            # RunConfig + sections, load_config, config_from_mapping, apply_overrides (--set); registers the built-in pipeline stages
 │   ├── distance.py          # pure numpy: box -> map pixels -> robust stats -> distance
 │   ├── temporal.py          # pure numpy: SmoothingConfig, distance_sigma, white_accel_cov, KalmanFilter1D / EmaFilter / MedianFilter (FILTERS), TrackSmoother
 │   ├── render.py            # PIL boxes/labels/HUD (colour by class or source), predicted trajectories, top-view (BEV) inset, depth panel + legend
@@ -125,6 +127,7 @@ dataclass (`core/types.py`), never a framework object:
 - `MotionConfig` (motion/config.py): `models` (name -> spec `{type, **options}`, registry family "motion"), `classes` (canonical label -> model name), `default` (model or null), `reset_after_s`, `nis_gate`, `measurement` (`reference_point`, `std_scale`, `rel_floor`, `pixel_std`), `prediction` (`horizon_s`, `step_s`, `n_sigma`), `ego_motion` (spec, registry family "ego_motion", or null = camera frame), `camera_mount` (`x_m`, `y_m`, `yaw_deg`).
 - `SmoothingConfig` (temporal.py): `filter` (kalman/ema/median), `accel_std`, `std_scale`, `rel_floor`, `init_speed_std`, `tau_s`, `window_s`, `reset_after_s` (times in seconds).
 - `Calibration` (camera.py): one recording mode's calibration: `image_size` (W, H), K as `CameraIntrinsics` in the continuous convention (OpenCV cx/cy + 0.5, converted only in `from_opencv`/`camera_matrix`), OpenCV-order `dist`, `rms_px`, `std`, recording `camera` metadata, `meta`; `scaled_to` (same aspect ratio only). Stored as an OpenCV `FileStorage` YAML/JSON (`image_width`, `image_height`, `camera_matrix`, `distortion_coefficients` + optional keys); `CalibrationConfig` (config.py) is the `camera.calibration` section (`path`, `undistort`, `alpha`, `check_lens`, `cross_check`).
+- `Stage` (core/registry.py): UI-facing descriptor of a pipeline stage (`yaml_key`, `title`, `kind` or `config_cls`, `multiple`, `optional`, `order`, `general`), registered with `register_stage` (built-ins at the bottom of `config.py`); options dataclass fields may carry `metadata={"ui": {label, unit, min, max, step, advanced, help}}`, read by `web.schema.options_schema`.
 - `ReferenceSet` (evaluation/references.py): field references of one video (YAML via `from_mapping`): `video`, `instruments` (uncertainty_m, uncertainty_rel), `references` (`Reference`: id, frame or time range, `Selector` box/point/track_id + label, constant `distance_m` or `series`, instrument or uncertainty, `quantity` range/z, target, notes). `RunData` (run_data.py): a run's CSV columns as numpy arrays + metrics.json.
 - `RunConfig` (config.py): the YAML run (source, detectors, depth, camera, aggregation, refiners, semantic, tracking (flat tracker spec or null), smoothing (`SmoothingConfig` or null), motion (`MotionConfig` or null), agreement, distance incl. `exclude_semantic` "<segmenter>.<class>" labels, render incl. `semantic_alpha`/`semantic_overlay`/`show_smoothed`/`show_speed` and, for motion, `show_trajectory`/`trajectory_alpha`/`show_motion_speed`/`bev_inset`/`bev_size`/`bev_range_m`/`bev_width_m`, output, device).
 
@@ -275,13 +278,25 @@ None. Local CLI tool; no users, sessions or network services.
 
 ## 7. URL / API Design
 
-No network API. The interface is the CLI `det-depth-distance` /
+The pipeline has no network API; its interface is the CLI `det-depth-distance` /
 `python -m det_depth_distance --config run.yaml [VIDEO] [--set key=value]...`
 and `--list-models`, plus two auxiliary console scripts:
 `det-depth-distance-calibrate calibrate|board|inspect` and
 `det-depth-distance-evaluate --refs REFS.yaml RUN [RUN ...]`. The YAML schema (sections source, detectors, depth,
 camera, aggregation, refiners, semantic, tracking, smoothing, agreement, distance, render, output, device) is documented in the
 README; the task_0001 flags were replaced without aliases.
+
+Optional web backend (`det-depth-distance-web`, extra `web`, binds
+127.0.0.1 by default, no auth; task_0013 is its first slice):
+`GET /api/catalog` (stages from `core.registry.stages()`, the options schema
+of every registered adapter by family and of every config section, with
+`catalog_version` and the dataclass-field `ui` metadata as `hint`),
+`POST /api/config/validate` (`{config}` -> 200 `{errors: [{path, message}]}`),
+`POST /api/config/parse` (`{yaml}` -> `{config, extras}`; unknown top-level
+keys are kept as extras) and `POST /api/config/dump` (`{config, extras?}` ->
+`{yaml}`). Models and stages are never listed in `web/`: a new adapter
+(`@register`) or stage (`core.registry.register_stage`) appears by itself
+(`docs/web_extending.md`).
 
 ## 8. Key Business Concepts
 

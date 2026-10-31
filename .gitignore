@@ -24,3 +24,4 @@ weights/
 .vscode/
 .idea/
 *.swp
+.superpowers/

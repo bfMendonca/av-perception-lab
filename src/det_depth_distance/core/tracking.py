@@ -71,12 +71,47 @@ class IouTracker(Tracker):
 
     @dataclass(frozen=True, slots=True, kw_only=True)
     class Options(TrackerOptions):
-        iou_thr: float = 0.3  # minimum IoU of a match, in (0, 1)
-        max_age_s: float = 0.5  # s without a match before a track dies, > 0
+        iou_thr: float = field(  # minimum IoU of a match, in (0, 1)
+            default=0.3,
+            metadata={
+                "ui": {
+                    "label": "IoU threshold",
+                    "min": 0.05,
+                    "max": 0.95,
+                    "step": 0.05,
+                    "help": "Minimum box overlap to continue a track.",
+                }
+            },
+        )
+        max_age_s: float = field(  # s without a match before a track dies, > 0
+            default=0.5,
+            metadata={
+                "ui": {
+                    "label": "Max age",
+                    "unit": "s",
+                    "min": 0.05,
+                    "max": 5.0,
+                    "step": 0.05,
+                    "help": "A track dies after this long without a match.",
+                }
+            },
+        )
         motion: Motion = "constant_velocity"  # "none": predicted box = last box
         # Weight of the newest velocity measurement, in (0, 1]; the first
         # match sets the velocity directly.
-        velocity_alpha: float = 0.5
+        velocity_alpha: float = field(
+            default=0.5,
+            metadata={
+                "ui": {
+                    "label": "Velocity smoothing",
+                    "min": 0.05,
+                    "max": 1.0,
+                    "step": 0.05,
+                    "advanced": True,
+                    "help": "Weight of the newest box-velocity measurement.",
+                }
+            },
+        )
         class_aware: bool = False  # match only equal labels
 
         def __post_init__(self) -> None:
