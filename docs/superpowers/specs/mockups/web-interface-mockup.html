@@ -1,0 +1,202 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Mockup — Percepção Studio</title>
+<style>
+:root{--bg:#0d1117;--panel:#151b23;--panel2:#1b232d;--line:#26303c;--tx:#e6edf3;--mut:#8b98a8;--acc:#5eead4;--acc2:#a78bfa;--warn:#fbbf24;--ok:#4ade80;--bad:#f87171}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--tx);font:14px/1.45 Inter,system-ui,sans-serif;height:100vh;display:flex;overflow:hidden}
+.rail{width:64px;background:#0a0e13;border-right:1px solid var(--line);display:flex;flex-direction:column;align-items:center;padding:14px 0;gap:6px}
+.logo{width:34px;height:34px;border-radius:10px;background:linear-gradient(135deg,var(--acc),var(--acc2));margin-bottom:14px}
+.nav{width:44px;height:44px;border-radius:12px;display:grid;place-items:center;color:var(--mut);cursor:pointer;font-size:11px;text-align:center}
+.nav.on{background:var(--panel2);color:var(--tx)}
+.main{flex:1;display:flex;flex-direction:column;min-width:0}
+.top{height:56px;border-bottom:1px solid var(--line);display:flex;align-items:center;gap:12px;padding:0 18px}
+.top h1{font-size:15px;margin:0;font-weight:600}
+.sp{flex:1}
+.chip{background:var(--panel2);border:1px solid var(--line);border-radius:999px;padding:5px 12px;color:var(--mut);font-size:12px}
+.btn{background:var(--panel2);border:1px solid var(--line);color:var(--tx);border-radius:9px;padding:7px 13px;font-size:13px;cursor:pointer}
+.btn.pri{background:var(--acc);color:#04201c;border-color:var(--acc);font-weight:600}
+.screen{display:none;flex:1;min-height:0}.screen.on{display:flex}
+.canvas{flex:1;overflow:auto;padding:22px;background:radial-gradient(circle at 1px 1px,#1c2530 1px,transparent 0) 0 0/22px 22px}
+.drop{border:1.5px dashed var(--line);border-radius:14px;padding:12px 16px;display:flex;align-items:center;gap:14px;background:var(--panel);margin-bottom:22px;max-width:760px}
+.thumb{width:84px;height:48px;border-radius:7px;background:linear-gradient(160deg,#334155,#1e293b)}
+.flow{display:flex;gap:0;align-items:flex-start;min-width:1250px}
+.stage{width:170px}
+.stage h4{margin:0 0 8px;font-size:11px;letter-spacing:.08em;text-transform:uppercase;color:var(--mut);font-weight:600}
+.arrow{width:26px;align-self:center;text-align:center;color:var(--line);margin-top:20px}
+.mod{background:var(--panel);border:1px solid var(--line);border-radius:11px;padding:10px 12px;margin-bottom:8px;cursor:pointer}
+.mod b{display:block;font-size:13px}.mod span{color:var(--mut);font-size:12px}
+.mod.sel{border-color:var(--acc);box-shadow:0 0 0 3px #5eead422}
+.mod.fixed{background:transparent;border-style:dashed}
+.add{border:1px dashed var(--line);border-radius:11px;padding:7px;text-align:center;color:var(--mut);font-size:12px;cursor:pointer}
+.tag{display:inline-block;font-size:10px;padding:1px 7px;border-radius:99px;background:#a78bfa22;color:var(--acc2);margin-left:4px}
+.insp{width:330px;border-left:1px solid var(--line);background:var(--panel);padding:18px;overflow:auto}
+.insp h3{margin:0 0 2px;font-size:15px}.insp .sub{color:var(--mut);font-size:12px;margin-bottom:14px}
+.f{margin-bottom:13px}.f label{display:flex;justify-content:space-between;font-size:12px;color:var(--mut);margin-bottom:4px}
+.f label em{font-style:normal;color:var(--tx);font-variant-numeric:tabular-nums}
+.sl{height:5px;border-radius:9px;background:var(--line);position:relative}
+.sl i{position:absolute;left:0;top:0;bottom:0;border-radius:9px;background:var(--acc)}
+.sl u{position:absolute;top:-4px;width:13px;height:13px;border-radius:50%;background:#fff;margin-left:-6px}
+.sel2{background:var(--panel2);border:1px solid var(--line);border-radius:8px;padding:7px 10px;font-size:13px}
+pre{background:#0a0e13;border:1px solid var(--line);border-radius:9px;padding:10px;font-size:11.5px;color:#b6c2d0;overflow:auto;margin:0}
+pre .a{color:var(--ok)} pre .r{color:var(--bad)}
+.hint{color:var(--mut);font-size:12px;margin-top:10px}
+/* results */
+.hist{width:270px;border-right:1px solid var(--line);background:var(--panel);padding:14px;overflow:auto}
+.hist h3{font-size:12px;letter-spacing:.08em;text-transform:uppercase;color:var(--mut);margin:0 0 10px}
+.run{border:1px solid var(--line);border-radius:11px;padding:10px;margin-bottom:8px;cursor:pointer}
+.run.sel{border-color:var(--acc)}.run.cmp{border-color:var(--acc2)}
+.run b{font-size:13px}.run span{display:block;color:var(--mut);font-size:11.5px}
+.res{flex:1;padding:18px;overflow:auto;display:grid;grid-template-columns:1.5fr 1fr;gap:16px;align-content:start}
+.card{background:var(--panel);border:1px solid var(--line);border-radius:14px;padding:14px}
+.card h3{margin:0 0 10px;font-size:12px;letter-spacing:.08em;text-transform:uppercase;color:var(--mut);font-weight:600}
+.video{aspect-ratio:4/3;border-radius:10px;background:linear-gradient(#475569 0 38%,#334155 38% 100%);position:relative;overflow:hidden}
+.video .road{position:absolute;left:18%;right:18%;bottom:0;height:62%;background:#1e293b;clip-path:polygon(40% 0,60% 0,100% 100%,0 100%)}
+.box{position:absolute;border:2px solid var(--acc);border-radius:3px;font-size:11px}
+.box s{position:absolute;top:-19px;left:-2px;background:var(--acc);color:#04201c;padding:1px 6px;border-radius:4px;text-decoration:none;font-weight:600;white-space:nowrap}
+.bev{position:absolute;right:10px;top:10px;width:110px;height:130px;background:#0a0e13cc;border:1px solid var(--line);border-radius:8px}
+.scrub{height:6px;background:var(--line);border-radius:9px;margin-top:12px;position:relative}.scrub i{position:absolute;left:0;width:41%;top:0;bottom:0;background:var(--acc2);border-radius:9px}
+.kpis{display:grid;grid-template-columns:repeat(3,1fr);gap:10px}
+.k b{font-size:20px;display:block}.k span{color:var(--mut);font-size:11.5px}
+.d{font-size:11.5px}.good{color:var(--ok)}.badc{color:var(--bad)}
+table{width:100%;border-collapse:collapse;font-size:12.5px}td,th{padding:5px 6px;text-align:left;border-bottom:1px solid var(--line)}th{color:var(--mut);font-weight:500}
+.wide{grid-column:1/-1}
+</style>
+</head>
+<body>
+<div class="rail">
+  <div class="logo"></div>
+  <div class="nav on" data-s="ed">Editor</div>
+  <div class="nav" data-s="rs">Execuções</div>
+</div>
+<div class="main">
+  <div class="top">
+    <h1 id="ttl">Editor de pipeline</h1>
+    <span class="chip">rfdetr_sam2_lanes_motion_da3.yaml</span>
+    <span class="chip" style="color:var(--warn)">● alterações não salvas</span>
+    <div class="sp"></div>
+    <button class="btn">Abrir YAML</button>
+    <button class="btn">Salvar YAML</button>
+    <button class="btn pri">▶ Processar</button>
+  </div>
+
+  <!-- Tela 1: editor -->
+  <div class="screen on" id="ed">
+    <div class="canvas">
+      <div class="drop">
+        <div class="thumb"></div>
+        <div><b>RPI_s000070_0000_vfr.mkv</b><br><span style="color:var(--mut)">1296×972 · 25 fps · 3 min 15 s — arraste outro vídeo aqui para trocar</span></div>
+        <div class="sp"></div>
+        <span class="chip">trecho: 0:00 – 0:10</span><span class="chip">stride 1</span>
+      </div>
+
+      <div class="flow">
+        <div class="stage"><h4>Fonte</h4><div class="mod fixed"><b>Vídeo</b><span>RPI_s000070</span></div></div>
+        <div class="arrow">→</div>
+        <div class="stage"><h4>Detectores</h4>
+          <div class="mod sel"><b>RF-DETR large</b><span>limiar 0.5 · driving</span></div>
+          <div class="mod"><b>YOLO26 seg</b><span>limiar 0.4 · driving</span></div>
+          <div class="add">+ detector</div></div>
+        <div class="arrow">→</div>
+        <div class="stage"><h4>Agregação</h4>
+          <div class="mod"><b>WBF</b><span>pesos 1.0 / 0.8</span></div></div>
+        <div class="arrow">→</div>
+        <div class="stage"><h4>Refinadores</h4>
+          <div class="mod"><b>SAM 2.1 large</b><span>só caixas sem máscara</span></div>
+          <div class="add">+ refinador</div></div>
+        <div class="arrow">→</div>
+        <div class="stage"><h4>Profundidade</h4>
+          <div class="mod"><b>DA3 métrico</b><span>res. 504 · focal estimada</span></div></div>
+        <div class="arrow">→</div>
+        <div class="stage"><h4>Rastreio e filtro</h4>
+          <div class="mod"><b>Rastreador IoU</b><span>iou 0.3 · 0.5 s</span></div>
+          <div class="mod"><b>Kalman</b><span>accel_std 2.0</span></div></div>
+        <div class="arrow">→</div>
+        <div class="stage"><h4>Semântica</h4>
+          <div class="mod"><b>TwinLiteNet+ lanes</b><span>exclui faixas</span></div>
+          <div class="add">+ segmentador</div></div>
+        <div class="arrow">→</div>
+        <div class="stage"><h4>Movimento</h4>
+          <div class="mod"><b>Trajetória CV</b><span>horizonte 3 s</span></div></div>
+      </div>
+      <p class="hint">Cada vaga aceita um ou mais módulos; os módulos disponíveis vêm do registro de adaptadores. Clique num módulo para configurar.</p>
+    </div>
+
+    <div class="insp">
+      <h3>Kalman</h3><div class="sub">Suavização por trilha · <code>smoothing</code></div>
+      <div class="f"><label>accel_std (m/s²) <em>2.0</em></label><div class="sl"><i style="width:40%"></i><u style="left:40%"></u></div></div>
+      <div class="f"><label>std_scale <em>0.50</em></label><div class="sl"><i style="width:25%"></i><u style="left:25%"></u></div></div>
+      <div class="f"><label>rel_floor <em>0.010</em></label><div class="sl"><i style="width:10%"></i><u style="left:10%"></u></div></div>
+      <div class="f"><label>reset_after_s <em>1.0</em></label><div class="sl"><i style="width:33%"></i><u style="left:33%"></u></div></div>
+      <div class="f"><label>filtro</label><div class="sel2">kalman ▾</div></div>
+      <div class="hint" style="margin:0 0 6px">Mudanças em relação ao YAML salvo</div>
+<pre><span class="r">- accel_std: 2.0</span>
+<span class="a">+ accel_std: 3.5</span>
+<span class="r">- rel_floor: 0.01</span>
+<span class="a">+ rel_floor: 0.02</span></pre>
+      <div class="hint">Os campos, limites e descrições são gerados das dataclasses de opções; erros de validação aparecem ao lado do campo.</div>
+    </div>
+  </div>
+
+  <!-- Tela 2: execuções -->
+  <div class="screen" id="rs">
+    <div class="hist">
+      <h3>Histórico</h3>
+      <div class="run sel"><b>#14 · s000070_0000</b><span>hoje 11:42 · accel_std 3.5</span><span>RF-DETR + SAM2 + DA3 · 251 quadros</span></div>
+      <div class="run cmp"><b>#13 · s000070_0000</b><span>hoje 10:58 · accel_std 2.0</span><span>comparando com esta ✓</span></div>
+      <div class="run"><b>#12 · s000067_0000</b><span>ontem · YOLO26 + DA3</span></div>
+      <div class="run"><b>#11 · IMG_4021</b><span>23/10 · cv, sem lanes</span></div>
+      <div class="hint">Cada execução guarda o YAML, o vídeo de entrada, o vídeo anotado, o CSV e o <code>metrics.json</code>.</div>
+      <div style="margin-top:10px;display:flex;gap:6px"><button class="btn">Reabrir no editor</button><button class="btn">Reexecutar</button></div>
+    </div>
+    <div class="res">
+      <div class="card">
+        <h3>#14 · vídeo anotado</h3>
+        <div class="video"><div class="road"></div>
+          <div class="box" style="left:41%;top:44%;width:17%;height:20%"><s>vehicle #3 · 23.4 m · −3.1 m/s</s></div>
+          <div class="box" style="left:66%;top:52%;width:22%;height:26%;border-color:var(--acc2)"><s style="background:var(--acc2)">vehicle #5 · 12.8 m</s></div>
+          <div class="bev"><svg viewBox="0 0 110 130" width="110" height="130"><path d="M55 120 L55 40" stroke="#5eead4" stroke-dasharray="3 3"/><circle cx="55" cy="120" r="4" fill="#fff"/><circle cx="55" cy="55" r="4" fill="#5eead4"/><circle cx="80" cy="88" r="4" fill="#a78bfa"/><path d="M80 88 Q82 70 86 52" stroke="#a78bfa" fill="none"/></svg></div>
+        </div>
+        <div class="scrub"><i></i></div>
+      </div>
+      <div class="card">
+        <h3>Resumo · #14 vs #13</h3>
+        <div class="kpis">
+          <div class="k"><b>23.4 m</b><span>mediana de distância</span></div>
+          <div class="k"><b>0.42 m</b><span>jitter <span class="d good">−18 %</span></span></div>
+          <div class="k"><b>2.1 f/s</b><span>velocidade <span class="d">±0 %</span></span></div>
+        </div>
+        <h3 style="margin-top:16px">Mudanças de configuração</h3>
+<pre><span class="r">smoothing.accel_std: 2.0</span>
+<span class="a">smoothing.accel_std: 3.5</span>
+<span class="r">smoothing.rel_floor: 0.01</span>
+<span class="a">smoothing.rel_floor: 0.02</span></pre>
+      </div>
+      <div class="card wide">
+        <h3>Distância por trilha ao longo do tempo (bruta × suavizada · #14 sobre #13)</h3>
+        <svg viewBox="0 0 800 150" width="100%" height="150" preserveAspectRatio="none">
+          <g stroke="#26303c"><line x1="0" y1="30" x2="800" y2="30"/><line x1="0" y1="75" x2="800" y2="75"/><line x1="0" y1="120" x2="800" y2="120"/></g>
+          <polyline fill="none" stroke="#8b98a8" stroke-width="1" opacity=".6" points="0,60 40,52 80,66 120,50 160,58 200,46 240,55 280,42 320,50 360,38 400,46 440,35 480,44 520,30 560,38 600,28 640,36 680,26 720,32 760,24 800,30"/>
+          <polyline fill="none" stroke="#a78bfa" stroke-width="2" stroke-dasharray="5 4" points="0,58 100,54 200,50 300,46 400,42 500,38 600,33 700,29 800,26"/>
+          <polyline fill="none" stroke="#5eead4" stroke-width="2.2" points="0,57 100,53 200,49 300,45 400,41 500,36 600,32 700,28 800,25"/>
+        </svg>
+        <div class="hint">cinza: medida bruta · roxo tracejado: #13 · verde: #14. Clique num ponto para saltar o vídeo àquele instante.</div>
+      </div>
+    </div>
+  </div>
+</div>
+<script>
+document.querySelectorAll('.nav').forEach(n=>n.onclick=()=>{
+  document.querySelectorAll('.nav').forEach(x=>x.classList.toggle('on',x===n));
+  document.querySelectorAll('.screen').forEach(s=>s.classList.toggle('on',s.id===n.dataset.s));
+  document.getElementById('ttl').textContent=n.dataset.s==='ed'?'Editor de pipeline':'Execuções e comparação';
+});
+document.querySelectorAll('.mod:not(.fixed)').forEach(m=>m.onclick=()=>{
+  document.querySelectorAll('.mod').forEach(x=>x.classList.remove('sel'));m.classList.add('sel');
+});
+</script>
+</body>
+</html>
