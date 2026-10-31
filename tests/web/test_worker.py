@@ -106,3 +106,37 @@ def test_worker_unexpected_error_exits_1(scene_config, capsys, monkeypatch):
     assert worker.main([str(path)]) == 1
     (event,) = lines(capsys)
     assert event == {"event": "error", "message": "RuntimeError: CUDA out of memory"}
+
+
+def test_worker_never_touches_a_foreign_folder_created_during_load(
+    scene_config, capsys, monkeypatch
+):
+    path, _, out_root = scene_config
+    real_run = worker.cli.run
+    foreign = out_root / "20260101_000000_batch_other"
+
+    def run_with_batch_writing(cfg, on_frame=None):
+        foreign.mkdir(parents=True)  # a CLI batch makes its folder meanwhile
+        return real_run(cfg, on_frame)
+
+    monkeypatch.setattr(worker.cli, "run", run_with_batch_writing)
+    assert worker.main([str(path)]) == 0
+    events = lines(capsys)
+    ours = Path(events[0]["run_dir"])
+    assert ours != foreign and ours.name.endswith("_w")
+    assert list(foreign.iterdir()) == []
+
+
+def test_worker_failure_before_run_folder_writes_nothing_foreign(
+    scene_config, capsys, monkeypatch
+):
+    path, _, out_root = scene_config
+    foreign = out_root / "20260101_000000_batch_other"
+
+    def boom(cfg, on_frame=None):
+        foreign.mkdir(parents=True)
+        raise RuntimeError("CUDA out of memory")
+
+    monkeypatch.setattr(worker.cli, "run", boom)
+    assert worker.main([str(path)]) == 1
+    assert list(foreign.iterdir()) == []

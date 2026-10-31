@@ -147,8 +147,10 @@ def create_app(
 
     @app.get("/api/runs/{run_id}")
     def get_run(run_id: str) -> dict[str, Any]:
-        run_folder_or_404(run_id)
-        return history.load_run(paths.out_root, run_id).to_dict()
+        try:
+            return history.load_run(paths.out_root, run_id).to_dict()
+        except (ValueError, FileNotFoundError):
+            raise HTTPException(404, f"unknown run {run_id!r}") from None
 
     @app.get("/api/runs/{run_id}/{name}")
     def run_file(run_id: str, name: str) -> FileResponse:

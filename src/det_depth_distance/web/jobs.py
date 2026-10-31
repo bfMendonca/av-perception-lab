@@ -22,6 +22,7 @@ import tempfile
 import uuid
 from collections.abc import AsyncIterator, Callable
 from dataclasses import dataclass, field
+from datetime import datetime
 from pathlib import Path
 from typing import Any
 
@@ -30,6 +31,7 @@ import yaml
 from det_depth_distance.web.paths import WebPaths
 
 LOG_TAIL_LINES = 30
+JOBS_DIR = ".web_jobs"  # under out_root: one JSON record per job (see history)
 VIDEO_ID_ENV = "DDD_WEB_VIDEO_ID"
 _VIDEO_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")
 TERMINAL = ("done", "failed", "cancelled")
@@ -53,6 +55,7 @@ class Job:
     frames: int = 0
     log_tail: list[str] = field(default_factory=list)
     events: list[dict[str, Any]] = field(default_factory=list)
+    created: str = ""
     closed: bool = False  # the final `end` event is in `events`
     cancel_requested: bool = False
     proc: asyncio.subprocess.Process | None = field(default=None, repr=False)
@@ -98,13 +101,19 @@ class JobQueue:
             raise ValueError(f"invalid video id {video_id!r}")
         config = json.loads(json.dumps(config))  # private deep copy
         output = config.get("output")
+        job_id = uuid.uuid4().hex[:12]
+        # A unique tag makes the run folder (`..._<tag>`) recognisable as this
+        # job's among the folders other processes write into the same out_root.
         config["output"] = {
             **(output if isinstance(output, dict) else {}),
             "out_root": str(self.paths.out_root),
+            "tag": f"web-{job_id}",
         }
-        job = Job(uuid.uuid4().hex[:12], config, video_id)
+        job = Job(job_id, config, video_id)
+        job.created = datetime.now().astimezone().isoformat(timespec="seconds")
         job.events.append({"event": "queued"})
         self._jobs[job.id] = job
+        self._persist(job)
         self._waiting.append(job)
         self._ensure_runner()
         self._wake.set()
@@ -127,9 +136,12 @@ class JobQueue:
         job.status = "cancelled"
         if job in self._waiting:
             self._waiting.remove(job)
+            self._persist(job)
             asyncio.get_running_loop().create_task(self._close(job))
-        elif job.proc is not None:
-            _kill(job.proc)
+        else:
+            self._persist(job)
+            if job.proc is not None:
+                _kill(job.proc)
 
     async def events(self, job_id: str) -> AsyncIterator[dict[str, Any]]:
         """Every event of the job from the start; ends after its `end` event."""
@@ -174,6 +186,7 @@ class JobQueue:
                 {"event": "end", "status": job.status, "error": job.error}
             )
             job.closed = True
+            self._persist(job)
             job.cond.notify_all()
 
     async def _run_forever(self) -> None:
@@ -202,7 +215,7 @@ class JobQueue:
             proc = await asyncio.create_subprocess_exec(
                 *self.worker_argv(path),
                 stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.STDOUT,
+                stderr=asyncio.subprocess.PIPE,  # log only: never mixed with events
                 env=env,
                 limit=1 << 20,
                 start_new_session=True,  # own process group: kill takes the ffmpeg too
@@ -212,8 +225,11 @@ class JobQueue:
                 _kill(proc)
             else:
                 job.status = "running"
+                self._persist(job)
                 await self._emit(job, {"event": "running"})
-            done_event = await self._read(job, proc)
+            done_event, _ = await asyncio.gather(
+                self._read(job, proc), self._drain_stderr(job, proc)
+            )
             code = await proc.wait()
             if job.cancel_requested:
                 job.status = "cancelled"
@@ -235,6 +251,22 @@ class JobQueue:
             job.proc = None
             shutil.rmtree(tmp, ignore_errors=True)
 
+    async def _drain_stderr(self, job: Job, proc: asyncio.subprocess.Process) -> None:
+        """Feed the log tail from stderr; `\\r` (progress bars) also ends a line."""
+        assert proc.stderr is not None
+        pending = ""
+        while chunk := await proc.stderr.read(65536):
+            pending += chunk.decode(errors="replace")
+            *lines, pending = re.split(r"[\r\n]", pending)
+            pending = pending[-4096:]
+            self._log(job, lines)
+        self._log(job, [pending])
+
+    @staticmethod
+    def _log(job: Job, lines: list[str]) -> None:
+        job.log_tail.extend(line.rstrip() for line in lines if line.strip())
+        del job.log_tail[:-LOG_TAIL_LINES]
+
     async def _read(self, job: Job, proc: asyncio.subprocess.Process) -> bool:
         """Consume the worker output; True when a `done` event was seen."""
         assert proc.stdout is not None
@@ -248,20 +280,40 @@ class JobQueue:
             except ValueError:
                 event = None
             if not isinstance(event, dict) or "event" not in event:
-                job.log_tail.append(line)
-                del job.log_tail[:-LOG_TAIL_LINES]
+                self._log(job, [line])
                 continue
             kind = event["event"]
             if kind == "started":
                 job.run_dir = event.get("run_dir")
+                self._persist(job)
             elif kind == "frame":
                 job.frames = int(event.get("n", job.frames))
             elif kind == "error":
                 job.error = str(event.get("message", ""))
             elif kind == "done":
                 saw_done = True
+                job.run_dir = event.get("run_dir") or job.run_dir
             await self._emit(job, event)
         return saw_done
+
+    def _persist(self, job: Job) -> None:
+        """Rewrite the job's record (history lists failed jobs without a folder)."""
+        record = {
+            "id": job.id,
+            "status": job.status,
+            "created": job.created,
+            "video_id": job.video_id,
+            "error": job.error,
+            "log_tail": job.log_tail,
+            "run_dir": job.run_dir,
+            "config": job.config,
+        }
+        folder = self.paths.out_root / JOBS_DIR
+        with contextlib.suppress(OSError):
+            folder.mkdir(parents=True, exist_ok=True)
+            tmp = folder / f"{job.id}.tmp"
+            tmp.write_text(json.dumps(record))
+            os.replace(tmp, folder / f"{job.id}.json")
 
     def _flag_run(self, job: Job) -> None:
         """Mark the job's run folder `failed`/`cancelled` in its web_run.json."""

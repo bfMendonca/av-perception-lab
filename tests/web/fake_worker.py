@@ -30,10 +30,23 @@ def main() -> int:
     if fake.get("mark"):
         with open(fake["mark"], "a") as fh:
             fh.write(f"start {name}\n")
-    run_dir = Path(cfg["output"]["out_root"]) / f"20260101_000000_{name}"
+    if mode == "crash_early":  # e.g. CUDA OOM while loading: no folder yet
+        print("RuntimeError: CUDA out of memory (load)", file=sys.stderr, flush=True)
+        return 1
+    if mode == "sleep_early":
+        time.sleep(60)
+    out = cfg["output"]
+    run_dir = Path(out["out_root"]) / f"20260101_000000_{name}_{out['tag']}"
     run_dir.mkdir(parents=True, exist_ok=True)
     (run_dir / "web_run.json").write_text(json.dumps({"status": "running"}))
-    emit(event="started", run_dir=str(run_dir))
+    emit(
+        event="started",
+        run_dir=str(run_dir.with_name("foreign") if mode == "wrongstart" else run_dir),
+    )
+    if mode == "partial_stderr":  # no newline: must not touch the event stream
+        sys.stderr.write("downloading 50%\r")
+        sys.stderr.flush()
+        time.sleep(0.2)
     if mode == "crash":
         print("RuntimeError: CUDA out of memory", file=sys.stderr, flush=True)
         return 1

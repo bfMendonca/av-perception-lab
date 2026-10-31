@@ -82,11 +82,17 @@ def main(argv: Sequence[str] | None = None) -> int:
     state: dict[str, Any] = {"run_dir": None, "frames": 0, "preview_at": -1e9}
 
     def discover() -> Path | None:
-        """The run folder `run()` created (newest new folder of out_root)."""
-        if state["run_dir"] is None:
-            new = _folders(out_root) - before
+        """The run folder `run()` created for this job: a new folder of out_root
+        named `..._<output.tag>`. Other processes write into the same out_root,
+        so without a tag (or a match) nothing is adopted and nothing written."""
+        if state["run_dir"] is None and cfg.output.tag:
+            new = [
+                p
+                for p in _folders(out_root) - before
+                if p.name.endswith(f"_{cfg.output.tag}")
+            ]
             if new:
-                run_dir = max(new, key=lambda p: p.stat().st_mtime)
+                run_dir = max(new, key=lambda p: p.name)
                 state["run_dir"] = run_dir
                 (run_dir / "config.yaml").write_text(
                     yaml.safe_dump(cfg.to_dict(), sort_keys=False, allow_unicode=True)

@@ -23,6 +23,9 @@ RUN_FILES = {
     "detections": "detections.csv",
 }
 _MARKERS = ("detections.csv", "metrics.json", "web_run.json", "video.mp4")
+JOBS_DIR = (
+    ".web_jobs"  # same folder as web.jobs.JOBS_DIR (history must not import jobs)
+)
 _STAMP = "%Y%m%d_%H%M%S"
 
 
@@ -40,6 +43,7 @@ class RunRecord:
     status: str = "incomplete"  # queued|running|done|failed|cancelled|incomplete
     complete: bool = False  # metrics.json written and the run finished
     has_config: bool = False
+    error: str | None = None  # why a job failed (job records only)
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -106,8 +110,28 @@ def _record(folder: Path) -> RunRecord:
     )
 
 
+def _job_record(path: Path, out_root: Path) -> RunRecord | None:
+    """Entry for a failed/cancelled job whose run folder does not exist."""
+    data = _read_json(path)
+    status, run_dir = data.get("status"), data.get("run_dir")
+    if status not in ("failed", "cancelled") or not isinstance(data.get("id"), str):
+        return None
+    if isinstance(run_dir, str) and (out_root / Path(run_dir).name).is_dir():
+        return None  # the folder's own record covers it
+    config = data.get("config") if isinstance(data.get("config"), dict) else {}
+    source = config.get("source") if isinstance(config.get("source"), dict) else {}
+    video = source.get("video")
+    return RunRecord(
+        id=f"job-{data['id']}",
+        created=str(data.get("created") or ""),
+        video=Path(video).name if isinstance(video, str) else None,
+        status=status,
+        error=data.get("error") if isinstance(data.get("error"), str) else None,
+    )
+
+
 def scan_runs(out_root: Path) -> list[RunRecord]:
-    """Every run folder under `out_root`, newest first."""
+    """Every run folder under `out_root` plus failed jobs without one, newest first."""
     if not out_root.is_dir():
         return []
     folders = [
@@ -117,7 +141,11 @@ def scan_runs(out_root: Path) -> list[RunRecord]:
         and not p.name.startswith(".")
         and any((p / m).exists() for m in _MARKERS)
     ]
-    return [_record(p) for p in sorted(folders, key=lambda p: p.name, reverse=True)]
+    records = [_record(p) for p in folders]
+    jobs = out_root / JOBS_DIR
+    if jobs.is_dir():
+        records += [r for p in jobs.glob("*.json") if (r := _job_record(p, out_root))]
+    return sorted(records, key=lambda r: r.created, reverse=True)
 
 
 def run_folder(out_root: Path, run_id: str) -> Path:
@@ -137,5 +165,13 @@ def run_folder(out_root: Path, run_id: str) -> Path:
 
 
 def load_run(out_root: Path, run_id: str) -> RunRecord:
-    """The record of one run (errors as in `run_folder`)."""
+    """The record of one run (errors as in `run_folder`); `job-<id>` is a failed
+    job that left no folder."""
+    if run_id.startswith("job-"):
+        if not run_id[4:].isalnum():
+            raise ValueError(f"invalid run id {run_id!r}")
+        record = _job_record(out_root / JOBS_DIR / f"{run_id[4:]}.json", out_root)
+        if record is None:
+            raise FileNotFoundError(run_id)
+        return record
     return _record(run_folder(out_root, run_id))

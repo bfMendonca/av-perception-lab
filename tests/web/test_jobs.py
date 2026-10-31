@@ -174,5 +174,76 @@ def test_submit_forces_out_root_and_rejects_bad_video_id(tmp_path):
     job = asyncio.run(scenario())
     assert job.config["output"] == {
         "out_root": str(tmp_path / "out"),
-        "tag": "t",
+        "tag": f"web-{job.id}",
     }
+
+
+def test_done_event_sets_run_dir_and_job_record_is_persisted(tmp_path):
+    async def scenario():
+        queue = make_queue(tmp_path)
+        try:
+            job = queue.submit({"fake": {"mode": "wrongstart", "name": "d"}})
+            await collect(queue, job.id)
+            return job
+        finally:
+            await queue.aclose()
+
+    job = asyncio.run(scenario())
+    assert job.status == "done"
+    assert job.run_dir.endswith(f"_d_web-{job.id}")  # taken from `done`
+    record = json.loads((tmp_path / "out/.web_jobs" / f"{job.id}.json").read_text())
+    assert record["status"] == "done" and record["run_dir"] == job.run_dir
+
+
+def test_stderr_without_newline_does_not_break_done(tmp_path):
+    async def scenario():
+        queue = make_queue(tmp_path)
+        try:
+            job = queue.submit({"fake": {"mode": "partial_stderr", "name": "p"}})
+            await collect(queue, job.id)
+            return job
+        finally:
+            await queue.aclose()
+
+    job = asyncio.run(scenario())
+    assert job.status == "done" and job.frames == 2
+    assert "downloading 50%" in job.log_tail
+
+
+def test_failure_before_started_leaves_a_failed_history_entry(tmp_path):
+    from det_depth_distance.web.history import load_run, scan_runs
+
+    async def scenario():
+        queue = make_queue(tmp_path)
+        try:
+            job = queue.submit({"fake": {"mode": "crash_early"}})
+            await collect(queue, job.id)
+            return job
+        finally:
+            await queue.aclose()
+
+    job = asyncio.run(scenario())
+    assert job.status == "failed" and job.run_dir is None
+    (rec,) = scan_runs(tmp_path / "out")  # `.web_jobs` itself is not a run
+    assert rec.id == f"job-{job.id}" and rec.status == "failed"
+    assert rec.complete is False and "CUDA out of memory (load)" in rec.error
+    assert load_run(tmp_path / "out", rec.id) == rec
+
+
+def test_cancel_before_started_leaves_a_cancelled_history_entry(tmp_path):
+    from det_depth_distance.web.history import scan_runs
+
+    async def scenario():
+        queue = make_queue(tmp_path)
+        try:
+            job = queue.submit({"fake": {"mode": "sleep_early"}})
+            await wait_for(lambda: job.status == "running")
+            queue.cancel(job.id)
+            await collect(queue, job.id)
+            return job
+        finally:
+            await queue.aclose()
+
+    job = asyncio.run(scenario())
+    (rec,) = scan_runs(tmp_path / "out")
+    assert (rec.id, rec.status, rec.complete) == (f"job-{job.id}", "cancelled", False)
