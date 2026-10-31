@@ -1095,6 +1095,35 @@ The GPU smoke and the task_0001 regression skip an example config until its
 models are ready under the weights root: on a GPU host run `--prepare` once per
 config (the adapter-contract tests keep their `DDD_*` paths).
 
+### Web interface: model status and Prepare
+
+The web server exposes the same readiness and Prepare as the CLI (task_0022;
+the editor states come with task_0023). Start it with the weights root it
+should check and fill:
+
+```bash
+uv run --extra infer --extra web det-depth-distance-web --weights-root weights   # default: $DDD_WEIGHTS_ROOT, else weights/
+```
+
+- `POST /api/models/status` with `{config}` returns one row per model the
+  config would load (`stage`, `index`, `type`, `name`, `state`, `layers`,
+  `missing`, `size_bytes`, `message`) and `total_size_bytes` still to
+  download. Nothing is loaded and torch is not imported.
+- `POST /api/models/prepare` with `{config, models: "all"}` (or a list of
+  `{stage, index}` from the status rows) queues a download; follow it with
+  `GET /api/models/prepare/{id}/events` (SSE, per-model progress) and cancel
+  it with `DELETE /api/models/prepare/{id}`. One Prepare runs at a time and
+  never blocks the processing queue; a cancelled or failed model stays not
+  ready (a partial file is never counted).
+- A run whose models are not all ready is refused with 409
+  `{models_not_ready: [...]}`.
+- The client only names models: URLs and target folders come from the
+  adapters' code, downloads land only under the weights root, and messages
+  show `<weights root>` instead of the server's absolute path. The weights
+  root may not overlap `--library-root` or `--out-root`; with `--asset-root`
+  it counts as an asset folder (a bare YOLO `weights: yolo26l.pt` is checked
+  at `<weights root>/ultralytics/yolo26l.pt`, where the adapter opens it).
+
 ### Pesos dos refinadores e do SegFormer
 
 Nada é baixado em tempo de execução (`local_files_only=True`); um peso
@@ -1202,5 +1231,6 @@ Variáveis opcionais: `SYNC_HOST` (padrão `gpu-host`) e `SYNC_DEST` (padrão
 - [x] **Movimento por trilha e previsão de trajetória** (`task_0009`) — estágio `motion`: posição no plano, velocidade, rumo e taxa de giro com incertezas, modelos por classe (`cv`, `ctrv`), trajetória prevista com covariância no vídeo, no painel BEV e em `trajectories.jsonl`, ego-motion opcional por CSV. Validado no servidor GPU (`-m gpu` e passo `20-motion` do `gpu_pending.sh`); conferência visual dos vídeos pendente.
 - [x] **Model requirements and status check** (`task_0019`) — `core/requirements.py` declares what a model needs (weights, pinned code clones, packages) and `check()` reports readiness without importing torch; the provisioning engine, adapter migration and UI follow in `task_0020`–`task_0025`. New documentation is written in English.
 - [x] **Provisioning engine and `--prepare`** (`task_0020`) — `core/provision/` obtains a model's declared weights and code with registered sources (Hugging Face, URL with resume and sha256, pinned git clone; a new source kind is one class + `register_source`; Google Drive not yet), atomically, cancellably and idempotently; `det-depth-distance --config X.yaml --prepare` prepares every model of a YAML. Adapters declare their requirements in `task_0021`.
+- [x] **Web API for model status and Prepare** (`task_0022`) — `POST /api/models/status`, a prepare queue with SSE progress and cancel (independent from the GPU queue), 409 for runs with models not ready, `--weights-root`.
 - [ ] **Ego-motion pelo vídeo** (`task_0011`, futura) — odometria visual RGB-D com a profundidade do DA3 no fundo estático (ou só o *yaw* pela homografia do fundo distante) como provedor `ego_motion`.
 - [x] **Configuração leve** (`task_0010`) — `yolo_light_da3.yaml` para GPU de 4 GB (YOLO26s-seg, DA3METRIC-L, rastreamento, TwinLiteNet+ small, SegFormer-B0). Medição de VRAM no notebook pendente.

@@ -9,7 +9,8 @@ advanced/help, all optional) and travel unchanged as the field's `hint`.
 `validate_config` returns every problem it can find as dotted-path errors.
 `config_paths` lists every filesystem path a configuration names, found from
 the `Path` annotations of the sections and of the adapters' options (no list
-of field names here, so a new path option is covered by itself).
+of field names here, so a new path option is covered by itself); a field with
+`core.options.PATH_RESOLVER` metadata is reported as its adapter resolves it.
 """
 
 import dataclasses
@@ -22,7 +23,7 @@ from typing import Any, Literal, Union
 
 from det_depth_distance import config
 from det_depth_distance.core import registry
-from det_depth_distance.core.options import ConfigError, from_mapping
+from det_depth_distance.core.options import PATH_RESOLVER, ConfigError, from_mapping
 from det_depth_distance.web import stages
 
 CATALOG_VERSION = 1
@@ -155,7 +156,7 @@ def module_catalog() -> dict[str, Any]:
     }
 
 
-def _split_error(exc: ConfigError) -> dict[str, str]:
+def split_error(exc: ConfigError) -> dict[str, str]:
     """`{"path", "message"}` from a ConfigError message `path: message`."""
     match = _PATH_PREFIX.match(str(exc))
     if match is None:
@@ -199,7 +200,7 @@ def validate_config(data: dict[str, Any]) -> list[dict[str, str]]:
         errors.extend(config.motion_spec_errors(cfg))
     seen, out = set(), []
     for exc in errors:
-        item = _split_error(exc)
+        item = split_error(exc)
         key = (item["path"], item["message"])
         if key not in seen:
             seen.add(key)
@@ -246,7 +247,14 @@ def _walk_paths(value: Any, path: str, found: list[tuple[str, Path]]) -> None:
         found.append((path, value))
     elif dataclasses.is_dataclass(value) and not isinstance(value, type):
         for f in dataclasses.fields(value):
-            _walk_paths(getattr(value, f.name), f"{path}.{f.name}", found)
+            item = getattr(value, f.name)
+            resolver = f.metadata.get(PATH_RESOLVER)
+            if resolver is not None and isinstance(item, Path):
+                try:  # the file the adapter opens, not the text of the YAML
+                    item = Path(resolver(item))
+                except ValueError:
+                    pass  # validated options: kept as written
+            _walk_paths(item, f"{path}.{f.name}", found)
     elif isinstance(value, Mapping):
         if isinstance(value.get("type"), str):
             families = tuple(

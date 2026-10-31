@@ -99,7 +99,7 @@ det-depth-distance/
 │   ├── calibration.py       # TargetSpec, CalibrationTarget (ChessboardTarget, CharucoTarget), detect_views, select_views, coverage, calibrate_views, focal_px_from_35mm
 │   ├── evaluation/          # references.py (ReferenceSet), run_data.py (RunData, load_run), matching.py, stats.py (ErrorStats, summarize), evaluate.py, report.py
 │   ├── tools/               # calibrate.py (det-depth-distance-calibrate), evaluate.py (det-depth-distance-evaluate)
-│   ├── web/                 # web backend (extra `web`, torch-free): paths.py (WebPaths, safe_join), stages.py (stage list from core.registry), schema.py (options_schema, module_catalog, validate_config), app.py (create_app), jobs.py (JobQueue), worker.py, history.py (scan_runs, load_run, job_data), compare.py (run_summary, distance_series, config_diff, compare_runs, list_artifacts, effective_config), gpu.py (free_memory_mib), library.py (Library, VideoRecord, probe, .h264 remux, background preview), uploads.py (streaming multipart reader, bounded headers/parts/fields), security.py (Host/Origin/body-size middlewares, path policy, served-file headers), server.py (det-depth-distance-web: --allowed-host, --dev-origin, --asset-root); app.py also serves web/dist at / with an SPA fallback
+│   ├── web/                 # web backend (extra `web`, torch-free): paths.py (WebPaths, safe_join), stages.py (stage list from core.registry), schema.py (options_schema, module_catalog, validate_config), app.py (create_app), jobs.py (JobQueue), worker.py, history.py (scan_runs, load_run, job_data), compare.py (run_summary, distance_series, config_diff, compare_runs, list_artifacts, effective_config), gpu.py (free_memory_mib), library.py (Library, VideoRecord, probe, .h264 remux, background preview), uploads.py (streaming multipart reader, bounded headers/parts/fields), security.py (Host/Origin/body-size middlewares, path policy, weights-root overlap check, served-file headers), models.py (model status rows, PrepareQueue), server.py (det-depth-distance-web: --allowed-host, --dev-origin, --asset-root, --weights-root); app.py also serves web/dist at / with an SPA fallback
 │   ├── config.py            # RunConfig + sections, load_config, config_from_mapping, apply_overrides (--set); registers the built-in pipeline stages
 │   ├── distance.py          # pure numpy: box -> map pixels -> robust stats -> distance
 │   ├── temporal.py          # pure numpy: SmoothingConfig, distance_sigma, white_accel_cov, KalmanFilter1D / EmaFilter / MedianFilter (FILTERS), TrackSmoother
@@ -389,6 +389,38 @@ latest finished, newest first; job dicts also carry `created`, `video_id`,
 re-subscribes after a reload and settles a 404 job. History titles runs of
 library videos with the library name. `JOBS_DIR`/`VIDEO_ID_ENV` live in
 `web/paths.py`; `WebPaths.asset_roots`.
+
+Model readiness (task_0022, `web/models.py`): `POST /api/models/status`
+(`{config}` -> `{models: [{stage, index, type, name, state, layers, missing,
+size_bytes, message}], total_size_bytes}`; 422 `{errors}` for an invalid
+config) lists every model the config would load exactly like `--prepare`
+(`cli.config_requirements`; `stage`/`index` from the config path, e.g.
+`detectors`/1, `depth`/null, `camera.estimate`/null), checked on disk in the
+thread pool without importing torch; the model a Prepare is working on reads
+`preparing`; `total_size_bytes` sums the declared sizes of models not ready.
+`POST /api/models/prepare` (`{config, models: "all" | [{stage, index}]}` ->
+job view `{id, status queued|running|done|failed|cancelled, position, error,
+created, cancel_requested, models: [{stage, index, type, name, state, item,
+done, total, layers, missing, size_bytes, message}]}`; 422 for an invalid
+config, a path problem, an unknown key or any extra body field: a client never
+supplies a URL or a path), `GET /api/models/prepare/{id}`, `GET
+/api/models/prepare/{id}/events` (SSE with `id:`/`Last-Event-ID`; events
+queued, running, model (preparing, then the final state), progress `{stage,
+index, item, done, total}` at most every 0.2 s per item, cancelling, end) and
+`DELETE /api/models/prepare/{id}` (cancel; a running job ends `cancelled`
+once the engine notices between chunks, its model stays not ready). One
+`PrepareQueue` runner, independent from the GPU `JobQueue`, awaits
+`core.provision.prepare` in a worker thread (progress marshalled with
+`call_soon_threadsafe`); nothing is persisted (the 20 latest finished jobs are
+kept in memory). Messages name the weights root `<weights root>`, never its
+absolute path. `POST /api/runs` and rerun answer 409 `{models_not_ready:
+[status rows]}` when a model is not `ready` (after the 422 checks).
+`--weights-root` (else `DDD_WEIGHTS_ROOT`, else `weights/`) is set with
+`set_weights_root`; it may not be, contain or lie inside the library or
+`--out-root` (start-up error; `create_app` raises ValueError). With
+`--asset-root`, the weights root is an implicit asset root, and a `Path`
+option with `core.options.PATH_RESOLVER` field metadata (YOLO / Ultralytics
+SAM `weights` -> `resolve_weights`) is checked as its adapter resolves it.
 
 Results and comparison (task_0017, `web/compare.py`): `GET
 /api/runs/{id}/summary` (`{summary, metrics}`), `GET /api/compare?a=ID&b=ID`

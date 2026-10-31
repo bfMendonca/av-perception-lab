@@ -22,7 +22,7 @@ import, because ultralytics reads them at import time.
 """
 
 import os
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
@@ -36,7 +36,7 @@ from det_depth_distance.adapters._ultralytics import (
 from det_depth_distance.adapters._ultralytics_env import apply_ultralytics_env
 from det_depth_distance.adapters._weights import INFER_EXTRA, not_prepared, under_root
 from det_depth_distance.core.components import Detector, DetectorOptions, LoadContext
-from det_depth_distance.core.options import ConfigError
+from det_depth_distance.core.options import PATH_RESOLVER, ConfigError
 from det_depth_distance.core.registry import register
 from det_depth_distance.core.requirements import Requirements
 from det_depth_distance.core.types import Instances
@@ -56,7 +56,7 @@ class YoloDetector(Detector):
         # Existence is checked in _load (before the import), not here, so example
         # configs can be validated on machines without the weights. A bare file
         # name = under <weights root>/ultralytics/ (adapters._ultralytics).
-        weights: Path
+        weights: Path = field(metadata={PATH_RESOLVER: resolve_weights})
         imgsz: int = 640  # inference size, multiple of the stride
         half: bool = False  # FP16 inference
 

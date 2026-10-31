@@ -4,6 +4,44 @@ Todas as mudancas relevantes do det-depth-distance serao documentadas neste arqu
 
 ---
 
+## [2026-10-31] Web API for model status and Prepare
+
+The web server reports which models of a config are ready, downloads the
+missing ones on request and refuses runs that would fail on missing weights
+(task_0022).
+
+### Added
+
+- `POST /api/models/status`: per-model state, layers, missing items, size and
+  message for a config, plus the total size to download; computed like
+  `--prepare`, without importing torch or loading a model.
+- Prepare queue (`web/models.py`, `PrepareQueue`): `POST /api/models/prepare`
+  (`models: "all"` or `[{stage, index}]`), `GET /api/models/prepare/{id}`,
+  SSE `GET /api/models/prepare/{id}/events` with per-model progress and
+  `DELETE /api/models/prepare/{id}`; one Prepare at a time, independent from
+  the GPU job queue, engine in a worker thread.
+- `--weights-root` server flag (`DDD_WEIGHTS_ROOT` still honoured); the root
+  may not overlap the library or `--out-root`.
+- `core.options.PATH_RESOLVER` field metadata: path checks outside an adapter
+  see the file the adapter opens (YOLO / Ultralytics SAM `weights`).
+
+### Changed
+
+- `POST /api/runs` and rerun answer 409 `{models_not_ready: [...]}` when a
+  model of the config is not ready.
+- `--asset-root` checks accept paths inside the weights root, and bare YOLO /
+  Ultralytics SAM weight names resolve under `<weights root>/ultralytics/`, so
+  every shipped config passes them.
+
+### Security
+
+- Model request bodies refuse unknown fields (no client URL or path);
+  sources and targets come from the adapters' code and stay inside the weights
+  root; messages sent to clients show `<weights root>` instead of its absolute
+  path.
+
+---
+
 ## [2026-10-31] Adapter requirements and portable sample YAMLs
 
 Every adapter declares what it needs, so a fresh clone can run `--prepare`

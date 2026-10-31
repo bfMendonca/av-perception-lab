@@ -3,6 +3,11 @@
 Request guards (`web.security`): only the allowed `Host` names are answered,
 state-changing requests from another origin are refused, JSON bodies are
 capped, and served files are never sniffed nor run as pages of the app.
+
+Model readiness (`web.models`): `/api/models/status` checks the models of a
+config on disk, `/api/models/prepare` queues their download (one at a time,
+independent from the GPU job queue), and a run whose models are not all ready
+is refused with 409 before it is queued.
 """
 
 import asyncio
@@ -13,18 +18,28 @@ import sys
 from collections.abc import AsyncIterator, Callable, Collection, Sequence
 from contextlib import asynccontextmanager
 from pathlib import Path, PurePosixPath
-from typing import Any
+from typing import Any, Literal
 
 import yaml
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
-from pydantic import BaseModel
+from pydantic import BaseModel, ConfigDict
 from starlette.concurrency import run_in_threadpool
 from starlette.middleware.trustedhost import TrustedHostMiddleware
 from starlette.requests import ClientDisconnect
 
 from det_depth_distance import config
-from det_depth_distance.web import compare, gpu, history, schema, security, uploads
+from det_depth_distance.core import requirements
+from det_depth_distance.core.options import ConfigError
+from det_depth_distance.web import (
+    compare,
+    gpu,
+    history,
+    models,
+    schema,
+    security,
+    uploads,
+)
 from det_depth_distance.web.jobs import Job, JobQueue, valid_video_id
 from det_depth_distance.web.library import (
     InvalidVideo,
@@ -61,6 +76,25 @@ class ImportBody(BaseModel):
     path: str
 
 
+# Model bodies refuse unknown fields: a client cannot add a URL or a path to
+# a download (sources and targets come from the adapters' code).
+class StatusBody(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    config: dict[str, Any]
+
+
+class ModelKey(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    stage: str
+    index: int | None = None
+
+
+class PrepareBody(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    config: dict[str, Any]
+    models: list[ModelKey] | Literal["all"]
+
+
 VIDEO_FILES = ("file", "preview", "thumb")
 UPLOAD_PATH = "/api/videos"
 MAX_META_BYTES = 64 << 20  # the `.meta.json` part of an upload (read whole)
@@ -77,7 +111,7 @@ VIDEO_OUTSIDE_ROOTS = (
 def yaml_expanded_nodes(text: str) -> int:
     """Nodes of a YAML document once its aliases are expanded (each alias
     counts its whole target, as the JSON reply repeats it); anchors and
-    aliases stay usable (the shipped configs share `hf_cache` with one).
+    aliases stay usable (a hand-written config may share a value with one).
 
     Raises:
         yaml.YAMLError: not YAML.
@@ -150,14 +184,23 @@ def create_app(
     `allowed_hosts` are the `Host` names answered (`security.allowed_hosts`);
     `dev_origins` are other origins whose state-changing requests pass (the
     Vite dev server).
+    The weights root is `core.requirements.weights_root()` at creation (the
+    server sets it from `--weights-root`); it may not overlap the library or
+    out_root (ValueError).
     """
+    root = requirements.weights_root()
+    problem = security.weights_root_problem(root, paths)
+    if problem is not None:
+        raise ValueError(problem)
     jobs = JobQueue(paths, worker_argv)
+    prepares = models.PrepareQueue(root)
     library = Library(paths.library_root, paths.data_roots)
     upload_slots = asyncio.Semaphore(MAX_CONCURRENT_UPLOADS)
 
     @asynccontextmanager
     async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
         yield
+        await prepares.aclose()  # stops a running download between chunks
         await jobs.aclose()  # kills a running worker
         library.close()  # and a running preview encode
 
@@ -169,6 +212,7 @@ def create_app(
     app.state.paths = paths
     app.state.jobs = jobs
     app.state.library = library
+    app.state.prepares = prepares
 
     def job_or_404(job_id: str) -> Job:
         try:
@@ -225,6 +269,25 @@ def create_app(
         if not real.is_file():
             return None, f"{Path(video).name} does not exist on the server"
         return real, None
+
+    def prepare_or_404(job_id: str) -> models.PrepareJob:
+        try:
+            return prepares.get(job_id)
+        except KeyError:
+            raise HTTPException(404, f"unknown prepare job {job_id!r}") from None
+
+    async def model_statuses(cfg: dict[str, Any]) -> list[dict[str, Any]]:
+        """Status rows of a valid config (disk checks in the thread pool); the
+        model a Prepare is working on reads `preparing`."""
+        rows = models.config_rows(cfg)
+        statuses = await run_in_threadpool(
+            lambda: [models.status_row(row, root) for row in rows]
+        )
+        busy = prepares.preparing()
+        for row, status in zip(rows, statuses, strict=True):
+            if row.req is not None and row.req in busy:
+                status["state"] = "preparing"
+        return statuses
 
     def run_folder_or_404(run_id: str) -> Path:
         try:
@@ -380,9 +443,10 @@ def create_app(
             raise HTTPException(404, "thumb not available")
         return _file(record.thumb, "image/jpeg")
 
-    def submit_run(config: dict[str, Any], video_id: str | None) -> Any:
+    async def submit_run(config: dict[str, Any], video_id: str | None) -> Any:
         """Validate and queue a run (`POST /api/runs` and rerun): 422 with
-        `errors` when the config or the video id is invalid."""
+        `errors` when the config or the video id is invalid, 409 with
+        `models_not_ready` when a model of the config is not ready."""
         errors: list[dict[str, str]] = []
         source = config.get("source")
         video = source.get("video") if isinstance(source, dict) else None
@@ -418,12 +482,18 @@ def create_app(
         errors += problems
         if errors:
             return JSONResponse({"errors": errors}, status_code=422)
+        try:
+            pending = models.not_ready(await model_statuses(config))
+        except ConfigError as exc:
+            return JSONResponse({"errors": [schema.split_error(exc)]}, 422)
+        if pending:
+            return JSONResponse({"models_not_ready": pending}, status_code=409)
         job = jobs.submit(config, video_id)
         return {"job_id": job.id}
 
     @app.post("/api/runs", response_model=None)
     async def start_run(body: RunBody) -> Any:
-        return submit_run(body.config, body.video_id)
+        return await submit_run(body.config, body.video_id)
 
     @app.get("/api/jobs")
     def list_jobs() -> list[dict[str, Any]]:
@@ -526,7 +596,7 @@ def create_app(
         record = results(lambda: history.load_run(paths.out_root, run_id), run_id)
         config = {k: v for k, v in config.items() if k in _known_keys()}
         if record.video_id is not None:
-            return submit_run(config, record.video_id)
+            return await submit_run(config, record.video_id)
         # Not a library video: rerun its source.video only from an import
         # folder (the same rule as importing a server path).
         source = config.get("source")
@@ -543,7 +613,65 @@ def create_app(
             )
         if problem is not None:
             raise HTTPException(409, problem)
-        return submit_run(config, None)
+        return await submit_run(config, None)
+
+    @app.post("/api/models/status", response_model=None)
+    async def models_status(body: StatusBody) -> Any:
+        errors = schema.validate_config(body.config)
+        if errors:
+            return JSONResponse({"errors": errors}, status_code=422)
+        try:
+            return models.report(await model_statuses(body.config))
+        except ConfigError as exc:
+            return JSONResponse({"errors": [schema.split_error(exc)]}, 422)
+
+    @app.post("/api/models/prepare", response_model=None)
+    async def start_prepare(body: PrepareBody) -> Any:
+        # The same checks as a run: a valid config whose paths pass.
+        errors = schema.validate_config(body.config)
+        if not errors:
+            errors = security.path_problems(body.config, paths)
+        if errors:
+            return JSONResponse({"errors": errors}, status_code=422)
+        keys: list[models.Key] | Literal["all"] = (
+            "all" if body.models == "all" else [(k.stage, k.index) for k in body.models]
+        )
+        try:
+            job = prepares.submit(keys, body.config)
+        except models.UnknownModel as exc:
+            raise HTTPException(422, exc.args[0]) from None
+        except ValueError as exc:  # ConfigError, or no model selected
+            raise HTTPException(422, str(exc)) from None
+        return job.to_dict(prepares.position(job))
+
+    @app.get("/api/models/prepare/{job_id}")
+    async def get_prepare(job_id: str) -> dict[str, Any]:
+        job = prepare_or_404(job_id)
+        return job.to_dict(prepares.position(job))
+
+    @app.get("/api/models/prepare/{job_id}/events")
+    async def prepare_events(job_id: str, request: Request) -> StreamingResponse:
+        prepare_or_404(job_id)
+        try:
+            start = int(request.headers.get("last-event-id", "")) + 1
+        except ValueError:
+            start = 0
+
+        async def stream() -> AsyncIterator[str]:
+            async for index, event in prepares.events(job_id, start):
+                yield f"id: {index}\ndata: {json.dumps(event)}\n\n"
+
+        return StreamingResponse(
+            stream(),
+            media_type="text/event-stream",
+            headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+        )
+
+    @app.delete("/api/models/prepare/{job_id}")
+    async def cancel_prepare(job_id: str) -> dict[str, Any]:
+        job = prepare_or_404(job_id)
+        prepares.cancel(job_id)
+        return job.to_dict(prepares.position(job))
 
     @app.get("/api/runs/{run_id}/{name}")
     def run_file(run_id: str, name: str) -> FileResponse:

@@ -9,8 +9,12 @@
 - `BodyLimit`: the JSON bodies of state-changing requests are capped
   (`MAX_BODY_BYTES`); the upload route has its own, streamed limits.
 - `path_problems`: the filesystem paths of a run configuration (discovered by
-  `schema.config_paths`) may not point into the folders clients write
-  (library, run outputs) and, with `--asset-root`, must lie inside one.
+  `schema.config_paths`, resolved like the adapter opens them) may not point
+  into the folders clients write (library, run outputs) and, with
+  `--asset-root`, must lie inside one or inside the weights root (where
+  Prepare writes only what the adapters' code declares).
+- `weights_root_problem`: the weights root may not overlap a folder clients
+  write.
 - `file_headers`: served files never run as a page of the app's origin.
 """
 
@@ -24,6 +28,7 @@ from fastapi import HTTPException
 from starlette.responses import JSONResponse
 from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
+from det_depth_distance.core.requirements import weights_root
 from det_depth_distance.web import schema
 from det_depth_distance.web.paths import WebPaths
 
@@ -192,9 +197,11 @@ def path_problems(config: dict[str, Any], paths: WebPaths) -> list[dict[str, str
     """Errors (`{"path", "message"}`) of the path fields of a valid config:
     none may resolve inside the library or out_root (a client could have put
     a checkpoint or a Python package there), and with `paths.asset_roots`
-    each must resolve inside one of them."""
+    each must resolve inside one of them or inside the weights root."""
     writable = client_writable_roots(paths)
     assets = [r.resolve() for r in paths.asset_roots]
+    if assets:
+        assets.append(weights_root().resolve())
     errors = []
     for dotted, value in schema.config_paths(config):
         if dotted in SERVER_CHECKED_PATHS:
@@ -211,6 +218,20 @@ def path_problems(config: dict[str, Any], paths: WebPaths) -> list[dict[str, str
             continue
         errors.append({"path": dotted, "message": f"{value}: {message}"})
     return errors
+
+
+def weights_root_problem(root: Path, paths: WebPaths) -> str | None:
+    """Why `root` cannot be the weights root (None when it can): it may not be,
+    contain or lie inside a folder clients write (an upload would then count
+    as a prepared checkpoint, or a download land among the uploads)."""
+    real = Path(root).expanduser().resolve()
+    for folder in client_writable_roots(paths):
+        if within(real, [folder]) or within(folder, [real]):
+            return (
+                f"weights root {root} overlaps {folder} (the video library or "
+                "the run outputs, folders clients write): use another folder"
+            )
+    return None
 
 
 def file_headers(media_type: str, filename: str) -> dict[str, str]:

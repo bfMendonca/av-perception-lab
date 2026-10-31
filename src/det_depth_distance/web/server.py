@@ -1,4 +1,9 @@
-"""Console entry `det-depth-distance-web`: serve the API with uvicorn."""
+"""Console entry `det-depth-distance-web`: serve the API with uvicorn.
+
+`--weights-root` (else `DDD_WEIGHTS_ROOT`, else the repo `weights/`) is where
+model readiness is checked and Prepare downloads; it may not overlap the
+library or out-root.
+"""
 
 import argparse
 import sys
@@ -51,10 +56,19 @@ def main(argv: Sequence[str] | None = None) -> None:
         "calibration, fonts...) must resolve inside (repeatable; default: "
         "anywhere outside the library and out-root)",
     )
+    parser.add_argument(
+        "--weights-root",
+        type=Path,
+        default=None,
+        help="folder of model weights and pinned code checked by the status and "
+        "written by Prepare (default: $DDD_WEIGHTS_ROOT, else weights/ of the "
+        "checkout); must not overlap --library-root or --out-root",
+    )
     args = parser.parse_args(argv)
 
     import uvicorn
 
+    from det_depth_distance.core.requirements import set_weights_root, weights_root
     from det_depth_distance.web import security
     from det_depth_distance.web.app import create_app
 
@@ -62,6 +76,11 @@ def main(argv: Sequence[str] | None = None) -> None:
     paths = WebPaths(
         args.out_root, args.library_root, data_roots, tuple(args.asset_root)
     )
+    if args.weights_root is not None:
+        set_weights_root(args.weights_root.expanduser())
+    problem = security.weights_root_problem(weights_root(), paths)
+    if problem is not None:
+        parser.error(problem)
     for warning in startup_warnings(args.host, args.allowed_host, args.asset_root):
         print(f"warning: {warning}", file=sys.stderr, flush=True)
     extra = {} if args.static_dir is None else {"static_dir": args.static_dir}

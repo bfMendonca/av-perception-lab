@@ -18,6 +18,13 @@ from typing import Any, Literal, TypeVar, Union
 
 T = TypeVar("T")
 
+# Field metadata key of a `Path` option whose adapter does not open the value
+# as written (relative to the working directory) but through a function of
+# the adapter: `field(metadata={PATH_RESOLVER: fn})`, `fn(value) -> Path`.
+# Path checks outside the adapter (the web server's `path_problems`) call it,
+# so they see the file the adapter opens.
+PATH_RESOLVER = "path_resolver"
+
 
 class ConfigError(ValueError):
     """Invalid user configuration (the CLI reports it and exits with code 2)."""

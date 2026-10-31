@@ -16,7 +16,7 @@ this module is imported. Ultralytics is AGPL-3.0.
 """
 
 import os
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
@@ -36,7 +36,7 @@ from det_depth_distance.adapters.refiners.box_prompt import (
     DecodedMasks,
 )
 from det_depth_distance.core.components import LoadContext
-from det_depth_distance.core.options import ConfigError
+from det_depth_distance.core.options import PATH_RESOLVER, ConfigError
 from det_depth_distance.core.registry import register
 from det_depth_distance.core.requirements import Requirements
 from det_depth_distance.core.types import ContractError
@@ -79,7 +79,7 @@ class UltralyticsSamRefiner(BoxPromptRefiner):
     @dataclass(frozen=True, slots=True, kw_only=True)
     class Options(BoxPromptOptions):
         # Existence is checked in _load (before the import), the name here.
-        weights: Path
+        weights: Path = field(metadata={PATH_RESOLVER: resolve_weights})
         imgsz: int = 1024  # square input size, multiple of 32
 
         def __post_init__(self) -> None:
