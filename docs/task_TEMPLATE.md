@@ -1,64 +1,68 @@
-# Task DDDD: Título Descritivo da Tarefa
+# Task DDDD: Descriptive Task Title
 
-## Descrição
+## Description
 
-Explicação do problema/oportunidade e do que esta task faz. Por que a mudança
-é necessária e qual o resultado esperado. Pode incluir uma lista das
-implicações do estado atual quando isso ajuda a justificar a tarefa.
+Explain the problem/opportunity and what this task does. Why the change is
+needed and the expected result. May include a list of the implications of the
+current state when that helps justify the task.
 
-## Escopo
+## Scope
 
-### Arquivos Alterados
+### Files Changed
 
-| Arquivo | Alteração |
-|---------|-----------|
-| `caminho/do/arquivo.py` | O que muda neste arquivo |
-| `outro/arquivo.js` | O que muda neste arquivo |
+| File | Change |
+|------|--------|
+| `path/to/file.py` | What changes in this file |
+| `other/file.js` | What changes in this file |
 
-<!-- Alternativa: lista numerada com detalhe linha-a-linha quando já se conhece -->
+<!-- Alternative: numbered list with line-by-line detail when already known -->
 <!--
-1. **`caminho/arquivo.py`** (298 linhas → ~90 linhas)
-   - REMOVER: função X (linhas 23-45)
-   - MANTER: função Y (linhas 48-90)
+1. **`path/file.py`** (298 lines → ~90 lines)
+   - REMOVE: function X (lines 23-45)
+   - KEEP: function Y (lines 48-90)
 -->
 
-### Arquivos NÃO Alterados (confirmação de segurança)
+### Files NOT Changed (safety confirmation)
 
-| Arquivo | Motivo |
-|---------|--------|
-| `caminho/intocado.py` | Por que permanece inalterado / por que é seguro |
+| File | Reason |
+|------|--------|
+| `path/untouched.py` | Why it stays unchanged / why it is safe |
 
-## Planejamento
+## Planning
 
-### Passo 1: <ação>
+### Step 1: <action>
 
-Descrição concreta do passo.
+Concrete description of the step.
 
-### Passo 2: <ação>
+### Step 2: <action>
 
-Descrição concreta do passo.
+Concrete description of the step.
 
-## Análise de Impacto
+## Impact Analysis
 
-| Risco | Probabilidade | Mitigação |
-|-------|---------------|-----------|
-| Descrição do risco | Baixa / Média / Alta | Como o risco é mitigado |
+| Risk | Likelihood | Mitigation |
+|------|------------|------------|
+| Description of the risk | Low / Medium / High | How the risk is mitigated |
 
-## Verificação
+## Verification
 
 ```bash
-# Testes automatizados
-<comando de testes do projeto>
+# Automated tests
+<project test command>
 
-# Lint / formatação
-<comando de lint do projeto>
+# Lint / formatting
+<project lint command>
 ```
 
-Verificação manual: ver Caderno de Testes (adicionado após implementação).
+Manual verification: see Test notebook (added after implementation).
 
-## Dependências
+## Dependencies
 
-- **Nenhuma** — esta task é independente.
-<!-- ou: -->
-- Depende de: `task_0003` (motivo).
-- Tasks que dependem desta: `task_0007` (motivo).
+- **None** — this task is independent.
+<!-- or: -->
+- Depends on: `task_0003` (reason).
+- Tasks that depend on this one: `task_0007` (reason).
+
+<!-- On completion add `(COMPLETED)` to the title, then the sections
+`## Implementation details` (what was done, deviations from the plan, notes)
+and `## Test notebook` (manual checklist, `- [ ]` items). -->

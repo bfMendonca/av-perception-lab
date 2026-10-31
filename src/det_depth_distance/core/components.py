@@ -33,6 +33,7 @@ from det_depth_distance.core.labels import (
     resolve_classes,
 )
 from det_depth_distance.core.options import ConfigError
+from det_depth_distance.core.requirements import Requirements
 from det_depth_distance.core.types import (
     CameraIntrinsics,
     ContractError,
@@ -66,6 +67,12 @@ class Component(ABC):
         self.options = options
         self.name = name or self.default_name()
         self._loaded = False
+
+    @classmethod
+    def requirements(cls, options: Any) -> Requirements:
+        """What this class needs to run, from already-validated options (never
+        from `load()`); the default declares nothing."""
+        return Requirements()
 
     def default_name(self) -> str:
         """Name used in outputs when the spec gives none (e.g. "rfdetr-large")."""

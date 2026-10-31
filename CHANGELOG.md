@@ -4,6 +4,28 @@ Todas as mudancas relevantes do det-depth-distance serao documentadas neste arqu
 
 ---
 
+## [2026-10-31] Model requirements declaration and torch-free status check
+
+Foundation of the "model readiness" work (task_0019); no behaviour change yet.
+
+### Added
+
+- `core/requirements.py`: `Requirements` (assets, pinned code clones, package
+  import names + extra), registered asset kinds (`HuggingFaceAsset`,
+  `UrlAsset`, `UserProvided`, extensible with `register_asset_kind`),
+  `weights_root()` (`set_weights_root`, `DDD_WEIGHTS_ROOT`, repo `weights/`)
+  and `check()` returning a `ModelStatus` without importing torch.
+- `Component.requirements(options)` hook (default: nothing required).
+- Truncated, hash-mismatched and `.part` downloads are never ready; targets
+  cannot leave the weights root (`..`, absolute paths, symlinks).
+
+### Changed
+
+- New documentation and `docs/task_DDDD.md` files are written in English
+  (`AGENTS.md`); `docs/task_TEMPLATE.md` was translated.
+
+---
+
 ## [2026-10-31] Endurecimento da interface web, desligamento e jobs
 
 Onda final de correcoes da revisao do branch da interface web (task_0018).

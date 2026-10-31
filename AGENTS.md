@@ -11,6 +11,8 @@ também na GPU de 4 GB do notebook, num ambiente isolado; o desenvolvimento e os
 localmente.
 Detalhes de arquitetura, build e uso estão no `README.md`.
 
+**Language:** all new documentation and every `docs/task_DDDD.md` file are written in English (decision of 2026-10-31); existing pt-BR documents are not migrated.
+
 ---
 
 ## Obrigatório: Manter DESCRIPTION.md Atualizado

@@ -75,8 +75,9 @@ det-depth-distance/
 │   ├── core/                # contracts + orchestration, no ML framework imports
 │   │   ├── types.py         # Frame, Instances, DepthResult, FrameResult, RefinedMasks, SemanticMap, TrackEstimate, Trajectory, MotionEstimate, MapGeometry, CameraIntrinsics, ContractError
 │   │   ├── options.py       # ConfigError, from_mapping (typed YAML -> dataclass, dotted error paths)
-│   │   ├── components.py    # LoadContext, Component, DetectorOptions, Detector, DepthEstimator, RefinerOptions, MaskRefiner, SemanticSegmenter, TrackerOptions, Tracker (ABCs)
+│   │   ├── components.py    # LoadContext, Component (+ requirements(options) hook), DetectorOptions, Detector, DepthEstimator, RefinerOptions, MaskRefiner, SemanticSegmenter, TrackerOptions, Tracker (ABCs)
 │   │   ├── registry.py      # @register, build, available, load_adapters (ADAPTER_MODULES)
+│   │   ├── requirements.py  # Requirements (assets, CodeRepo, packages), registered Asset kinds (HuggingFaceAsset, UrlAsset, UserProvided; present(root)), weights_root, ModelStatus, check() (torch-free)
 │   │   ├── labels.py        # Vocabulary, COCO / OBJECTS365 presets, identify_vocabulary, resolve_classes, LabelMap, SEMANTIC_NAME_PATTERN, group_semantic_labels
 │   │   ├── boxes.py         # numpy box geometry: iou_matrix, label_groups, greedy_match, nms_clusters, wbf_clusters
 │   │   ├── aggregate.py     # Aggregator (bind_sources hook), Concat, FusionOptions, FusionAggregator, Nms, Wbf
@@ -511,7 +512,7 @@ This project uses task-driven development: every implementation has a
 Impacto, Verificação, Dependências) created before coding. On completion the
 title is marked `(CONCLUÍDA)` and the file gains `## Detalhes de
 Implementação` and `## Caderno de Testes` sections in the same commit as the
-implementation. See `AGENTS.md` for the mandatory rules.
+implementation. See `AGENTS.md` for the mandatory rules. New documentation and task files are written in English (the task template is in English; existing pt-BR documents are not migrated).
 
 ## 13. What This Project Does NOT Have
 
