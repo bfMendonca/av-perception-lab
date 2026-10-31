@@ -122,6 +122,8 @@ export function createEditorStore(client: ApiClient, options: StoreOptions = {})
   }
 
   const store = {
+    /** Debounce of the server checks (the model status follows it too). */
+    debounceMs,
     getState: () => state,
     subscribe(listener: () => void) {
       listeners.add(listener);

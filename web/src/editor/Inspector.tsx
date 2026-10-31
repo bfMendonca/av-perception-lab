@@ -3,6 +3,8 @@
 // describe (and modules this server does not know) are edited as raw YAML.
 import { useState, type ReactNode } from "react";
 import type { Catalog, Field, StageInfo, ValidationError } from "../api/types";
+import { ModelRequirements } from "../models/ModelRequirements";
+import { useReadiness } from "../models/useModelStatus";
 import { Icon } from "../ui/icons";
 import { generalStages, moduleInfo, moduleTypes, refineErrors, SPEC_KEYS, sectionFields, slotPath, stageByKey } from "./catalog";
 import { FieldList, fieldControls } from "./fieldControls";
@@ -102,6 +104,10 @@ function SlotInspector({ catalog, stage, index }: { catalog: Catalog; stage: Sta
   const types = moduleTypes(catalog, kind);
   const set = (key: string, v: unknown) => editor.setOption([...path, key], v);
   const [nameDraft, setNameDraft] = useState<string | null>(null);
+  const readiness = useReadiness();
+  const modelRows = readiness ? readiness.rowsFor(stage.yaml_key, index) : [];
+  const requirements = <ModelRequirements rows={modelRows} fields={info?.schema.fields} fileName={editor.fileName} />;
+  const needsWork = modelRows.some((r) => r.state !== "ready");
 
   if (spec === undefined) return <InspectorEmpty title="Removed" text="This module is no longer in the pipeline." />;
 
@@ -126,6 +132,7 @@ function SlotInspector({ catalog, stage, index }: { catalog: Catalog; stage: Sta
       <div className="insp">
         <InspectorHead title={type ?? stage.title} sub={sub} actions={actions} />
         <Problems errors={errors} prefix={dotted} />
+        {requirements}
         <p className="insp__note">
           <Icon name="info" size={14} /> {type ? `"${type}" is not a ${kind} module this server knows.` : "This entry is not a module spec."} Edit it as YAML.
         </p>
@@ -173,9 +180,11 @@ function SlotInspector({ catalog, stage, index }: { catalog: Catalog; stage: Sta
           ))}
         </div>
       </div>
+      {needsWork ? requirements : null}
       <h3 className="insp__section">Options</h3>
       {fields.length ? <FieldList fields={fields} value={spec} basePath={path} errors={errors} onChange={set} /> : <p className="insp__note">This module has no options.</p>}
       <UnknownKeys value={spec} known={known} base={path} errors={errors} onChange={set} />
+      {needsWork ? null : requirements}
     </div>
   );
 }
@@ -215,6 +224,8 @@ function SectionBody({ catalog, stage }: { catalog: Catalog; stage: StageInfo })
     key,
     fields,
   );
+  const readiness = useReadiness();
+  const modelRows = readiness ? readiness.rowsFor(key, null) : [];
   if (value === null && stage.optional) {
     return (
       <div className="unset unset--block">
@@ -237,6 +248,7 @@ function SectionBody({ catalog, stage }: { catalog: Catalog; stage: StageInfo })
   return (
     <>
       <Problems errors={errors} prefix={key} />
+      <ModelRequirements rows={modelRows} fields={fields.filter((f) => f.type === "path")} fileName={editor.fileName} />
       <FieldList fields={fields} value={obj} basePath={[key]} errors={errors} onChange={(name, v) => editor.setOption([key, name], v)} />
       <UnknownKeys value={obj} known={known} base={[key]} errors={errors} onChange={(k, v) => editor.setOption([key, k], v)} />
     </>

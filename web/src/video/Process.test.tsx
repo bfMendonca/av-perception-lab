@@ -4,8 +4,9 @@ import { describe, expect, it } from "vitest";
 import { App } from "../App";
 import type { ConfigDict } from "../api/types";
 import type { JobEvent, JobInfo, VideoApi, VideoRecord } from "../api/video";
+import { ModelsNotReady } from "../api/video";
 import { createEditorStore } from "../editor/yamlState";
-import { fakeClient, sampleConfig } from "../test/fixtures";
+import { fakeClient, fakeModelsApi, modelRow, sampleConfig, type FakeModelsApi } from "../test/fixtures";
 import { classifyFiles, importable } from "./DropZone";
 
 const record: VideoRecord = {
@@ -203,6 +204,59 @@ describe("Process", () => {
     expect(within(deck).getByText("File missing")).toBeInTheDocument();
     expect(within(deck).getByRole("button", { name: /^Process$/ })).toBeDisabled();
     expect(within(deck).getByText(/missing or changed on the server/)).toBeInTheDocument();
+  });
+
+  it("process is disabled while any model is not ready and enabled when all are ready", async () => {
+    const api = fakeVideoApi();
+    const models: FakeModelsApi = fakeModelsApi([modelRow(), modelRow({ stage: "depth", index: null, name: "deep", type: "beta" })]);
+    const client = fakeClient();
+    const store = createEditorStore(client, { debounceMs: 0 });
+    await store.load("ignored", "p.yaml");
+    render(<App client={client} store={store} videoApi={api} modelsApi={models} />);
+    await userEvent.click(await screen.findByRole("button", { name: /road\.mkv/ }));
+    const deck = screen.getByRole("region", { name: "Video and processing" });
+    const button = within(deck).getByRole("button", { name: /^Process$/ });
+    await waitFor(() => expect(button).toBeDisabled());
+    expect(button).toHaveAttribute("title", "2 models are not ready — Prepare them first.");
+    expect(within(deck).getByText("2 models are not ready — Prepare them first.")).toBeInTheDocument();
+    expect(within(deck).getByRole("button", { name: /Process entire video/ })).toBeDisabled();
+
+    // all ready (e.g. after a Prepare elsewhere): Process unlocks
+    models.rows = [modelRow({ state: "ready", missing: [], message: null }), modelRow({ stage: "depth", index: null, name: "deep", type: "beta", state: "ready", missing: [], message: null })];
+    store.setOption(["detectors", 0, "threshold"], 0.6); // any edit checks again
+    await waitFor(() => expect(button).toBeEnabled());
+    await userEvent.click(button);
+    await waitFor(() => expect(api.submitted).toHaveLength(1));
+  });
+
+  it("409 from submit shows the list of models", async () => {
+    const api = fakeVideoApi();
+    const models = fakeModelsApi([modelRow({ state: "ready", missing: [], message: null })]);
+    api.submitRun = async () => {
+      throw new ModelsNotReady([modelRow({ message: "weights: <weights root>/alpha/large.bin not found" }), modelRow({ stage: "camera.estimate", index: null, name: "focal", type: "beta", state: "failed", message: "unsafe target" })]);
+    };
+    const client = fakeClient();
+    const store = createEditorStore(client, { debounceMs: 0 });
+    await store.load("ignored", "p.yaml");
+    render(<App client={client} store={store} videoApi={api} modelsApi={models} />);
+    await userEvent.click(await screen.findByRole("button", { name: /road\.mkv/ }));
+    const deck = screen.getByRole("region", { name: "Video and processing" });
+    await waitFor(() => expect(within(deck).getByRole("button", { name: /^Process$/ })).toBeEnabled());
+    const calls = models.statusCalls.length;
+    await userEvent.click(within(deck).getByRole("button", { name: /^Process$/ }));
+    const dialog = await screen.findByRole("dialog", { name: "Models not ready" });
+    const list = within(dialog).getByRole("list", { name: "Models not ready" });
+    const items = within(list).getAllByRole("listitem");
+    expect(items).toHaveLength(2);
+    expect(items[0]).toHaveTextContent("detectors[0]");
+    expect(items[0]).toHaveTextContent("alpha");
+    expect(items[0]).toHaveTextContent("<weights root>/alpha/large.bin not found");
+    expect(items[1]).toHaveTextContent("camera.estimate");
+    expect(items[1]).toHaveTextContent("Failed");
+    await waitFor(() => expect(models.statusCalls.length).toBeGreaterThan(calls)); // checked again
+    await userEvent.click(within(dialog).getByRole("button", { name: "Prepare all" }));
+    await waitFor(() => expect(models.prepared).toHaveLength(1));
+    expect(screen.queryByRole("dialog", { name: "Models not ready" })).not.toBeInTheDocument();
   });
 
   it("classifies drops into video, meta and YAML", () => {

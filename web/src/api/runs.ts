@@ -98,11 +98,20 @@ export interface RunsApi {
   rerun(runId: string): Promise<string>;
 }
 
+type NotReadyRow = { stage: string; index: number | null; name: string; state: string };
+
+/** "2 models are not ready: <stage>[0] x (missing), <stage> y (failed). Prepare them in the editor first." */
+export function notReadyText(rows: NotReadyRow[]): string {
+  const list = rows.map((r) => `${r.index === null ? r.stage : `${r.stage}[${r.index}]`} ${r.name} (${r.state})`).join(", ");
+  return `${rows.length} model${rows.length === 1 ? " is" : "s are"} not ready: ${list}. Prepare ${rows.length === 1 ? "it" : "them"} in the editor first.`;
+}
+
 async function errorOf(response: Response): Promise<ApiError> {
   let message = `${response.status} ${response.statusText}`.trim();
   try {
-    const body = (await response.json()) as { detail?: unknown; errors?: { path: string; message: string }[] };
+    const body = (await response.json()) as { detail?: unknown; errors?: { path: string; message: string }[]; models_not_ready?: NotReadyRow[] };
     if (typeof body.detail === "string") message = body.detail;
+    else if (Array.isArray(body.models_not_ready)) message = notReadyText(body.models_not_ready);
     else if (body.errors?.length) message = body.errors.map((e) => (e.path ? `${e.path}: ${e.message}` : e.message)).join("; ");
   } catch {
     // keep the status line

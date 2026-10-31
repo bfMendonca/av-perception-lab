@@ -4,9 +4,11 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { ApiClient } from "./api/client";
 import type { Catalog, ValidationError } from "./api/types";
+import { createModelsApi, type ModelsApi } from "./api/models";
 import { createVideoApi, type VideoApi } from "./api/video";
 import { SUPPORTED_CATALOG_VERSION, stageByKey } from "./editor/catalog";
 import { EditorView } from "./editor/EditorView";
+import { ReadinessProvider, useModelStatus } from "./models/useModelStatus";
 import { createEditorStore, EditorProvider, useEditor, type Draft, type EditorStore, type Selection } from "./editor/yamlState";
 import { Dialog } from "./ui/Dialog";
 import { Icon } from "./ui/icons";
@@ -47,6 +49,8 @@ export interface AppProps {
   videoApi?: VideoApi;
   /** Results, comparison, reopen and rerun routes (default: the HTTP client). */
   runsApi?: RunsApi;
+  /** Model status and Prepare routes (default: the HTTP client). */
+  modelsApi?: ModelsApi;
   store?: EditorStore;
   /** Keep the working pipeline in localStorage across reloads (off in tests). */
   persistDraft?: boolean;
@@ -54,10 +58,11 @@ export interface AppProps {
 
 type CatalogState = { status: "loading" } | { status: "error"; message: string } | { status: "ready"; catalog: Catalog };
 
-export function App({ client, videoApi, runsApi, store: given, persistDraft = false }: AppProps) {
+export function App({ client, videoApi, runsApi, modelsApi, store: given, persistDraft = false }: AppProps) {
   const [store] = useState(() => given ?? createEditorStore(client));
   const [video] = useState(() => videoApi ?? createVideoApi());
   const [runs] = useState(() => runsApi ?? createRunsApi());
+  const [models] = useState(() => modelsApi ?? createModelsApi());
   const [catalog, setCatalog] = useState<CatalogState>({ status: "loading" });
   const [attempt, setAttempt] = useState(0);
 
@@ -102,17 +107,18 @@ export function App({ client, videoApi, runsApi, store: given, persistDraft = fa
 
   return (
     <EditorProvider store={store}>
-      <Studio client={client} video={video} runs={runs} remember={persistDraft} catalog={catalog} onRetry={() => setAttempt((n) => n + 1)} />
+      <Studio client={client} video={video} runs={runs} models={models} remember={persistDraft} catalog={catalog} onRetry={() => setAttempt((n) => n + 1)} />
     </EditorProvider>
   );
 }
 
-function Studio({ client, video, runs, remember, catalog, onRetry }: { client: ApiClient; video: VideoApi; runs: RunsApi; remember: boolean; catalog: CatalogState; onRetry: () => void }) {
+function Studio({ client, video, runs, models, remember, catalog, onRetry }: { client: ApiClient; video: VideoApi; runs: RunsApi; models: ModelsApi; remember: boolean; catalog: CatalogState; onRetry: () => void }) {
   const editor = useEditor();
   const [route, navigate] = useHashRoute();
   const session = useVideoSession(video, { remember });
   const jobs = useJobs(video, { onDone: (runId) => navigate({ view: "runs", runId }) });
-  const process = useProcess(video, session, jobs, editor);
+  const readiness = useModelStatus(editor.loaded && catalog.status === "ready" ? editor.toConfig() : null, { api: models, debounceMs: editor.debounceMs, notify: editor.notify });
+  const process = useProcess(video, session, jobs, editor, readiness);
   const fileInput = useRef<HTMLInputElement>(null);
   const [saveDialog, setSaveDialog] = useState(false);
   const [saving, setSaving] = useState(false);
@@ -251,6 +257,7 @@ function Studio({ client, video, runs, remember, catalog, onRetry }: { client: A
   );
 
   return (
+    <ReadinessProvider value={readiness}>
     <div
       className="app"
       onDragOver={(e) => {
@@ -394,6 +401,7 @@ function Studio({ client, video, runs, remember, catalog, onRetry }: { client: A
         <p className="muted">This notice is shown once.</p>
       </Dialog>
     </div>
+    </ReadinessProvider>
   );
 }
 

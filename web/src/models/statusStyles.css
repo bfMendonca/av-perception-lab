@@ -1,0 +1,534 @@
+/* Model readiness: card states, the readiness banner and the inspector
+   section "Weights & requirements". Dark theme tokens from ui/theme.css.
+   This sheet may load before theme.css, so rules that refine a theme
+   component (.btn, .card, .progress) repeat its class to win. */
+
+/* ---------- buttons ---------- */
+.btn.btn--warn {
+  background: var(--warn);
+  border-color: var(--warn);
+  color: #261c00;
+  font-weight: 600;
+}
+
+.btn.btn--warn:hover:not(:disabled) {
+  background: #fcd05a;
+  border-color: #fcd05a;
+}
+
+.btn.btn--warn:disabled {
+  background: var(--panel-3);
+  border-color: var(--line-strong);
+  color: var(--muted);
+  opacity: 1;
+}
+
+.linkish {
+  padding: 0;
+  border: 0;
+  background: none;
+  color: var(--text-2);
+  font-size: inherit;
+  text-decoration: underline;
+  text-decoration-color: var(--line-strong);
+  text-underline-offset: 3px;
+  cursor: pointer;
+}
+
+.linkish:hover {
+  color: var(--text);
+  text-decoration-color: currentColor;
+}
+
+/* ---------- card states ---------- */
+.card.card--model {
+  position: relative;
+}
+
+.card.card--notready,
+.card.card--preparing {
+  border: 1.5px dashed var(--warn);
+  background: linear-gradient(180deg, rgba(251, 191, 36, 0.05), transparent 70%), var(--panel);
+}
+
+.card.card--failed {
+  border: 1.5px dashed var(--bad);
+  background: linear-gradient(180deg, rgba(248, 113, 113, 0.07), transparent 70%), var(--panel);
+}
+
+.card.card--notready:hover,
+.card.card--preparing:hover {
+  border-color: #fcd05a;
+}
+
+.card.card--failed:hover {
+  border-color: #fb9a9a;
+}
+
+.card.card--notready.card--selected,
+.card.card--preparing.card--selected {
+  border-color: var(--warn);
+  box-shadow: 0 0 0 3px rgba(251, 191, 36, 0.22), var(--shadow-card);
+}
+
+.card.card--failed.card--selected {
+  border-color: var(--bad);
+  box-shadow: 0 0 0 3px rgba(248, 113, 113, 0.22), var(--shadow-card);
+}
+
+.card__alert {
+  position: absolute;
+  top: -8px;
+  right: -8px;
+  z-index: 1;
+  display: grid;
+  place-items: center;
+  width: 20px;
+  height: 20px;
+  border-radius: 50%;
+  background: var(--warn);
+  color: #261c00;
+  box-shadow: 0 0 0 3px var(--bg);
+}
+
+.card--failed .card__alert {
+  background: var(--bad);
+  color: #2a0606;
+}
+
+.card__state {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  margin-top: 2px;
+  font-size: 11px;
+}
+
+.card__pill,
+.reqs__pill {
+  flex: none;
+  padding: 1px 7px;
+  border-radius: 999px;
+  font-size: 10.5px;
+  font-weight: 600;
+  letter-spacing: 0.01em;
+  background: var(--warn-soft);
+  color: var(--warn);
+}
+
+.card__state--failed .card__pill,
+.reqs__pill--failed {
+  background: var(--bad-soft);
+  color: var(--bad);
+}
+
+.reqs__pill--ready {
+  background: var(--ok-soft);
+  color: var(--ok);
+}
+
+.card__reason {
+  min-width: 0;
+  color: var(--text-2);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.card__progress {
+  position: relative;
+  display: block;
+  height: 4px;
+  margin-top: 6px;
+  border-radius: 999px;
+  background: var(--line);
+  overflow: hidden;
+}
+
+.card__progress > span {
+  position: absolute;
+  inset: 0 auto 0 0;
+  border-radius: inherit;
+  background: var(--warn);
+  transition: width 0.3s ease-out;
+}
+
+.card__progress--indeterminate > span,
+.progress--model.progress--indeterminate > span {
+  animation: indeterminate 1.2s ease-in-out infinite;
+}
+
+.progress.progress--model > span {
+  background: linear-gradient(90deg, var(--warn), #fcd05a);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .card__progress--indeterminate > span,
+  .progress--model.progress--indeterminate > span {
+    animation: none;
+    left: 0;
+    opacity: 0.6;
+  }
+}
+
+/* ---------- banner ---------- */
+.readiness {
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+  margin: 14px 24px 0;
+  padding: 11px 14px;
+  border: 1px solid rgba(251, 191, 36, 0.35);
+  border-radius: 12px;
+  background: linear-gradient(90deg, rgba(251, 191, 36, 0.1), rgba(251, 191, 36, 0.03) 75%);
+  font-size: 13px;
+}
+
+.readiness--failed {
+  border-color: rgba(248, 113, 113, 0.4);
+  background: linear-gradient(90deg, rgba(248, 113, 113, 0.1), rgba(248, 113, 113, 0.03) 75%);
+}
+
+.readiness--preparing {
+  align-items: center;
+}
+
+.readiness--muted {
+  align-items: center;
+  border-color: var(--line-strong);
+  background: var(--panel);
+  color: var(--text-2);
+}
+
+.readiness__icon {
+  display: grid;
+  place-items: center;
+  flex: none;
+  width: 26px;
+  height: 26px;
+  border-radius: 50%;
+  background: var(--warn-soft);
+  color: var(--warn);
+}
+
+.readiness--failed .readiness__icon {
+  background: var(--bad-soft);
+  color: var(--bad);
+}
+
+.readiness > .btn {
+  flex: none;
+  align-self: center;
+}
+
+.readiness__text {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.readiness__text strong {
+  color: var(--text);
+  font-weight: 600;
+}
+
+.readiness__size {
+  color: var(--warn);
+  font-weight: 600;
+}
+
+.readiness__sub {
+  color: var(--muted);
+  font-size: 12.5px;
+}
+
+.readiness__bar {
+  margin-top: 6px;
+  max-width: 420px;
+}
+
+.readiness__list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin: 8px 0 0;
+  padding: 0;
+  list-style: none;
+}
+
+.readiness__list button {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  padding: 4px 9px 4px 5px;
+  border: 1px solid var(--line-strong);
+  border-radius: 999px;
+  background: var(--panel);
+  color: var(--text-2);
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.readiness__list button:hover:not(:disabled) {
+  border-color: var(--warn);
+  color: var(--text);
+}
+
+.readiness__list code {
+  color: var(--muted);
+}
+
+.readiness__name {
+  font-weight: 600;
+  color: var(--text);
+}
+
+.readiness__why {
+  color: var(--muted);
+  font-style: italic;
+}
+
+/* ---------- inspector section ---------- */
+.reqs__model {
+  margin-bottom: 10px;
+  padding: 12px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: var(--panel-2);
+}
+
+.reqs__model--notready,
+.reqs__model--preparing {
+  border: 1px dashed rgba(251, 191, 36, 0.55);
+}
+
+.reqs__model--failed {
+  border: 1px dashed rgba(248, 113, 113, 0.6);
+}
+
+.reqs__head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
+.reqs__name {
+  font-size: 13px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.reqs__where {
+  color: var(--muted);
+  font-size: 11.5px;
+}
+
+.reqs__head .reqs__pill {
+  margin-left: auto;
+}
+
+.reqs__ok {
+  margin: 8px 0 0;
+  color: var(--text-2);
+  font-size: 12.5px;
+}
+
+.reqs__message {
+  margin: 10px 0 0;
+  padding: 8px 10px;
+  border-radius: var(--radius-sm);
+  background: var(--bg-input);
+  color: var(--text-2);
+  font-family: var(--mono);
+  font-size: 11.5px;
+  line-height: 1.5;
+  overflow-wrap: anywhere;
+}
+
+.reqs__message--failed {
+  color: #fca5a5;
+  background: rgba(248, 113, 113, 0.08);
+}
+
+.reqs__facts {
+  display: grid;
+  gap: 7px;
+  margin: 12px 0 0;
+}
+
+.reqs__facts > div {
+  display: grid;
+  grid-template-columns: 74px 1fr;
+  gap: 8px;
+  align-items: baseline;
+}
+
+.reqs__facts dt {
+  color: var(--muted);
+  font-size: 11.5px;
+}
+
+.reqs__facts dd {
+  margin: 0;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  min-width: 0;
+  color: var(--text-2);
+  font-size: 12.5px;
+}
+
+.reqs__layers {
+  gap: 6px !important;
+}
+
+.reqs__layer {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 1px 8px 1px 6px;
+  border-radius: 999px;
+  font-size: 11.5px;
+}
+
+.reqs__layer--ok {
+  background: var(--ok-soft);
+  color: var(--ok);
+}
+
+.reqs__layer--bad {
+  background: var(--warn-soft);
+  color: var(--warn);
+}
+
+.reqs__layer-state {
+  color: var(--text-2);
+  font-size: 10.5px;
+}
+
+.reqs__missing,
+.reqs__path,
+.reqs__item {
+  padding: 0 5px;
+  border: 1px solid var(--line);
+  border-radius: 5px;
+  background: var(--bg-input);
+  color: var(--text-2);
+  font-size: 11px;
+  overflow-wrap: anywhere;
+}
+
+.reqs__item {
+  margin-left: 6px;
+}
+
+.muted-text {
+  color: var(--muted);
+}
+
+.reqs__action {
+  width: 100%;
+  margin-top: 12px;
+  justify-content: center;
+}
+
+.reqs__progress {
+  margin-top: 10px;
+}
+
+.reqs__progress-text {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin-top: 6px;
+  color: var(--text-2);
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+}
+
+.reqs__hint {
+  margin-top: 12px;
+  color: var(--text-2);
+  font-size: 12.5px;
+}
+
+.reqs__hint p {
+  margin: 0 0 8px;
+}
+
+.reqs__note {
+  display: flex;
+  gap: 8px;
+  margin: 10px 0 0;
+  color: var(--text-2);
+  font-size: 12px;
+}
+
+.reqs__note .icon {
+  flex: none;
+  margin-top: 2px;
+  color: var(--accent-2);
+}
+
+.reqs__note--quiet {
+  color: var(--muted);
+  font-size: 11.5px;
+}
+
+/* ---------- copyable command ---------- */
+.cmd {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 6px 6px 10px;
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius-sm);
+  background: var(--bg-input);
+}
+
+.cmd__text {
+  flex: 1;
+  min-width: 0;
+  color: var(--accent);
+  font-size: 11.5px;
+  overflow-wrap: anywhere;
+  user-select: all;
+}
+
+.cmd .btn {
+  flex: none;
+}
+
+/* ---------- 409 dialog ---------- */
+.notready-list {
+  display: grid;
+  gap: 6px;
+  margin: 12px 0 0;
+  padding: 0;
+  list-style: none;
+}
+
+.notready-list li {
+  display: grid;
+  grid-template-columns: auto auto 1fr;
+  gap: 8px;
+  align-items: baseline;
+  padding: 7px 10px;
+  border: 1px dashed rgba(251, 191, 36, 0.45);
+  border-radius: var(--radius-sm);
+  background: var(--panel);
+  font-size: 12.5px;
+}
+
+.notready-list .notready-list__msg {
+  grid-column: 1 / -1;
+  color: var(--muted);
+  font-size: 12px;
+  overflow-wrap: anywhere;
+}

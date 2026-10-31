@@ -3,6 +3,8 @@
 // card per spec, section stages a single card, anything else a raw card.
 import { useEffect, useRef, useState } from "react";
 import type { Catalog, StageInfo, ValidationError } from "../api/types";
+import { cardReadiness } from "../models/cardReadiness";
+import { useReadiness } from "../models/useModelStatus";
 import { Icon } from "../ui/icons";
 import { laneUnits, moduleInfo, moduleTypes, sectionFields, slotPath, slotsOf, summarize } from "./catalog";
 import { EmptySlot, ModuleCard } from "./ModuleCard";
@@ -67,6 +69,8 @@ interface LaneProps {
 /** The generic lane of a stage; `nested` renders it as a part of a group lane. */
 export function GenericLane({ stage, value, catalog, errors, selection, select, nested = false }: LaneProps & { nested?: boolean }) {
   const { addModule } = useEditor();
+  const readiness = useReadiness();
+  const readinessOf = (index: number | null) => (readiness ? cardReadiness(readiness.rowsFor(stage.yaml_key, index)) : undefined);
   const slots = slotsOf(stage, value);
   const ownErrors = errors.filter((e) => e.path === stage.yaml_key);
   const canAdd = stage.multiple || slots.length === 0;
@@ -99,6 +103,7 @@ export function GenericLane({ stage, value, catalog, errors, selection, select, 
                 subtitle={summarize(info?.schema.fields, spec)}
                 description={info?.doc}
                 tone={info ? "default" : "unknown"}
+                readiness={readinessOf(index)}
                 selected={isSelected(selection, stage, index)}
                 errorCount={errorCount}
                 onSelect={onSelect}
@@ -110,6 +115,7 @@ export function GenericLane({ stage, value, catalog, errors, selection, select, 
               key={dotted}
               title={stage.title}
               subtitle={summarize(sectionFields(catalog, stage.yaml_key), spec, 2) || (isRecord(spec) ? "defaults" : String(spec))}
+              readiness={readinessOf(index)}
               selected={isSelected(selection, stage, index)}
               errorCount={errorCount}
               onSelect={onSelect}

@@ -1,14 +1,26 @@
 // The editor screen: lanes on the canvas, the inspector and the diff on the right.
 import type { ReactNode } from "react";
+import { ReadinessBanner } from "../models/ReadinessBanner";
+import type { ModelView } from "../models/useModelStatus";
 import { Icon } from "../ui/icons";
+import { stageByKey } from "./catalog";
 import { DiffView } from "./DiffView";
 import { Inspector } from "./Inspector";
 import { Lanes } from "./Lanes";
-import { useEditor } from "./yamlState";
+import { useEditor, type Selection } from "./yamlState";
 
 export function EditorView({ onOpen }: { onOpen: () => void }) {
   const editor = useEditor();
   const generalOpen = editor.selection?.kind === "general";
+  // A model row -> the card (or general settings tab) that configures it.
+  const show = (row: ModelView) => {
+    const stage = stageByKey(editor.catalog, row.stage) ?? stageByKey(editor.catalog, row.stage.split(".")[0]);
+    if (!stage) return;
+    const selection: Selection = stage.general
+      ? { kind: "general", stageKey: stage.yaml_key }
+      : { kind: "slot", stageKey: stage.yaml_key, index: stage.yaml_key === row.stage ? row.index : null };
+    editor.select(selection);
+  };
   return (
     <div className="editor">
       <div className="canvas" onClick={(e) => e.target === e.currentTarget && editor.select(null)}>
@@ -20,6 +32,7 @@ export function EditorView({ onOpen }: { onOpen: () => void }) {
                 <Icon name="gear" size={15} /> General settings
               </button>
             </div>
+            <ReadinessBanner onShow={show} />
             <div className="canvas__scroll">
               <Lanes />
             </div>

@@ -67,7 +67,7 @@ still pending.
 det-depth-distance/
 ├── pyproject.toml           # uv manifest; "infer" extra holds the GPU stack, "eval" extra matplotlib, "web" extra FastAPI; 4 console scripts; pytest "gpu" marker
 ├── uv.lock
-├── web/                     # front-end (Vite React TS): src/api (types, client, video), src/editor (yamlState store, Lanes, ModuleCard, Inspector, fieldControls, DiffView, registry), src/video (VideoDeck, DropZone, Player, SegmentBar, JobPanel, segment.ts, useVideoSession, useJobs, useProcess), src/api/runs.ts, src/runs (RunsView, RunList, RunDetail, CompareView (KpiCards, ConfigDiff), DistanceChart, JsonTree, Artifacts, artifactViews registry, format.ts), src/ui (Shell, route.ts, theme.css); built to web/dist (not versioned)
+├── web/                     # front-end (Vite React TS): src/api (types, client, video, models), src/editor (yamlState store, Lanes, ModuleCard, Inspector, fieldControls, DiffView, registry), src/models (useModelStatus hook + ReadinessProvider, ReadinessBanner, ModelRequirements, readiness.ts/cardReadiness.ts rules, statusStyles.css), src/video (VideoDeck, DropZone, Player, SegmentBar, JobPanel, segment.ts, useVideoSession, useJobs, useProcess), src/api/runs.ts, src/runs (RunsView, RunList, RunDetail, CompareView (KpiCards, ConfigDiff), DistanceChart, JsonTree, Artifacts, artifactViews registry, format.ts), src/ui (Shell, route.ts, theme.css); built to web/dist (not versioned)
 ├── configs/                 # example run YAMLs: rfdetr_da3, yolo_o365_da3, multi_detector(_fused), *_seg_da3, rfdetr_sam2_da3, yolo_o365_sam2_da3, rfdetr_semantic_da3, rfdetr_lanes_scene_da3, rfdetr_da3_track, rfdetr_da3_calibrated, yolo_light_da3, rfdetr_da3_motion, rfdetr_sam2_lanes_motion_da3
 │   ├── labels/              # versioned label maps: coco_driving, objects365_driving
 │   └── references/          # example_references.yaml (fictitious field-reference template)
@@ -435,6 +435,38 @@ only when every model is skipped). The CLI `--prepare` downloads any repo. `POST
 `--asset-root`, the weights root is an implicit asset root, and a `Path`
 option with `core.options.PATH_RESOLVER` field metadata (YOLO / Ultralytics
 SAM `weights` -> `resolve_weights`) is checked as its adapter resolves it.
+
+Readiness in the UI (task_0023, `web/src/models/`): `useModelStatus(config,
+{api})` posts the edited pipeline to `/api/models/status` (debounced like the
+validation; a sequence bumped when a request is scheduled drops stale
+answers; 422 -> `invalid`, other errors -> `unavailable`, neither blocks
+Process), follows the Prepare jobs it starts over SSE (`model` / `progress` /
+`end` events -> per-model byte progress) and keeps the outcome of the last
+attempt per model (a failure stays `failed` with its reason after the status
+refresh, until retried or ready; a changed type/name drops it); it polls
+while the server reports `preparing` for a job it did not start. Context
+`ReadinessProvider`/`useReadiness` (null outside it: cards render as before).
+Cards (`ModuleCard` `readiness` prop, `cardReadiness`): `ready` solid;
+`missing`, `conflict` and any unknown state -> `card--notready` (yellow dashed
+outline + alert badge `role="img"` at the top-right); `preparing`/`queued` ->
+`card--preparing` with a `role="progressbar"` (`aria-valuenow` in %); `failed`
+-> red dashed + badge. Rows map to slots by `{stage, index}`; a single-slot
+stage also shows rows of its sub-paths (`camera.estimate` in the general
+`camera` tab). `ReadinessBanner` ("N models need preparing · X GB", X = the
+declared sizes of the models Prepare all would fetch; Prepare all = `models:
+"all"`; model list; overall progress + Cancel; "Check again" when
+unavailable). Inspector "Weights & requirements" (`ModelRequirements`):
+layers, missing items, message, size, source/licence/target when a row
+carries them (else locations parsed from `<weights root>/...` in the
+message), **Prepare model** / **Retry** for preparable rows, the copyable
+`det-depth-distance --config <file> --prepare` for an unknown source (message
+prefix `unknown source`), a note when only `package:` items are missing, a
+conflict note, and the module's unset path options as the location override.
+Process is disabled with "N models are not ready — Prepare them first." while
+the last status has a row not `ready`; `submitRun` throws `ModelsNotReady` on
+a 409 and `useProcess` shows a "Models not ready" dialog listing them (with
+Prepare all); rerun's 409 becomes a readable notice. No model, stage or source
+name is written in `web/src`.
 
 Results and comparison (task_0017, `web/compare.py`): `GET
 /api/runs/{id}/summary` (`{summary, metrics}`), `GET /api/compare?a=ID&b=ID`

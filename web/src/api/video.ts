@@ -2,6 +2,7 @@
 // (src/det_depth_distance/web/app.py); injected so tests can fake it.
 import type { ConfigDict, ValidationError } from "./types";
 import { ApiError } from "./client";
+import type { ModelStatus } from "./models";
 
 export interface VideoRecord {
   id: string;
@@ -73,6 +74,14 @@ export class RunRejected extends Error {
   constructor(readonly errors: ValidationError[]) {
     super(errors.length ? `${errors[0].path ? `${errors[0].path}: ` : ""}${errors[0].message}` : "The run was rejected.");
     this.name = "RunRejected";
+  }
+}
+
+/** POST /api/runs answered 409: some models of the config are not ready (Prepare them first). */
+export class ModelsNotReady extends Error {
+  constructor(readonly models: ModelStatus[]) {
+    super(`${models.length} model${models.length === 1 ? " is" : "s are"} not ready`);
+    this.name = "ModelsNotReady";
   }
 }
 
@@ -165,6 +174,10 @@ export function createVideoApi(base = "", fetchImpl: typeof fetch = (...a) => fe
       if (response.status === 422) {
         const body = (await response.json().catch(() => ({}))) as { errors?: ValidationError[]; detail?: unknown };
         throw new RunRejected(body.errors ?? [{ path: "", message: typeof body.detail === "string" ? body.detail : "invalid request" }]);
+      }
+      if (response.status === 409) {
+        const body = (await response.clone().json().catch(() => ({}))) as { models_not_ready?: ModelStatus[] };
+        if (Array.isArray(body.models_not_ready)) throw new ModelsNotReady(body.models_not_ready);
       }
       if (!response.ok) throw await errorOf(response);
       return ((await response.json()) as { job_id: string }).job_id;

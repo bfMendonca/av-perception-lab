@@ -4,6 +4,38 @@ Todas as mudancas relevantes do det-depth-distance serao documentadas neste arqu
 
 ---
 
+## [2026-10-31] Model readiness in the web editor
+
+The pipeline editor shows which models are ready, prepares the missing ones
+with one click and keeps Process locked until every model is ready
+(task_0023).
+
+### Added
+
+- Card states on the pipeline flow: a model that is not ready has a yellow
+  dashed outline and an alert icon at the top-right corner; preparing shows a
+  progress bar fed by the Prepare SSE events; failed is red dashed with its
+  reason; conflict and unknown states use the warning style with the server's
+  message; ready cards stay solid.
+- `ReadinessBanner`: "N models need preparing · X GB" with **Prepare all**, the
+  list of models, overall progress and Cancel; "Check again" when the status
+  cannot be fetched.
+- Inspector section "Weights & requirements": layers, missing items, size,
+  location, **Prepare model** / **Retry**, the copyable
+  `det-depth-distance --config <file> --prepare` for sources the web may not
+  download, and the module's path option as the location override.
+- `web/src/api/models.ts` (client of `/api/models/*`) and
+  `web/src/models/useModelStatus.ts` (debounced status, prepare jobs, per-model
+  progress and failures, shared through a context).
+
+### Changed
+
+- Process is disabled with "N models are not ready — Prepare them first."
+  while a model is not ready; a 409 from `POST /api/runs` opens a dialog that
+  lists the models (rerun shows them in the notice).
+
+---
+
 ## [2026-10-31] Web API for model status and Prepare
 
 The web server reports which models of a config are ready, downloads the

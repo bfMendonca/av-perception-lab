@@ -1,7 +1,8 @@
 // Test catalog: same shape as GET /api/catalog. Names are test data only;
 // the UI code never refers to them.
 import type { ApiClient } from "../api/client";
-import type { Catalog, Field, ParsedConfig, ValidationError } from "../api/types";
+import type { ModelKey, ModelStatus, ModelsApi, PrepareEvent } from "../api/models";
+import type { Catalog, ConfigDict, Field, ParsedConfig, ValidationError } from "../api/types";
 
 export const thresholdField: Field = {
   name: "threshold",
@@ -88,4 +89,73 @@ export function fakeClient(
     dump: async (config, extras) => JSON.stringify({ ...config, ...extras }),
   };
   return client;
+}
+
+/** A status row (defaults: the sample's first detector, missing 8 MB of weights). */
+export function modelRow(patch: Partial<ModelStatus> = {}): ModelStatus {
+  return {
+    stage: "detectors",
+    index: 0,
+    type: "alpha",
+    name: "alpha",
+    state: "missing",
+    layers: { assets: "missing", code: "ready", packages: "ready" },
+    missing: ["weights"],
+    size_bytes: 8 * 1024 * 1024,
+    message: "weights: <weights root>/alpha/large.bin not found",
+    ...patch,
+  };
+}
+
+export interface FakeModelsApi extends ModelsApi {
+  rows: ModelStatus[];
+  statusCalls: ConfigDict[];
+  prepared: { models: ModelKey[] | "all"; config: ConfigDict }[];
+  cancelled: string[];
+  /** Make the next status calls fail with this error. */
+  failWith: Error | null;
+  emit(jobId: string, event: PrepareEvent): void;
+}
+
+export function fakeModelsApi(rows: ModelStatus[] = []): FakeModelsApi {
+  const listeners = new Map<string, (e: PrepareEvent) => void>();
+  const api: FakeModelsApi = {
+    rows,
+    statusCalls: [],
+    prepared: [],
+    cancelled: [],
+    failWith: null,
+    emit: (id, event) => listeners.get(id)?.(event),
+    status: async (config) => {
+      api.statusCalls.push(config);
+      if (api.failWith) throw api.failWith;
+      const models = structuredClone(api.rows);
+      return { models, total_size_bytes: models.filter((m) => m.state !== "ready").reduce((s, m) => s + (m.size_bytes ?? 0), 0) };
+    },
+    prepare: async (models, config) => {
+      api.prepared.push({ models, config });
+      const id = `prep${api.prepared.length}`;
+      const chosen = models === "all" ? api.rows : api.rows.filter((r) => models.some((m) => m.stage === r.stage && m.index === r.index));
+      return {
+        id,
+        status: "queued",
+        position: 0,
+        error: null,
+        created: "2026-10-31T10:00:00",
+        cancel_requested: false,
+        models: chosen.map((r) => ({ ...r, state: "queued", item: null, done: 0, total: null })),
+        skipped: [],
+      };
+    },
+    getPrepare: async () => Promise.reject(new Error("not used")),
+    cancelPrepare: async (id) => {
+      api.cancelled.push(id);
+      return { id, status: "cancelled", position: null, error: "cancelled", created: "", cancel_requested: true, models: [], skipped: [] };
+    },
+    prepareEvents: (id, onEvent) => {
+      listeners.set(id, onEvent);
+      return () => listeners.delete(id);
+    },
+  };
+  return api;
 }

@@ -1101,9 +1101,9 @@ config (the adapter-contract tests keep their `DDD_*` paths).
 
 ### Web interface: model status and Prepare
 
-The web server exposes the same readiness and Prepare as the CLI (task_0022;
-the editor states come with task_0023). Start it with the weights root it
-should check and fill:
+The web server exposes the same readiness and Prepare as the CLI (task_0022)
+and the editor shows it on the pipeline (task_0023). Start it with the weights
+root it should check and fill:
 
 ```bash
 uv run --extra infer --extra web det-depth-distance-web --weights-root weights   # default: $DDD_WEIGHTS_ROOT, else weights/
@@ -1133,6 +1133,28 @@ uv run --extra infer --extra web det-depth-distance-web --weights-root weights  
   root may not overlap `--library-root` or `--out-root`; with `--asset-root`
   it counts as an asset folder (a bare YOLO `weights: yolo26l.pt` is checked
   at `<weights root>/ultralytics/yolo26l.pt`, where the adapter opens it).
+
+In the editor (task_0023):
+
+- Every card whose model is not ready gets a **yellow dashed outline and an
+  alert icon at its top-right corner** (hover or focus it for the reason); a
+  model being prepared shows a progress bar on its card; a failed Prepare is
+  red dashed with its reason; a dependency conflict (or any state the
+  interface does not know yet) uses the yellow warning style with the
+  server's message. Ready cards stay solid.
+- A banner above the lanes reads "N models need preparing · X GB" (X: what
+  **Prepare all** would download) and lists the models; while a Prepare runs
+  it shows the overall progress and a **Cancel** button. You can keep editing
+  meanwhile.
+- The inspector of a model has a **Weights & requirements** section: layers
+  (assets, code, packages), what is missing, size, where the files go, and
+  **Prepare model** (or **Retry** after a failure). A model whose source the
+  web may not download shows the command to run on the server instead,
+  `det-depth-distance --config <file> --prepare`, with a copy button. To use
+  your own file, set the module's path option (e.g. `weights`) in Options.
+- **Process** stays disabled ("N models are not ready — Prepare them first.")
+  until every model is ready; if the server still refuses the run (409, e.g.
+  a file removed meanwhile), a dialog lists the models and offers Prepare all.
 
 ### Pesos dos refinadores e do SegFormer
 
@@ -1242,5 +1264,6 @@ Variáveis opcionais: `SYNC_HOST` (padrão `gpu-host`) e `SYNC_DEST` (padrão
 - [x] **Model requirements and status check** (`task_0019`) — `core/requirements.py` declares what a model needs (weights, pinned code clones, packages) and `check()` reports readiness without importing torch; the provisioning engine, adapter migration and UI follow in `task_0020`–`task_0025`. New documentation is written in English.
 - [x] **Provisioning engine and `--prepare`** (`task_0020`) — `core/provision/` obtains a model's declared weights and code with registered sources (Hugging Face, URL with resume and sha256, pinned git clone; a new source kind is one class + `register_source`; Google Drive not yet), atomically, cancellably and idempotently; `det-depth-distance --config X.yaml --prepare` prepares every model of a YAML. Adapters declare their requirements in `task_0021`.
 - [x] **Web API for model status and Prepare** (`task_0022`) — `POST /api/models/status`, a prepare queue with SSE progress and cancel (independent from the GPU queue), 409 for runs with models not ready, `--weights-root`.
+- [x] **Model readiness in the editor** (`task_0023`) — card states (not ready: yellow dashed + alert icon; preparing: progress bar; failed: red dashed), "N models need preparing · X GB" banner with Prepare all, inspector "Weights & requirements" with Prepare model / Retry, Process gated until every model is ready, 409 dialog. Real download through the UI on a networked host pending.
 - [ ] **Ego-motion pelo vídeo** (`task_0011`, futura) — odometria visual RGB-D com a profundidade do DA3 no fundo estático (ou só o *yaw* pela homografia do fundo distante) como provedor `ego_motion`.
 - [x] **Configuração leve** (`task_0010`) — `yolo_light_da3.yaml` para GPU de 4 GB (YOLO26s-seg, DA3METRIC-L, rastreamento, TwinLiteNet+ small, SegFormer-B0). Medição de VRAM no notebook pendente.
