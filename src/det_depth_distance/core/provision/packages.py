@@ -35,6 +35,7 @@ import time
 import tomllib
 from collections import deque
 from collections.abc import Callable, Iterable, Mapping
+from concurrent.futures import Future
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal
@@ -193,9 +194,34 @@ def _subprocess_env() -> dict[str, str]:
     return env
 
 
+# Credentials that may appear in uv output (index URLs, tokens).
+_SECRETS = (
+    (re.compile(r"(?<=://)[^/\s@'\"]+@"), "***@"),  # scheme://user:pass@host
+    (
+        re.compile(
+            r"(?i)([?&;](?:[a-z0-9_-]*(?:token|password|passwd|secret|key|sig|"
+            r"signature|auth|credential)[a-z0-9_-]*)=)[^&\s'\"]+"
+        ),
+        r"\1***",
+    ),
+    (re.compile(r"(?i)\b(bearer|token|basic)(\s+)[A-Za-z0-9._~+/=-]{8,}"), r"\1\2***"),
+    # well-known token shapes (Hugging Face, GitHub, GitLab, PyPI)
+    (re.compile(r"\b(?:hf_|gh[pousr]_|glpat-|pypi-)[A-Za-z0-9_-]{16,}"), "***"),
+)
+
+
+def scrub(text: str) -> str:
+    """`text` without credentials: `user:pass@` in URLs, token-like query
+    values, `Bearer <token>` and well-known token shapes become `***`."""
+    for pattern, repl in _SECRETS:
+        text = pattern.sub(repl, text)
+    return text
+
+
 def relative(text: str, project: Path) -> str:
-    """`text` with the project folder shown as `.` and the home as `~`."""
-    out = rq.redact_root(text, project, ".") or ""
+    """`text` with credentials scrubbed, the project folder shown as `.` and
+    the home as `~`."""
+    out = rq.redact_root(scrub(text), project, ".") or ""
     return rq.redact_root(out, Path.home(), "~") or ""
 
 
@@ -218,16 +244,25 @@ def resolver_reason(output: str) -> str:
     return text if len(text) <= MESSAGE_LIMIT else text[: MESSAGE_LIMIT - 1] + "…"
 
 
+# DryRunResult.kind: "ok"; "resolver" (uv refused: a conflict); "replace" (the
+# plan removes/replaces packages: a conflict); "invalid" (bad extra name);
+# "unavailable" (uv not found or not executable) and "timeout" are transient
+# tooling failures: never a conflict, never cached.
+TRANSIENT = frozenset({"unavailable", "timeout", "cancelled"})
+
+
 @dataclass(frozen=True, slots=True)
 class DryRunResult:
     """`ok` when the resolution is clean and removes nothing; `message` is the
-    planned change or the resolver's reason (project-relative); `command` is
-    the install command it validates; `changes` the `+ name==version` lines."""
+    planned change or the reason (project-relative); `command` is the install
+    command it validates; `changes` the `+ name==version` lines; `kind` says
+    which outcome it is (see `TRANSIENT`)."""
 
     ok: bool
     message: str
     command: str = ""
     changes: tuple[str, ...] = ()
+    kind: str = "ok"
 
 
 def dry_run(
@@ -236,38 +271,69 @@ def dry_run(
     uv: str = "uv",
     *,
     pyproject: Path | None = None,
-    timeout: float = DRY_RUN_TIMEOUT_S,
+    timeout: float | None = None,
+    cancel: threading.Event | None = None,
 ) -> DryRunResult:
     """Run `uv sync --dry-run` for `detected` plus `extra` and report.
 
-    Never raises for a uv failure: a missing executable, a timeout, a
-    resolver error or a plan that removes/replaces packages is `ok=False`
-    with the reason.
+    uv runs in its own process group, killed as a whole on timeout or when
+    `cancel` is set. Never raises for a uv failure: a resolver error or a
+    plan that removes/replaces packages is `ok=False` (a conflict); a missing
+    executable, a timeout or a cancel is `ok=False` with a `TRANSIENT` kind.
     """
     project = (default_pyproject() if pyproject is None else Path(pyproject)).parent
     try:
         argv = sync_command(extra, detected, uv, dry_run=True)
     except ValueError as exc:
-        return DryRunResult(False, str(exc))
+        return DryRunResult(False, str(exc), kind="invalid")
     command = command_text(argv[:-1])  # what Install would run
+    timeout = DRY_RUN_TIMEOUT_S if timeout is None else timeout
     try:
-        out = subprocess.run(
+        proc = subprocess.Popen(
             argv,
             cwd=project,
             env=_subprocess_env(),
             stdin=subprocess.DEVNULL,
-            capture_output=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
             text=True,
-            timeout=timeout,
-            check=False,
+            start_new_session=True,  # its own process group, killed as a whole
         )
-    except subprocess.TimeoutExpired:
-        return DryRunResult(False, f"uv dry-run timed out after {timeout:g} s", command)
     except OSError as exc:
-        return DryRunResult(False, f"uv is not available ({exc})", command)
-    text = f"{out.stdout}\n{out.stderr}"
-    if out.returncode != 0:
-        return DryRunResult(False, relative(resolver_reason(text), project), command)
+        return DryRunResult(
+            False,
+            f"uv is not available ({exc.strerror or exc}): install uv or set "
+            "DDD_UV to the uv executable (e.g. ~/.local/bin/uv) and restart",
+            command,
+            kind="unavailable",
+        )
+    deadline = time.monotonic() + timeout
+    try:
+        while True:
+            try:
+                stdout, stderr = proc.communicate(timeout=POLL_S)
+                break
+            except subprocess.TimeoutExpired:
+                if cancel is not None and cancel.is_set():
+                    _kill(proc)
+                    return DryRunResult(False, "cancelled", command, kind="cancelled")
+                if time.monotonic() > deadline:
+                    _kill(proc)
+                    return DryRunResult(
+                        False,
+                        f"uv dry-run timed out after {timeout:g} s (retried on "
+                        "the next check)",
+                        command,
+                        kind="timeout",
+                    )
+    finally:
+        if proc.poll() is None:  # KeyboardInterrupt or another error
+            _kill(proc)
+    text = f"{stdout}\n{stderr}"
+    if proc.returncode != 0:
+        return DryRunResult(
+            False, relative(resolver_reason(text), project), command, kind="resolver"
+        )
     plan = [_ANSI_RE.sub("", line).strip() for line in text.splitlines()]
     removed = [line[2:].strip() for line in plan if line.startswith("- ")]
     added = tuple(line[2:].strip() for line in plan if line.startswith("+ "))
@@ -277,17 +343,25 @@ def dry_run(
             "installing it would remove or replace installed packages: "
             f"{', '.join(removed)}; the environment is left untouched",
             command,
+            kind="replace",
         )
     message = f"would install {', '.join(added)}" if added else "nothing to install"
     return DryRunResult(True, message, command, added)
 
 
 def _kill(proc: subprocess.Popen) -> None:
-    """Kill `uv` and every process it spawned (builds, downloads)."""
+    """Kill `uv` and every process it spawned (builds, downloads); the pipes
+    are closed without reading them (a stray holder cannot block us)."""
     try:
         os.killpg(proc.pid, signal.SIGKILL)
     except (AttributeError, ProcessLookupError, PermissionError):
         proc.kill()
+    for pipe in (proc.stdout, proc.stderr):
+        if pipe is not None:
+            try:
+                pipe.close()
+            except OSError:
+                pass
     proc.wait()
 
 
@@ -347,16 +421,22 @@ def install(
             start_new_session=True,  # its own process group, killed as a whole
         )
     except OSError as exc:
-        raise ProvisionError(f"uv is not available ({exc})") from None
+        raise ProvisionError(
+            f"uv is not available ({exc.strerror or exc}): install uv or set "
+            "DDD_UV to the uv executable"
+        ) from None
     tail: deque[str] = deque(maxlen=40)
 
     def read() -> None:
         assert proc.stdout is not None
-        for raw in proc.stdout:
-            line = relative(_ANSI_RE.sub("", raw).rstrip(), project)
-            if line:
-                tail.append(line)
-                on_line(line)
+        try:
+            for raw in proc.stdout:
+                line = relative(_ANSI_RE.sub("", raw).rstrip(), project)
+                if line:
+                    tail.append(line)
+                    on_line(line)
+        except (OSError, ValueError):  # the pipe was closed by a kill
+            pass
 
     reader = threading.Thread(target=read, name="uv-install-output", daemon=True)
     reader.start()
@@ -385,7 +465,7 @@ def install(
     clear_cache()
 
 
-Action = Literal["ready", "base", "install", "conflict", "invalid"]
+Action = Literal["ready", "base", "install", "conflict", "invalid", "error"]
 
 
 @dataclass(frozen=True, slots=True)
@@ -397,7 +477,9 @@ class PackagePlan:
     never run here. `install`: a per-model `extra` whose dry-run is clean;
     `command` is what Install runs, `extras` every extra it names. `conflict`:
     the dry-run failed; `message` is the resolver's reason. `invalid`: the
-    declaration cannot be acted on (no extra, an undeclared extra).
+    declaration cannot be acted on (no extra, an undeclared extra). `error`:
+    the dry-run could not run (uv unavailable, timeout, cancelled): not a
+    conflict, asked again on the next check.
     """
 
     action: Action
@@ -408,14 +490,17 @@ class PackagePlan:
 
 
 _CACHE: dict[tuple, DryRunResult] = {}
+_INFLIGHT: dict[tuple, Future] = {}
 _CACHE_LOCK = threading.Lock()
 _CACHE_SIZE = 32
 
 
 def clear_cache() -> None:
-    """Forget the cached dry-runs (after an install)."""
+    """Forget the cached dry-runs (after an install); runs in flight finish
+    for their callers but are not stored."""
     with _CACHE_LOCK:
         _CACHE.clear()
+        _INFLIGHT.clear()
 
 
 def _mtime(path: Path) -> int:
@@ -429,7 +514,9 @@ def cached_dry_run(
     extra: str, detected: Iterable[str], uv: str, pyproject: Path
 ) -> DryRunResult:
     """`dry_run`, remembered per (extra, detected extras, uv, pyproject and
-    lock modification times): the status route asks often."""
+    lock modification times): the status route asks often. Concurrent callers
+    with the same key share one uv run (single flight); a `TRANSIENT`
+    result (uv unavailable, timeout) is returned but never stored."""
     detected = frozenset(detected)
     key = (
         extra,
@@ -442,11 +529,28 @@ def cached_dry_run(
     with _CACHE_LOCK:
         if key in _CACHE:
             return _CACHE[key]
-    result = dry_run(extra, detected, uv, pyproject=pyproject)
+        future = _INFLIGHT.get(key)
+        owner = future is None
+        if owner:
+            future = _INFLIGHT[key] = Future()
+    if not owner:
+        return future.result()
+    try:
+        result = dry_run(extra, detected, uv, pyproject=pyproject)
+    except BaseException as exc:
+        with _CACHE_LOCK:
+            if _INFLIGHT.get(key) is future:
+                del _INFLIGHT[key]
+        future.set_exception(exc)
+        raise
     with _CACHE_LOCK:
-        if len(_CACHE) >= _CACHE_SIZE:
-            _CACHE.clear()
-        _CACHE[key] = result
+        if _INFLIGHT.get(key) is future:
+            del _INFLIGHT[key]
+            if result.kind not in TRANSIENT:
+                if len(_CACHE) >= _CACHE_SIZE:
+                    _CACHE.clear()
+                _CACHE[key] = result
+    future.set_result(result)
     return result
 
 
@@ -462,10 +566,13 @@ def plan_packages(
     uv: str | None = None,
     imports: Mapping[str, Iterable[str]] | None = None,
     fresh: bool = False,
+    cancel: threading.Event | None = None,
 ) -> PackagePlan:
     """The packages plan of `req` (see `PackagePlan`). Runs a dry-run only
     for a missing per-model extra while the base stack is installed (cached
-    unless `fresh`); never installs anything."""
+    unless `fresh`; a fresh one stops when `cancel` is set); never installs
+    anything. `imports` are the import names per extra of the whole config:
+    the same mapping must be used for the plan shown and the plan run."""
     missing = missing_packages(req)
     if not missing:
         return PackagePlan("ready", req.extra)
@@ -516,13 +623,21 @@ def plan_packages(
         )
     uv = default_uv() if uv is None else uv
     result = (
-        dry_run(extra, detected, uv, pyproject=path)
+        dry_run(extra, detected, uv, pyproject=path, cancel=cancel)
         if fresh
         else cached_dry_run(extra, detected, uv, path)
     )
     extras = tuple(sorted({*detected, extra}))
     if result.ok:
         return PackagePlan("install", extra, result.command, result.message, extras)
+    if result.kind in TRANSIENT:
+        return PackagePlan(
+            "error",
+            extra,
+            None,
+            f"cannot check extra {extra!r}: {result.message}",
+            extras,
+        )
     return PackagePlan(
         "conflict",
         extra,

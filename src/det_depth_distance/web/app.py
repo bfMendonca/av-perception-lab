@@ -494,6 +494,16 @@ def create_app(
             return JSONResponse({"errors": [schema.split_error(exc)]}, 422)
         if pending:
             return JSONResponse({"models_not_ready": pending}, status_code=409)
+        if prepares.installing():  # after the awaits, right before queueing
+            return JSONResponse(
+                {
+                    "detail": "Python packages are being installed on the server: "
+                    "submit the run when the install ends (and the server was "
+                    "restarted)",
+                    "packages_installing": True,
+                },
+                status_code=409,
+            )
         job = jobs.submit(config, video_id)
         return {"job_id": job.id}
 
@@ -644,8 +654,31 @@ def create_app(
         keys: list[models.Key] | Literal["all"] = (
             "all" if body.models == "all" else [(k.stage, k.index) for k in body.models]
         )
+        plans = None
+        if body.packages:
+            if keys == "all":
+                raise HTTPException(
+                    422, "Install packages names its models (not 'all')"
+                )
+            try:
+                plans = await run_in_threadpool(
+                    prepares.install_plans, keys, body.config
+                )
+            except models.UnknownModel as exc:
+                raise HTTPException(422, exc.args[0]) from None
+            except ConfigError as exc:
+                raise HTTPException(422, str(exc)) from None
+            # Checked after the await, right before queueing (one loop thread).
+            if jobs.active():
+                raise HTTPException(
+                    409,
+                    "a run is queued or running: install packages when it ends "
+                    "(a running worker must not see a half-installed package)",
+                )
         try:
-            job = prepares.submit(keys, body.config, packages=body.packages)
+            job = prepares.submit(
+                keys, body.config, packages=body.packages, plans=plans
+            )
         except models.UnknownModel as exc:
             raise HTTPException(422, exc.args[0]) from None
         # ConfigError, UnknownSource, NotInstallable, nothing selected

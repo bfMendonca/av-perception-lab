@@ -311,6 +311,10 @@ class ModelProgress:
     size_bytes: int | None = None
     message: str | None = None
     installed: bool = False  # a packages job ran `uv sync` to completion
+    # packages job: the plan shown to the user (computed by the server) and
+    # the config-wide import names it was computed with
+    expected: pkgs.PackagePlan | None = field(default=None, repr=False)
+    imports: dict[str, tuple[str, ...]] | None = field(default=None, repr=False)
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -381,11 +385,14 @@ class PrepareQueue:
         models: list[Key] | Literal["all"],
         data: dict[str, Any],
         packages: bool = False,
+        plans: dict[Key, pkgs.PackagePlan] | None = None,
     ) -> PrepareJob:
         """Queue a Prepare of `models` (keys from the status rows) or of every
         model of the config (call from the running event loop). With
         `packages`, the job installs the named models' per-model extras
-        instead (`install_packages`); the dry-run runs in the job.
+        instead (`install_packages`): `plans` are the server's plans of
+        those models (`install_plans`, called from a thread first), each must
+        be "install"; the job's fresh dry-run must give the same plan.
 
         A model with an unknown source (`unknown_sources`) is never queued:
         named explicitly it raises `UnknownSource`; with "all" it is left out
@@ -425,7 +432,7 @@ class PrepareQueue:
                     raise UnknownModel(f"{where} is not a model of this config")
                 row = by_key[key]
                 if packages:
-                    _check_installable(row)
+                    _check_installable(row, (plans or {}).get(key))
                 elif row.req is not None and unknown_sources(row.req, self.root):
                     raise UnknownSource(f"{_where(row)} {row.name}: {UNKNOWN_SOURCE}")
                 if key not in seen:
@@ -435,6 +442,11 @@ class PrepareQueue:
             raise ValueError("no model to prepare")
         job = PrepareJob(uuid.uuid4().hex[:12], [ModelProgress(r) for r in chosen])
         job.kind = "packages" if packages else "weights"
+        if packages:
+            imports = config_imports(rows)
+            for model in job.models:
+                model.expected = (plans or {}).get(model.row.key)
+                model.imports = imports
         job.skipped = skipped
         job.created = datetime.now().astimezone().isoformat(timespec="seconds")
         self._jobs[job.id] = job
@@ -444,6 +456,38 @@ class PrepareQueue:
         self._wake.set()
         self._forget_old()
         return job
+
+    def install_plans(
+        self, models: list[Key], data: dict[str, Any]
+    ) -> dict[Key, pkgs.PackagePlan]:
+        """The server's packages plans of `models` (as the status rows show
+        them: config-wide import names, cached dry-run). Call from a thread.
+
+        Raises:
+            ConfigError: the configuration is invalid.
+            UnknownModel: a key is not one of the config's models.
+        """
+        rows = config_rows(data)
+        imports = config_imports(rows)
+        by_key = {row.key: row for row in rows}
+        plans = {}
+        for key in models:
+            key = (key[0], key[1])
+            row = by_key.get(key)
+            if row is None:
+                stage, index = key
+                where = stage if index is None else f"{stage}[{index}]"
+                raise UnknownModel(f"{where} is not a model of this config")
+            if row.req is not None:
+                plans[key] = pkgs.plan_packages(row.req, imports=imports)
+        return plans
+
+    def installing(self) -> bool:
+        """An Install packages job is queued or running."""
+        return any(
+            j.kind == "packages" and j.status not in TERMINAL
+            for j in self._jobs.values()
+        )
 
     def get(self, job_id: str) -> PrepareJob:
         """The job, or KeyError."""
@@ -649,6 +693,8 @@ class PrepareQueue:
                 on_line,
                 job.cancel_event,
                 root=self.root,
+                imports=model.imports,
+                expected=model.expected,
             )
         except Exception as exc:  # noqa: BLE001 - reported, never a crash
             model.state = "failed"
@@ -697,9 +743,10 @@ class PrepareQueue:
         return progress
 
 
-def _check_installable(row: ModelRow) -> None:
+def _check_installable(row: ModelRow, plan: pkgs.PackagePlan | None) -> None:
     """Raise `NotInstallable` unless the server may install the packages of
-    `row` (a per-model extra, never the base stack)."""
+    `row`: a per-model extra (never the base stack) whose server-side plan is
+    "install" (a clean dry-run)."""
     extra = row.req.extra if row.req is not None else None
     if extra is None:
         raise NotInstallable(
@@ -710,6 +757,18 @@ def _check_installable(row: ModelRow) -> None:
             f"{_where(row)} {row.name}: the base Python stack is never installed "
             f"by the server: run `{pkgs.BASE_COMMAND}` once and restart it"
         )
+    where = f"{_where(row)} {row.name}"
+    if plan is None:
+        raise NotInstallable(f"{where}: no packages plan for this model")
+    if plan.action == "base":
+        raise NotInstallable(
+            f"{where}: the base Python stack is not installed and the server "
+            f"never installs it: run `{pkgs.BASE_COMMAND}` once and restart it"
+        )
+    if plan.action == "ready":
+        raise NotInstallable(f"{where}: its packages are already installed")
+    if plan.action != "install":
+        raise NotInstallable(f"{where}: {plan.message or plan.action}")
 
 
 def _succeeded(job: PrepareJob, model: ModelProgress) -> bool:

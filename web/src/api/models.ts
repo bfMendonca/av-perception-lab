@@ -19,10 +19,12 @@ export interface ModelKey {
  * base stack: `command` is the one-time command the server never runs),
  * `install` (a per-model extra whose dry-run is clean: `command` is what
  * Install packages runs), `conflict` (the dry-run failed: `message` is the
- * resolver's reason), `invalid` (the declaration cannot be acted on).
+ * resolver's reason), `invalid` (the declaration cannot be acted on),
+ * `error` (the dry-run could not run: uv unavailable, timeout; the row is
+ * `failed` and asked again on the next check).
  */
 export interface PackagePlan {
-  action: "base" | "install" | "conflict" | "invalid" | (string & {});
+  action: "base" | "install" | "conflict" | "invalid" | "error" | (string & {});
   extra: string | null;
   command: string | null;
   message: string | null;

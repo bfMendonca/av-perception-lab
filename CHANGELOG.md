@@ -40,6 +40,17 @@ and only a clean dry-run can be installed, after an explicit confirmation
   installs it. A dry-run that would remove or replace a package is a
   conflict.
 
+### Fixed (review round 1)
+
+- uv not found, a timeout or a cancel is reported as `failed` (naming
+  `DDD_UV`), never as a cached `conflict`.
+- Concurrent status checks share one dry-run; a dry-run timeout kills uv's
+  whole process group.
+- Install packages and runs exclude each other (409 both ways).
+- The install runs only the plan the user confirmed (same import names,
+  same command); a base-stack plan is refused even by a direct API call.
+- Credentials are scrubbed from uv output.
+
 ---
 
 ## [2026-10-31] Model readiness in the web editor

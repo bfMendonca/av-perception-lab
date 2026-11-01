@@ -5,6 +5,7 @@ packages jobs, base stack command. Every `uv` call goes to the fake of
 import json
 import sys
 import time
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -23,6 +24,7 @@ from det_depth_distance.core import registry
 from det_depth_distance.core import requirements as rq
 from det_depth_distance.core.components import Detector, DetectorOptions
 from det_depth_distance.core.requirements import Requirements
+from det_depth_distance.web import models
 from det_depth_distance.web.app import create_app
 
 FAKE_WORKER = Path(__file__).with_name("fake_worker.py")
@@ -122,15 +124,94 @@ def test_conflict_state_reaches_the_api_and_ui_contract(api, fake_uv, tmp_path):
     assert report["restart_required"] is False
     # A config in conflict is not ready: a run would be refused.
     assert row["state"] != "ready"
-    # Installing it from the web: the job's fresh dry-run fails, nothing changes.
+    # Installing it from the web is refused with the reason; nothing changes.
     resp = install(api, pkg_config(tmp_path))
-    assert resp.status_code == 200, resp.text
-    job = wait_prepare(api, resp.json()["id"])
-    assert job["status"] == "failed"
-    assert job["models"][0]["state"] == "conflict"
-    assert job["models"][0]["installed"] is False
+    assert resp.status_code == 422, resp.text
+    assert "incompatible" in resp.json()["detail"]
     assert snapshot(fake_uv.envdir) == before
     assert all("--dry-run" in c["args"] for c in fake_uv.calls())
+
+
+def test_uv_unavailable_row_is_failed_not_conflict(api, fake_uv, tmp_path, monkeypatch):  # noqa: F811
+    monkeypatch.setenv("DDD_UV", str(tmp_path / "no-uv"))
+    row = detector_row(status(api, pkg_config(tmp_path)))
+    assert row["state"] == "failed"
+    assert row["packages"]["action"] == "error"
+    assert "DDD_UV" in row["message"] and "conflicts" not in row["message"]
+    monkeypatch.setenv("DDD_UV", fake_uv.uv)
+    assert detector_row(status(api, pkg_config(tmp_path)))["state"] == "missing"
+
+
+def test_concurrent_status_requests_run_one_dry_run(api, fake_uv, tmp_path):  # noqa: F811
+    fake_uv.mode("slow")
+    with ThreadPoolExecutor(3) as pool:
+        reports = list(pool.map(lambda _: status(api, pkg_config(tmp_path)), range(3)))
+    assert all(detector_row(r)["packages"]["action"] == "install" for r in reports)
+    assert len(fake_uv.calls()) == 1
+
+
+def test_install_refused_while_a_run_is_active(api, fake_uv, tmp_path, monkeypatch):  # noqa: F811
+    monkeypatch.setattr(api.app.state.jobs, "active", lambda: True)
+    resp = install(api, pkg_config(tmp_path))
+    assert resp.status_code == 409
+    assert "a run is queued or running" in resp.json()["detail"]
+    assert all("--dry-run" in c["args"] for c in fake_uv.calls())
+
+
+def test_run_refused_while_packages_install(api, fake_uv, tmp_path):  # noqa: F811
+    fake_uv.mode("hang")
+    job_id = install(api, pkg_config(tmp_path)).json()["id"]
+    resp = api.post("/api/runs", json={"config": pkg_config(tmp_path)})
+    assert resp.status_code == 409, resp.text
+    assert resp.json()["packages_installing"] is True
+    assert "being installed" in resp.json()["detail"]
+    api.delete(f"/api/models/prepare/{job_id}")
+    assert wait_prepare(api, job_id)["status"] == "cancelled"
+    assert (
+        api.post("/api/runs", json={"config": pkg_config(tmp_path)}).status_code == 200
+    )
+
+
+def test_broken_base_is_never_installed_even_by_a_direct_call(
+    api,
+    fake_uv,  # noqa: F811
+    tmp_path,
+    monkeypatch,
+):
+    # torch's metadata is fine but the import name is gone: the config-wide
+    # import names make the base stack "not installed", so the plan is base.
+    monkeypatch.setattr(
+        rq,
+        "_top_level_present",
+        lambda n: n != "torch" and (n in STACK or REAL_PRESENT(n)),
+    )
+    row = detector_row(status(api, pkg_config(tmp_path)))
+    assert row["packages"]["action"] == "base"
+    resp = install(api, pkg_config(tmp_path))
+    assert resp.status_code == 422
+    assert "never installs it" in resp.json()["detail"]
+    assert fake_uv.calls() == []
+
+
+def test_install_job_uses_the_plan_the_status_showed(
+    api,
+    fake_uv,  # noqa: F811
+    tmp_path,
+    monkeypatch,
+):
+    shown = detector_row(status(api, pkg_config(tmp_path)))["packages"]
+    seen = {}
+    real = models.install_packages
+
+    def spy(req, on_line, cancel, **kwargs):
+        seen.update(kwargs)
+        return real(req, on_line, cancel, **kwargs)
+
+    monkeypatch.setattr(models, "install_packages", spy)
+    job = wait_prepare(api, install(api, pkg_config(tmp_path)).json()["id"])
+    assert job["status"] == "done"
+    assert seen["expected"].command == shown["command"]
+    assert seen["imports"]["infer"] == ("torch", "depth_anything_3")
 
 
 def test_clean_dry_run_offers_install_packages(api, fake_uv, tmp_path):  # noqa: F811

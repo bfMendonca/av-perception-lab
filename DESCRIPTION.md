@@ -317,8 +317,12 @@ installs a per-model extra after a fresh clean dry-run (same command without
 `--dry-run`, output streamed). Installed extras are detected from
 `pyproject.toml` `[project.optional-dependencies]` with `importlib.metadata`
 plus the components' import names via `find_spec` (nothing imported); a
-dry-run that would remove or replace a package is a conflict; `DDD_UV`
-names the `uv` executable. Plus two auxiliary console scripts:
+dry-run that would remove or replace a package is a conflict; `uv` missing,
+a timeout or a cancel is plan `error` (state `failed`, never cached, never a
+conflict; the message names `DDD_UV`); `DDD_UV` names the `uv` executable.
+Dry-runs are single flight per cache key and run in their own process group
+(killed on timeout/cancel); uv output is scrubbed of credentials
+(`packages.scrub`). Plus two auxiliary console scripts:
 `det-depth-distance-calibrate calibrate|board|inspect` and
 `det-depth-distance-evaluate --refs REFS.yaml RUN [RUN ...]`. The YAML schema (sections source, detectors, depth,
 camera, aggregation, refiners, semantic, tracking, smoothing, agreement, distance, render, output, device) is documented in the
@@ -463,8 +467,12 @@ else `{action: base|install|conflict|invalid, extra, command, message}` from
 and pyproject/lock mtimes); a failed dry-run makes the row `conflict` (not
 preparable; a run is refused with 409). `POST /api/models/prepare` with
 `packages: true` and named models (not "all"; 422 for the base stack or a
-model without a per-model extra) queues a job of `kind: "packages"` in the
-same PrepareQueue: `engine.install_packages` runs a fresh dry-run, then `uv
+model without a per-model extra; the route computes the server-side plans
+with config-wide import names first, `PrepareQueue.install_plans`, and each
+must be `install`; 409 while a GPU run is queued or running) queues a job of
+`kind: "packages"` in the same PrepareQueue (`POST /api/runs` answers 409
+`{detail, packages_installing: true}` while one is queued or running; the
+job refuses a fresh plan that differs from the confirmed one): `engine.install_packages` runs a fresh dry-run, then `uv
 sync` in its own process group (cancel kills the group), streaming `output`
 events `{stage, index, line}` (redacted, at most 2000 per job); the model view
 gains `installed`; afterwards the status body's `restart_required` is true.

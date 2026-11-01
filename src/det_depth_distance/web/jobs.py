@@ -145,6 +145,10 @@ class JobQueue:
         keep = {id(j) for j in finished}
         return [j for j in jobs if j.status not in TERMINAL or id(j) in keep]
 
+    def active(self) -> bool:
+        """A run is queued or running (Install packages waits for it)."""
+        return any(j.status not in TERMINAL for j in self._jobs.values())
+
     def position(self, job: Job) -> int | None:
         """Place in the waiting line (0 = starts next); None once started."""
         return self._waiting.index(job) if job in self._waiting else None

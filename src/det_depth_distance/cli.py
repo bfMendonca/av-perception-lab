@@ -374,7 +374,7 @@ def _packages_note(label: str, plan: pkgs.PackagePlan) -> str | None:
             f"{plan.message}): run again with --install-packages to run "
             f"`{plan.command}`"
         )
-    return None  # ready, or conflict/invalid: the status message says it
+    return None  # ready, or conflict/invalid/error: the status message says it
 
 
 def prepare_command(
@@ -392,7 +392,10 @@ def prepare_command(
     cancel = threading.Event()
     rows: list[tuple[str, str, ModelStatus | str]] = []
     package_notes: list[str] = []
-    for path, name, type_name, req in config_requirements(cfg):
+    entries = config_requirements(cfg)
+    # The same config-wide import names for the plan shown and the plan run.
+    imports = pkgs.imports_of(r for *_, r in entries if not isinstance(r, str))
+    for path, name, type_name, req in entries:
         label = f"{path} {name}"
         if isinstance(req, str):
             rows.append((label, type_name, f"failed: {req}"))
@@ -400,7 +403,7 @@ def prepare_command(
         print(f"[prepare] {label} ({type_name})", flush=True)
         status = prepare(req, root, _progress_printer(), cancel)
         if status.layers.get("packages", "ready") != "ready":
-            plan = pkgs.plan_packages(req)
+            plan = pkgs.plan_packages(req, imports=imports)
             if install and plan.action == "install":
                 print(
                     f"[packages] {label}: installing extra {plan.extra!r}", flush=True
@@ -410,6 +413,8 @@ def prepare_command(
                     lambda line: print(f"  [uv] {line}", flush=True),
                     cancel,
                     root=root,
+                    imports=imports,
+                    expected=plan,
                 )
                 status, plan = outcome.status, outcome.plan
                 note = (

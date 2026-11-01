@@ -12,7 +12,10 @@ it: `fake_uv` writes a Python script that records every call (arguments, cwd,
 - `replace`: a clean dry-run that would replace `torch`;
 - `fail-install`: clean dry-run, failing install;
 - `hang`: clean dry-run; the install spawns a child, writes both pids and
-  sleeps (for the cancel test).
+  sleeps (for the cancel test);
+- `slow`: a clean dry-run that takes 0.6 s (single-flight test);
+- `hang-dry`: the dry-run spawns a grandchild holding the output pipe and
+  sleeps (timeout test).
 
 The project has a `pyproject.toml` with extras `infer` (the base stack:
 distribution `fakebase-dist`, import name `fakebase`, whose import raises),
@@ -72,6 +75,15 @@ if mode == "conflict":
         file=sys.stderr,
     )
     sys.exit(1)
+if mode == "slow" and dry:
+    time.sleep(0.6)
+    clean_plan()
+    sys.exit(0)
+if mode == "hang-dry" and dry:
+    # a grandchild that keeps uv's output pipe open, like a stuck git/build
+    child = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(120)"])
+    Path(os.environ["FAKE_UV_PIDS"]).write_text(f"{os.getpid()} {child.pid}")
+    time.sleep(120)
 if mode == "replace" and dry:
     print("Would uninstall 1 package")
     print(" - torch==2.8.0")

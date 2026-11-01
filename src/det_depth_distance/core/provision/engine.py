@@ -177,9 +177,10 @@ def prepare(
 
 def with_package_plan(status: ModelStatus, plan: "PackagePlan") -> ModelStatus:
     """`status` with the packages plan applied: a "conflict" plan turns a
-    "missing" model into "conflict" and an "invalid" one into "failed", with
-    the plan's message first."""
-    if plan.action not in ("conflict", "invalid") or status.state not in (
+    "missing" model into "conflict"; an "invalid" or "error" one (the
+    dry-run could not run: uv unavailable, timeout) into "failed", with the
+    plan's message first."""
+    if plan.action not in ("conflict", "invalid", "error") or status.state not in (
         "missing",
         "conflict",
     ):
@@ -207,19 +208,46 @@ def install_packages(
     root: Path | None = None,
     pyproject: Path | None = None,
     uv: str | None = None,
+    imports: Any = None,
+    expected: "PackagePlan | None" = None,
 ) -> PackagesOutcome:
     """Install the per-model extra of `req` when its packages are missing:
-    a fresh dry-run first; only a clean one ("install") is followed by the
-    install (output lines to `on_line`). The base stack is never installed
-    (plan "base"); a failed dry-run returns the state "conflict" and changes
-    nothing. Never raises for uv failures: "failed" with the reason; a cancel
-    returns the status with a message starting with "cancelled".
+    a fresh dry-run first (with the same config-wide `imports` the shown plan
+    used); only a clean one ("install") is followed by the install (output
+    lines to `on_line`). With `expected` (the plan the user confirmed), the
+    fresh plan must be "install" with the same extras and command, else
+    nothing runs ("failed": the environment changed). The base stack is
+    never installed (plan "base"); a failed dry-run returns the state
+    "conflict" and changes nothing. Never raises for uv failures: "failed"
+    with the reason; a cancel returns the status with a message starting
+    with "cancelled".
     """
     # packages imports this module (its errors): imported here, not on top.
     from det_depth_distance.core.provision import packages
 
     root = weights_root() if root is None else Path(root)
-    plan = packages.plan_packages(req, pyproject=pyproject, uv=uv, fresh=True)
+    plan = packages.plan_packages(
+        req, pyproject=pyproject, uv=uv, imports=imports, fresh=True, cancel=cancel
+    )
+    if cancel.is_set():
+        status = check(req, root)
+        return PackagesOutcome(
+            replace(status, message="cancelled before uv sync started"), plan, False
+        )
+    if expected is not None and (
+        expected.action != "install"
+        or plan.action != "install"
+        or plan.extras != expected.extras
+        or plan.command != expected.command
+    ):
+        why = (
+            "the environment changed since the install was confirmed "
+            f"(now: {plan.action}"
+            + (f", `{plan.command}`" if plan.command else "")
+            + "): review the model again"
+        )
+        status = replace(check(req, root), state="failed", message=why)
+        return PackagesOutcome(status, plan, False)
     if plan.action != "install" or plan.extra is None:
         return PackagesOutcome(with_package_plan(check(req, root), plan), plan, False)
     on_line(f"$ {plan.command}")

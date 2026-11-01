@@ -528,6 +528,15 @@ describe("packages layer (task_0024)", () => {
     expect(models.prepared).toHaveLength(0);
   });
 
+  it("a dry-run that could not run (uv unavailable) is failed with its reason, not a conflict", async () => {
+    const reason = "cannot check extra 'model-xyz': uv is not available (No such file or directory): install uv or set DDD_UV";
+    const { section } = await openSection([pkgRow({ state: "failed", message: reason, packages: { action: "error", extra: "model-xyz", command: null, message: reason } })]);
+    expect(section).toHaveTextContent("set DDD_UV");
+    expect(section).not.toHaveTextContent("conflicts with the current environment");
+    expect(within(section).queryByRole("button", { name: /install packages/i })).not.toBeInTheDocument();
+    expect(within(section).queryByRole("button", { name: /retry|prepare model/i })).not.toBeInTheDocument();
+  });
+
   it("a conflict shows the resolver's reason and the docs pointer, with no install action", async () => {
     const reason = "installing extra 'model-xyz' conflicts with the current environment: × No solution found (see docs/model_environments.md)";
     const { section, lane } = await openSection([pkgRow({ state: "conflict", message: reason, packages: { action: "conflict", extra: "model-xyz", command: null, message: reason } })]);

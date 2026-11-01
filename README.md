@@ -1156,7 +1156,13 @@ uv run --extra infer --extra web det-depth-distance-web --weights-root weights  
   `packages: true` and named models installs a per-model extra as a job of
   `kind: "packages"` (fresh dry-run first; `uv` output as `output` SSE
   events; cancel kills `uv`); then the status body has
-  `restart_required: true`. The base stack is never installed (422).
+  `restart_required: true`. The base stack is never installed (422), nor an
+  extra whose server-side plan is not a clean dry-run (422 with the reason);
+  the job runs only if its fresh dry-run gives the confirmed command. While a
+  run is queued or running an install answers 409, and while an install is
+  queued or running `POST /api/runs` answers 409. A row whose dry-run could
+  not run (uv not found, timeout) is `failed` with the reason and checked
+  again next time (set `DDD_UV` when uv is not on the `PATH`).
 - From the web, Prepare only downloads sources the adapters vouch for: a
   Hugging Face repo typed in `depth.model`, `refiners[].model` or
   `semantic[].model` that the project does not ship reads "unknown source:

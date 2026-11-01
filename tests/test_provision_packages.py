@@ -25,7 +25,9 @@ from det_depth_distance.core.provision import (
     ProvisionError,
     install_packages,
     packages,
+    with_package_plan,
 )
+from det_depth_distance.core.provision.packages import PackagePlan
 from det_depth_distance.core.requirements import Requirements
 
 MODEL = Requirements(packages=("xyzlib",), extra="model-xyz")
@@ -125,6 +127,101 @@ def test_dry_run_that_replaces_packages_is_a_conflict(fake_uv):  # noqa: F811
 def test_dry_run_without_uv_is_a_readable_failure(fake_uv, tmp_path):  # noqa: F811
     result = packages.dry_run("model-xyz", {"infer"}, str(tmp_path / "no-uv"))
     assert result.ok is False and "uv is not available" in result.message
+
+
+def test_uv_missing_is_an_error_not_a_conflict_and_never_cached(
+    fake_uv,  # noqa: F811
+    tmp_path,
+    monkeypatch,
+):
+    monkeypatch.setenv("DDD_UV", str(tmp_path / "no-uv"))
+    plan = packages.plan_packages(MODEL, imports=IMPORTS)
+    assert plan.action == "error"
+    assert "DDD_UV" in plan.message and "conflict" not in plan.message
+    status = with_package_plan(rq.check(MODEL, tmp_path), plan)
+    assert status.state == "failed"
+    # uv becomes available: the next check is not shadowed by the failure.
+    monkeypatch.setenv("DDD_UV", fake_uv.uv)
+    assert packages.plan_packages(MODEL, imports=IMPORTS).action == "install"
+
+
+def test_dry_run_timeout_is_not_cached_and_kills_a_hanging_grandchild(
+    fake_uv,  # noqa: F811
+    monkeypatch,
+):
+    fake_uv.mode("hang-dry")
+    monkeypatch.setattr(packages, "DRY_RUN_TIMEOUT_S", 1.0)
+    start = time.monotonic()
+    plan = packages.plan_packages(MODEL, imports=IMPORTS)
+    assert (
+        time.monotonic() - start < 10
+    )  # returned although a grandchild holds the pipe
+    assert plan.action == "error" and "timed out" in plan.message
+    uv_pid, child_pid = map(int, fake_uv.pids.read_text().split())
+    deadline = time.monotonic() + 5
+    while not (_gone(uv_pid) and _gone(child_pid)):
+        assert time.monotonic() < deadline, "the dry-run's process group survived"
+        time.sleep(0.05)
+    fake_uv.monkeypatch.setenv(
+        "FAKE_UV_MODE", "ok"
+    )  # no cache clear: must not be cached
+    assert packages.plan_packages(MODEL, imports=IMPORTS).action == "install"
+
+
+def test_dry_run_cancel_stops_uv(fake_uv):  # noqa: F811
+    fake_uv.mode("hang-dry")
+    cancel = threading.Event()
+    timer = threading.Timer(0.5, cancel.set)
+    timer.start()
+    result = packages.dry_run("model-xyz", {"infer"}, fake_uv.uv, cancel=cancel)
+    timer.join()
+    assert result.ok is False and result.kind == "cancelled"
+
+
+def test_concurrent_checks_share_one_dry_run(fake_uv):  # noqa: F811
+    fake_uv.mode("slow")
+    results = []
+    threads = [
+        threading.Thread(
+            target=lambda: results.append(
+                packages.cached_dry_run(
+                    "model-xyz", {"infer", "web"}, fake_uv.uv, fake_uv.pyproject
+                )
+            )
+        )
+        for _ in range(4)
+    ]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join(10)
+    assert len(results) == 4 and all(r.ok for r in results)
+    assert len(fake_uv.calls()) == 1  # single flight
+
+
+def test_scrub_removes_credentials():
+    text = (
+        "error: Failed to fetch https://alice:s3cr3t@pypi.example.com/simple/x "
+        "and https://__token__@host/x?token=abc123&page=2 and "
+        "https://h/x?access_token=zzz; Authorization: Bearer abcdefghijkl0123 "
+        "hf_ABCDEFGHIJKLMNOPQRSTUV ghp_ABCDEFGHIJKLMNOPQRSTUV"
+    )
+    out = packages.scrub(text)
+    for secret in (
+        "alice",
+        "s3cr3t",
+        "__token__",
+        "abc123",
+        "zzz",
+        "abcdefghijkl0123",
+        "hf_ABCD",
+        "ghp_ABCD",
+    ):
+        assert secret not in out, secret
+    assert "https://***@pypi.example.com/simple/x" in out
+    assert "page=2" in out
+    # uv output goes through it (dry-run reasons and install lines).
+    assert "s3cr3t" not in packages.relative(text, Path("/nowhere"))
 
 
 def test_resolver_reason_keeps_the_error_part():
@@ -272,6 +369,47 @@ def test_cancel_kills_the_process_group(fake_uv):  # noqa: F811
     while not (_gone(uv_pid) and _gone(child_pid)):
         assert time.monotonic() < deadline, "uv's process group survived the cancel"
         time.sleep(0.05)
+
+
+def test_install_refuses_a_plan_other_than_the_confirmed_one(fake_uv, tmp_path):  # noqa: F811
+    shown = packages.plan_packages(MODEL, imports=IMPORTS)
+    assert shown.action == "install"
+    other = PackagePlan(
+        "install", "model-xyz", "uv sync --extra other", None, ("other",)
+    )
+    outcome = install_packages(
+        MODEL,
+        lambda line: None,
+        threading.Event(),
+        root=tmp_path,
+        imports=IMPORTS,
+        expected=other,
+    )
+    assert outcome.installed is False and outcome.status.state == "failed"
+    assert (
+        "environment changed since the install was confirmed" in outcome.status.message
+    )
+    base = PackagePlan("base", "infer", packages.BASE_COMMAND)
+    outcome = install_packages(
+        MODEL,
+        lambda line: None,
+        threading.Event(),
+        root=tmp_path,
+        imports=IMPORTS,
+        expected=base,
+    )
+    assert outcome.installed is False
+    assert all("--dry-run" in c["args"] for c in fake_uv.calls())  # nothing installed
+    # The confirmed plan, computed with the same import names, runs.
+    outcome = install_packages(
+        MODEL,
+        lambda line: None,
+        threading.Event(),
+        root=tmp_path,
+        imports=IMPORTS,
+        expected=shown,
+    )
+    assert outcome.installed is True
 
 
 def test_engine_maps_conflict_state(fake_uv, tmp_path):  # noqa: F811
