@@ -213,7 +213,7 @@ def test_yolo_custom_pt_is_user_provided(root):
     # Prepare never downloads it (the network is an AssertionError): it says
     # "provide this file" and the model stays not ready.
     status = prepare(req, root, lambda *a: None, threading.Event())
-    assert status.state == "failed" and "provide" in status.message
+    assert status.state == "missing" and "provide this file" in status.message
     with pytest.raises(ConfigError, match=r"^weights: file not found at .*--prepare"):
         custom._load(CTX)
 
@@ -366,3 +366,97 @@ def test_no_shipped_config_contains_a_home_directory_path():
         text = config.read_text()
         assert "~/" not in text and "/home/" not in text, config
         assert ".roboflow" not in text, config
+
+
+def _assets(kind, type_name, **options):
+    component = _build(kind, type_name, **options)
+    return type(component).requirements(component.options)
+
+
+def test_known_only_for_the_canonical_target_of_each_table(root):
+    """`known` fails closed (task_0026): a table-driven source is vouched for
+    only at its canonical place under the weights root; a release name or a
+    known repo anywhere else (a client-chosen `weights` / `hf_cache`) is not."""
+    assert UrlAsset(key="k", target="t", url="https://h/x").known is False
+    assert CodeRepo(name="t", url="https://h/t.git", commit="a" * 40).known is False
+    # Canonical locations: known.
+    (yolo,) = _assets("detector", "yolo", weights="yolo26l.pt").assets
+    assert yolo.target == "ultralytics/yolo26l.pt" and yolo.known
+    (detr,) = _assets("detector", "rfdetr").assets
+    assert detr.known and detr.target.startswith("rfdetr/")
+    (depth,) = _assets("depth", "da3").assets
+    assert depth.target == "hf" and depth.known
+    assert TWINLITENET_REPO.known
+    twin = _assets("semantic", "twinlitenet")
+    assert twin.code == (TWINLITENET_REPO,)
+    # Hostile in-root targets: a release name in another folder, a known repo
+    # in another cache folder.
+    for hostile in (
+        root / "hf/models--x/yolo26n.pt",
+        root / "_code/TwinLiteNetPlus/yolo26n.pt",
+        root / "ultralytics/sub/yolo26n.pt",
+    ):
+        (asset,) = _assets("detector", "yolo", weights=str(hostile)).assets
+        assert isinstance(asset, UrlAsset) and asset.known is False, hostile
+    (sam,) = _assets(
+        "refiner", "ultralytics_sam", weights=str(root / "x/mobile_sam.pt")
+    ).assets
+    assert sam.known is False
+    for cache in (root / "elsewhere", root / "_code", root / "hf/sub"):
+        (asset,) = _assets("depth", "da3", hf_cache=str(cache)).assets
+        assert asset.known is False, cache
+    (canonical,) = _assets("depth", "da3", hf_cache=str(root / "hf")).assets
+    assert canonical.known  # the canonical cache named explicitly
+
+
+def test_size_mismatched_release_file_survives_prepare(root, monkeypatch):
+    """A fine-tuned checkpoint saved under a release name is never replaced:
+    status says what to do, Prepare (CLI path included) never downloads."""
+    called = []
+    monkeypatch.setattr(
+        sources.UrlSource, "_download", lambda *a, **k: called.append(a)
+    )
+    target = root / "ultralytics/yolo26l.pt"
+    target.parent.mkdir(parents=True)
+    target.write_bytes(b"my fine-tuned weights")
+    req = _assets("detector", "yolo", weights="yolo26l.pt")
+    status = check(req, root)
+    assert status.state == "failed" and status.layers["assets"] == "invalid"
+    assert "exists with a different size at ultralytics/yolo26l.pt" in status.message
+    after = prepare(req, root, lambda *a: None, threading.Event(), allow_unknown=True)
+    assert after.state == "failed" and "move or delete it" in after.message
+    assert called == []
+    assert target.read_bytes() == b"my fine-tuned weights"
+    # The RF-DETR default name too.
+    detr = _assets("detector", "rfdetr")
+    (asset,) = detr.assets
+    path = root / asset.target
+    path.parent.mkdir(parents=True)
+    path.write_bytes(b"fine-tuned")
+    prepare(detr, root, lambda *a: None, threading.Event(), allow_unknown=True)
+    assert path.read_bytes() == b"fine-tuned" and called == []
+
+
+def test_repo_id_shape_is_checked_before_any_file_system_probe(monkeypatch):
+    from det_depth_distance.adapters import _hf_hub
+
+    probed = []
+    real = Path.exists
+    monkeypatch.setattr(
+        Path, "exists", lambda self: probed.append(str(self)) or real(self)
+    )
+    for ref in (
+        "a/..",
+        "../x",
+        "/abs/dir",
+        "~/x",
+        "a/b/c",
+        "org/",
+        "-x/y",
+        "a b/c",
+        "é/x",
+    ):
+        assert _hf_hub.is_repo_id(ref) is False, ref
+    assert probed == []  # never probed: not the `org/name` shape
+    assert _hf_hub.is_repo_id("depth-anything/DA3-LARGE")
+    assert _hf_hub.is_repo_id("org_1/name.v2-x")

@@ -12,7 +12,13 @@ source is called), runs the source of every non-ready code repo and asset,
 then checks again. Sources raise `ProvisionError` with a readable reason
 (offline, HTTP 404, gated, sha256 mismatch); `prepare` never raises for those
 and returns a `ModelStatus` whose state is "failed" with the reasons joined in
-`message`. Cancellation is a `threading.Event` checked by the sources between
+`message`. An item whose kind is not downloadable (`Asset.downloadable`
+False, e.g. `UserProvided`) is not a failure: its source's reason ("provide
+this file: ...") goes into `message` and the state stays "missing". With
+`allow_unknown=False` (the web server) an item whose source the adapter does
+not vouch for (`known` False) is never fetched: it is reported as a failure
+("unknown source"), checked when the job runs, not only when it was queued.
+Cancellation is a `threading.Event` checked by the sources between
 chunks: `prepare` then stops and returns the current status with a message
 starting with "cancelled" (a partial download is never ready, see
 `core.requirements`). The packages layer is reported, not installed, by
@@ -102,11 +108,16 @@ def _present(item: Any, root: Path) -> AssetState:
         return AssetState("partial", f"cannot inspect ({exc})")
 
 
+UNKNOWN_SOURCE = "unknown source: prepare it from the CLI (--prepare)"
+
+
 def prepare(
     req: Requirements,
     root: Path | None,
     progress: Progress,
     cancel: threading.Event,
+    *,
+    allow_unknown: bool = False,
 ) -> ModelStatus:
     """Obtain every missing code repo and asset of `req` under `root`
     (default `weights_root()`) and return the resulting status.
@@ -114,7 +125,10 @@ def prepare(
     Idempotent: a ready requirement returns at once and a ready item is
     skipped. Failures never raise: the state is "failed" and `message` lists
     the reasons; a cancel returns the status reached so far with a message
-    starting with "cancelled".
+    starting with "cancelled". A non-downloadable item adds its source's
+    reason to `message` without failing. `allow_unknown` (the CLI passes
+    True) lets items with `known` False be fetched; otherwise they fail with
+    `UNKNOWN_SOURCE` and nothing is downloaded for them.
     """
     root = weights_root() if root is None else Path(root)
     before = check(req, root)
@@ -123,6 +137,7 @@ def prepare(
     items: list[tuple[str, Any]] = [(f"code:{c.name}", c) for c in req.code]
     items += [(a.key, a) for a in req.assets]
     failures: list[str] = []
+    manual: list[str] = []
     cancelled = False
     for label, item in items:
         if cancel.is_set():
@@ -133,6 +148,10 @@ def prepare(
             continue
         if state.state == "invalid":
             failures.append(f"{label}: {state.detail}")
+            continue
+        downloadable = getattr(type(item), "downloadable", True)
+        if downloadable and not allow_unknown and not getattr(item, "known", False):
+            failures.append(f"{label}: {UNKNOWN_SOURCE}")
             continue
         source = source_for(item)
         if source is None:
@@ -154,7 +173,7 @@ def prepare(
             cancelled = True
             break
         except ProvisionError as exc:
-            failures.append(f"{label}: {exc}")
+            (failures if downloadable else manual).append(f"{label}: {exc}")
             continue
         except (OSError, ValueError) as exc:  # disk full, permissions, unsafe path
             failures.append(f"{label}: {type(exc).__name__}: {exc}")
@@ -171,7 +190,9 @@ def prepare(
             status, message=f"{reason}; {status.message}" if status.message else reason
         )
     if failures:
-        return replace(status, state="failed", message="; ".join(failures))
+        return replace(status, state="failed", message="; ".join(failures + manual))
+    if manual and status.state != "ready":
+        return replace(status, message="; ".join(manual))
     return status
 
 
@@ -240,12 +261,19 @@ def install_packages(
         or plan.extras != expected.extras
         or plan.command != expected.command
     ):
-        why = (
-            "the environment changed since the install was confirmed "
-            f"(now: {plan.action}"
-            + (f", `{plan.command}`" if plan.command else "")
-            + "): review the model again"
-        )
+        if plan.action == "error":
+            # A transient tooling failure (uv missing, timeout): say why.
+            why = (
+                f"{plan.message or 'the dry-run could not run'}; nothing was installed"
+            )
+        else:
+            why = (
+                "the environment changed since the install was confirmed "
+                f"(now: {plan.action}"
+                + (f", `{plan.command}`" if plan.command else "")
+                + (f": {plan.message}" if plan.message else "")
+                + "): review the model again"
+            )
         status = replace(check(req, root), state="failed", message=why)
         return PackagesOutcome(status, plan, False)
     if plan.action != "install" or plan.extra is None:

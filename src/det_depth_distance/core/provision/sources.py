@@ -16,7 +16,11 @@ leave the weights root. Only the standard library is imported here;
   saved in `<target>.part.meta`) only when size or `sha256` is declared and
   the server answers 206 at the right offset; anything else restarts. A
   mismatch deletes the `.part`; a cancel keeps it for resume. Redirects go
-  only to http(s), never from https down to http.
+  only to http(s), never from https down to http. An existing target is never
+  replaced (a file there that is not the declared one is the user's). The
+  body is bounded by the expected size (the server's length, else the
+  declared one): more bytes fail and remove the `.part`; free disk space is
+  checked before the first byte is written.
 - `CodeRepo`: `git clone --no-checkout` into `<name>.part`, `switch --detach`
   to the pinned commit (hex only, after `--end-of-options`), rename. Each git
   command is killed (with its helpers) on cancel or after `GIT_TIMEOUT_S`. An existing clone at another commit is fetched and
@@ -160,6 +164,7 @@ class UrlSource:
         target = contained(root, asset.target)
         part = contained(root, asset.target + ".part")
         meta = contained(root, asset.target + ".part.meta")
+        self._refuse_existing(asset, target)
         target.parent.mkdir(parents=True, exist_ok=True)
         if part.is_dir() or meta.is_dir():
             raise ProvisionError(f"{part} is a folder, expected a partial file")
@@ -175,8 +180,35 @@ class UrlSource:
                 "run Prepare again to resume"
             ) from None
         self._verify(asset, part, meta, server_total)
+        self._refuse_existing(asset, target)  # appeared during the download
         os.replace(part, target)
         meta.unlink(missing_ok=True)
+
+    @staticmethod
+    def _refuse_existing(asset: UrlAsset, target: Path) -> None:
+        """Never replace a file (or anything) already at the target."""
+        if target.exists() or target.is_symlink():
+            raise ProvisionError(
+                f"{asset.target} already exists and is not the declared file "
+                "(another size or sha256); it is never replaced: move or delete "
+                "it, or point the config at another file"
+            )
+
+    @staticmethod
+    def _check_disk(part: Path, needed: int | None) -> None:
+        """ProvisionError when the folder of `part` has less than `needed`
+        bytes free (unknown sizes are not checked)."""
+        if not needed or needed <= 0:
+            return
+        try:
+            free = shutil.disk_usage(part.parent).free
+        except OSError:
+            return
+        if free < needed:
+            raise ProvisionError(
+                f"not enough free disk space: {needed / 1e6:.1f} MB needed, "
+                f"{free / 1e6:.1f} MB free on the weights root's disk"
+            )
 
     @staticmethod
     def _restart(part: Path, meta: Path) -> None:
@@ -244,6 +276,13 @@ class UrlSource:
             if server_total is None and length is not None and length.isdigit():
                 server_total = offset + int(length)
             total = server_total if server_total is not None else asset.size_bytes
+            # The most bytes accepted: the smaller of what the server announced
+            # and what is declared (a stream with neither is bounded by the disk).
+            limit = min(
+                (n for n in (server_total, asset.size_bytes) if n is not None),
+                default=None,
+            )
+            self._check_disk(part, None if total is None else total - offset)
             done = offset
             progress(done, total)
             with part.open(mode) as out:
@@ -252,6 +291,13 @@ class UrlSource:
                     chunk = response.read1(CHUNK)
                     if not chunk:
                         break
+                    if limit is not None and done + len(chunk) > limit:
+                        out.close()
+                        self._restart(part, meta)
+                        raise ProvisionError(
+                            f"download of {asset.url} is larger than expected "
+                            f"(more than {limit} bytes); partial file removed"
+                        )
                     out.write(chunk)
                     done += len(chunk)
                     progress(done, total)

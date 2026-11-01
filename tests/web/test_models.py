@@ -521,13 +521,20 @@ def test_unknown_hf_repo_is_refused_by_the_web_and_preparable_by_the_cli(
     assert (stage, index) not in {(m["stage"], m["index"]) for m in job["models"]}
     assert wait_prepare(api, job["id"])["status"] == "done"
     assert hf_calls == []  # the web never asked the hub for it
-    # The CLI path (engine) still prepares any repo the user typed.
+    # The engine fails closed (the web's call) and never asks the hub...
     rows = {r.key: r for r in models.config_rows(cfg)}
+    closed = prepare(
+        rows[(stage, index)].req, fake_models.root, lambda *a: None, threading.Event()
+    )
+    assert closed.state == "failed" and "unknown source" in closed.message
+    assert hf_calls == []
+    # ...while the CLI path (allow_unknown) prepares any repo the user typed.
     status = prepare(
         rows[(stage, index)].req,
         fake_models.root,
         lambda *a: None,
         threading.Event(),
+        allow_unknown=True,
     )
     assert hf_calls == [extra_repo(extra)]
     assert status.state == "failed"
@@ -644,7 +651,7 @@ def test_declaration_view_redacts_and_classifies(tmp_path):
     view = models.declaration_view(req, root)
     assert view["source"] == (
         "provide this file at <weights root>/x/custom.pt; example.invalid; "
-        "git · https://example.invalid/tool.git"
+        "git · example.invalid/tool.git"
     )
     assert view["target"] == "x/custom.pt; x/w2.pt; _code/tool"
     assert view["license"] == "custom"

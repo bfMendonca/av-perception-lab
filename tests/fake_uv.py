@@ -84,6 +84,12 @@ if mode == "hang-dry" and dry:
     child = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(120)"])
     Path(os.environ["FAKE_UV_PIDS"]).write_text(f"{os.getpid()} {child.pid}")
     time.sleep(120)
+if mode == "path-plan" and dry:  # a plan line naming local paths and a token
+    print("Would install 1 package")
+    print(f" + xyzlib==1.0 @ {os.getcwd()}/vendor/xyzlib")
+    print(f" + other==2.0 @ {os.path.expanduser('~')}/wheels/other.whl")
+    print(" + tokened==1.0 (from https://alice:s3cr3t@pypi.example.com/simple)")
+    sys.exit(0)
 if mode == "replace" and dry:
     print("Would uninstall 1 package")
     print(" - torch==2.8.0")

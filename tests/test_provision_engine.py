@@ -1,5 +1,6 @@
 """Provisioning engine: registry of sources and `prepare` (task_0020)."""
 
+import functools
 import subprocess
 import sys
 import threading
@@ -22,6 +23,10 @@ from det_depth_distance.core.requirements import (
     Requirements,
     UrlAsset,
 )
+
+# These tests exercise the engine and the sources as the CLI runs them (any
+# source); the web policy (`allow_unknown=False`) has its own tests.
+prepare = functools.partial(prepare, allow_unknown=True)
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -192,3 +197,54 @@ def test_importing_the_engine_does_not_import_hub_or_torch():
         [sys.executable, "-c", code], check=False, capture_output=True, text=True
     )
     assert out.returncode == 0, out.stderr
+
+
+def test_web_policy_never_fetches_an_unknown_source(tmp_path, sources):
+    """`allow_unknown=False` (the default, the web's call): an item whose
+    source the adapter does not vouch for is a failure and its source never
+    runs; a known one is fetched; the CLI (`allow_unknown=True`) fetches both."""
+    register_source(_BlobAsset)(_BlobSource)
+    unknown = _BlobAsset(key="typed", target="b/typed.bin")
+    known = _BlobAsset(key="fixed", target="b/fixed.bin", known=True)
+    req = Requirements(assets=(unknown, known))
+    status = engine.prepare(req, tmp_path, _none, threading.Event())
+    assert status.state == "failed"
+    assert "typed: unknown source: prepare it from the CLI (--prepare)" in (
+        status.message
+    )
+    assert _BlobSource.calls == ["fixed"]
+    assert not (tmp_path / "b/typed.bin").exists()
+    cli = engine.prepare(req, tmp_path, _none, threading.Event(), allow_unknown=True)
+    assert cli.state == "ready" and _BlobSource.calls == ["fixed", "typed"]
+
+
+@dataclass(frozen=True, kw_only=True)
+class _ManualAsset(Asset):
+    downloadable: ClassVar[bool] = False
+
+    def present(self, root: Path) -> AssetState:
+        path = self.path(root)
+        return AssetState("ready") if path.is_file() else AssetState("missing", "x")
+
+
+class _ManualSource:
+    def prepare(self, asset, root, progress, cancel) -> None:
+        raise ProvisionError(f"provide this file: put {asset.target} there")
+
+
+def test_non_downloadable_item_is_reported_not_failed(tmp_path, sources):
+    """A step that was never possible is not a failure: the model stays
+    missing with the source's "provide this file" hint, the others are
+    fetched; without a registered source it is the readable registry error."""
+    register_source(_BlobAsset)(_BlobSource)
+    manual = _ManualAsset(key="manual", target="m/file.pth")
+    other = _BlobAsset(key="fixed", target="b/fixed.bin", known=True)
+    req = Requirements(assets=(manual, other))
+    status = engine.prepare(req, tmp_path, _none, threading.Event())
+    assert status.state == "failed"  # no source registered for the manual kind
+    assert "no source registered" in status.message
+    register_source(_ManualAsset)(_ManualSource)
+    status = engine.prepare(req, tmp_path, _none, threading.Event())
+    assert status.state == "missing"
+    assert status.message == "manual: provide this file: put m/file.pth there"
+    assert (tmp_path / "b/fixed.bin").is_file()

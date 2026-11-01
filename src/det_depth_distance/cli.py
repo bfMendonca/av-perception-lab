@@ -46,6 +46,7 @@ from det_depth_distance.core.requirements import (
     check,
     redact_root,
     weights_root,
+    weights_root_problem,
 )
 from det_depth_distance.io.sinks import (
     CsvSink,
@@ -401,7 +402,8 @@ def prepare_command(
             rows.append((label, type_name, f"failed: {req}"))
             continue
         print(f"[prepare] {label} ({type_name})", flush=True)
-        status = prepare(req, root, _progress_printer(), cancel)
+        # The CLI user is local and trusted: sources typed in the YAML too.
+        status = prepare(req, root, _progress_printer(), cancel, allow_unknown=True)
         if status.layers.get("packages", "ready") != "ready":
             plan = pkgs.plan_packages(req, imports=imports)
             if install and plan.action == "install":
@@ -472,6 +474,9 @@ def main(argv: Sequence[str] | None = None) -> int:
         parser.error("--install-packages is used with --prepare")
     try:
         cfg = load_config(args.config, args.overrides, args.video)
+        problem = weights_root_problem(weights_root(), (cfg.output.out_root,))
+        if problem is not None:
+            raise ConfigError(problem)
         if args.prepare:
             try:
                 return prepare_command(cfg, install=args.install_packages)

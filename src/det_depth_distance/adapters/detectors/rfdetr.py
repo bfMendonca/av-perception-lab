@@ -153,6 +153,7 @@ class RFDETRDetector(Detector):
             url=url,
             size_bytes=size,
             license=RFDETR_LICENSE,
+            known=True,  # the table's file at its fixed location
         )
         return Requirements(assets=(asset,), packages=packages, extra=INFER_EXTRA)
 

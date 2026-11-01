@@ -92,6 +92,8 @@ class GateDetector(Detector):
     class Options(DetectorOptions):
         blob: str = "a"
         mode: str = "ok"
+        manual: str = ""  # also a user-provided file gate/<manual>.pth
+        known: bool = True  # the source is vouched for (False: typed by a user)
 
     @classmethod
     def requirements(cls, options: Options) -> Requirements:
@@ -100,8 +102,19 @@ class GateDetector(Detector):
             target=f"gate/{options.blob}.bin",
             mode=options.mode,
             size_bytes=8,
+            known=options.known,  # in a real adapter: fixed in its code
         )
-        return Requirements(assets=(asset,))
+        assets: tuple[Asset, ...] = (asset,)
+        if options.manual:
+            assets += (
+                rq.UserProvided(
+                    key="manual",
+                    target=f"gate/{options.manual}.pth",
+                    option="manual",
+                    hint=f"manual download: save {options.manual}.pth by hand",
+                ),
+            )
+        return Requirements(assets=assets)
 
     @property
     def class_names(self) -> list[str]:
@@ -117,13 +130,21 @@ class GateDetector(Detector):
 GateDetector.type_name = "gate"
 
 
-def gate_config(tmp_path: Path, *blobs: str | tuple[str, str]) -> dict[str, Any]:
-    """A valid config with one gate detector per blob (`(blob, mode)` too)."""
+def gate_config(
+    tmp_path: Path, *blobs: str | tuple[str, str] | dict[str, Any]
+) -> dict[str, Any]:
+    """A valid config with one gate detector per blob (`(blob, mode)` too, or
+    a dict of extra options with its `blob`)."""
     detectors = []
     for blob in blobs:
-        name, mode = blob if isinstance(blob, tuple) else (blob, "ok")
+        if isinstance(blob, dict):
+            extra = dict(blob)
+            name, mode = extra.pop("blob"), extra.pop("mode", "ok")
+        else:
+            name, mode = blob if isinstance(blob, tuple) else (blob, "ok")
+            extra = {}
         detectors.append(
-            {"type": "gate", "name": f"g{name}", "blob": name, "mode": mode}
+            {"type": "gate", "name": f"g{name}", "blob": name, "mode": mode, **extra}
         )
     return {
         "detectors": detectors,

@@ -55,27 +55,35 @@ def test_present_asset_is_ready(tmp_path):
     assert status.layers["assets"] == "ready"
 
 
-def test_truncated_asset_with_known_size_or_sha_is_not_ready(tmp_path):
+def test_existing_file_with_another_size_or_sha_is_never_ready_nor_partial(tmp_path):
+    # An existing file that is not the declared one is the user's (a
+    # fine-tuned checkpoint under a release name): "invalid", so nothing ever
+    # downloads over it, with a message that says what to do.
     f = _write(tmp_path / "m/w.bin", b"123")
-    assert check(Requirements(assets=(_asset(size_bytes=5),)), tmp_path).state == (
-        "missing"
-    )
+    sized = check(Requirements(assets=(_asset(size_bytes=5),)), tmp_path)
+    assert sized.state == "failed" and sized.layers["assets"] == "invalid"
+    assert "exists with a different size at m/w.bin" in sized.message
+    assert "move or delete it, or point the config at another file" in sized.message
     good = hashlib.sha256(b"123").hexdigest()
     assert check(Requirements(assets=(_asset(sha256=good),)), tmp_path).state == (
         "ready"
     )
-    f.write_bytes(b"12")  # truncated
+    f.write_bytes(b"12")  # another content
     bad = check(Requirements(assets=(_asset(sha256=good),)), tmp_path)
-    assert bad.state == "missing"
-    assert bad.layers["assets"] == "partial"
+    assert bad.state == "failed"
+    assert bad.layers["assets"] == "invalid"
+    assert "exists with a different sha256" in bad.message
+    (tmp_path / "d/w.bin").mkdir(parents=True)  # a folder at the target
+    folder = check(Requirements(assets=(_asset(target="d/w.bin"),)), tmp_path)
+    assert folder.layers["assets"] == "invalid" and "not a file" in folder.message
 
 
 def test_part_file_is_never_ready(tmp_path):
+    # A complete target is judged on its own; a leftover .part is not ready.
     _write(tmp_path / "m/w.bin", b"12345")
     _write(tmp_path / "m/w.bin.part", b"1")
     status = check(Requirements(assets=(_asset(size_bytes=5),)), tmp_path)
-    assert status.state == "missing"
-    assert status.layers["assets"] == "partial"
+    assert status.state == "ready"
     only_part = tmp_path / "o"
     _write(only_part / "w.bin.part", b"1")
     status = check(Requirements(assets=(_asset(target="o/w.bin"),)), tmp_path)
@@ -418,8 +426,13 @@ def test_describe_source_per_kind():
     )
     assert (
         rq.CodeRepo(name="t", url="https://h/t.git", commit="b" * 40).describe_source()
-        == "git · https://h/t.git"
+        == "git · h/t.git"
     )
+    # host and path only: never the URL's credentials or query
+    leaky = rq.CodeRepo(
+        name="t", url="https://user:s3cret@h:8443/o/t.git?token=abc", commit="b" * 40
+    )
+    assert leaky.describe_source() == "git · h:8443/o/t.git"
 
     @dataclass(frozen=True, kw_only=True)
     class Bare(rq.Asset):
@@ -427,3 +440,27 @@ def test_describe_source_per_kind():
             return rq.AssetState("ready")
 
     assert Bare(key="k", target="t").describe_source() == "Bare"
+
+
+def test_redact_root_boundaries_include_markup_and_template_characters(tmp_path):
+    root = tmp_path / "weights"
+    for wrapped in (f"`{root}`", f"<{root}>", f"{{{root}}}", f"`{root}/x.pt`"):
+        out = rq.redact_root(f"see {wrapped} now", root, "<R>")
+        assert str(root) not in out, wrapped
+    assert rq.redact_root(f"`{root}-old`", root, "<R>") == f"`{root}-old`"
+
+
+def test_weights_root_problem_refuses_unsafe_roots(tmp_path, monkeypatch):
+    project = Path(rq.__file__).resolve().parents[3]
+    assert rq.weights_root_problem(Path("/")) is not None
+    assert "home folder" in rq.weights_root_problem(Path.home())
+    assert "project folder" in rq.weights_root_problem(project)
+    assert "project folder" in rq.weights_root_problem(project.parent)
+    venv = tmp_path / "venv"
+    monkeypatch.setattr(sys, "prefix", str(venv))
+    assert "Python environment" in rq.weights_root_problem(tmp_path)
+    out = tmp_path / "x" / "outputs"
+    assert "outputs" in rq.weights_root_problem(tmp_path / "x", (out,))
+    # Dedicated folders are fine, inside the project too (the default).
+    assert rq.weights_root_problem(tmp_path / "weights", (out,)) is None
+    assert rq.weights_root_problem(project / "weights") is None

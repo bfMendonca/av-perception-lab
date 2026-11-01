@@ -150,7 +150,9 @@ def test_dry_run_timeout_is_not_cached_and_kills_a_hanging_grandchild(
     monkeypatch,
 ):
     fake_uv.mode("hang-dry")
-    monkeypatch.setattr(packages, "DRY_RUN_TIMEOUT_S", 1.0)
+    # Long enough for the fake uv to start its grandchild and write the pids
+    # file under load (1.0 s was flaky), still well under the 10 s bound.
+    monkeypatch.setattr(packages, "DRY_RUN_TIMEOUT_S", 3.0)
     start = time.monotonic()
     plan = packages.plan_packages(MODEL, imports=IMPORTS)
     assert (
@@ -558,3 +560,54 @@ def test_install_packages_flag_needs_prepare(tmp_path, capsys):
     with pytest.raises(SystemExit):
         main(["--config", str(tmp_path / "x.yaml"), "--install-packages"])
     assert "--install-packages is used with --prepare" in capsys.readouterr().err
+
+
+def test_dry_run_plan_messages_are_relative_and_scrubbed(fake_uv):  # noqa: F811
+    fake_uv.mode("path-plan")
+    result = packages.dry_run(
+        "model-xyz", {"infer"}, fake_uv.uv, pyproject=fake_uv.pyproject
+    )
+    assert result.ok, result
+    assert str(fake_uv.project) not in result.message
+    assert "./vendor/xyzlib" in result.message
+    assert str(Path.home()) not in result.message and "~/wheels" in result.message
+    assert "s3cr3t" not in result.message and "alice" not in result.message
+    fake_uv.mode("replace")
+    replaced = packages.dry_run(
+        "model-xyz", {"infer"}, fake_uv.uv, pyproject=fake_uv.pyproject
+    )
+    assert replaced.kind == "replace" and "would remove or replace" in replaced.message
+
+
+def test_scrub_leaves_prose_alone_and_catches_more_token_shapes():
+    prose = (
+        "basic requirements are met; token count 12345678; the bearer of bad "
+        "news; Basic authentication docs"
+    )
+    assert packages.scrub(prose) == prose
+    text = (
+        "Authorization: Basic dXNlcjpwYXNzd29yZA== and authorization=Token "
+        "abcdefgh12345678 and Bearer abcdefghijkl0123 and "
+        "github_pat_11ABCDEFG0123456789_abcdefghijklmnop"
+    )
+    out = packages.scrub(text)
+    for secret in ("dXNlcjpw", "abcdefgh12345678", "abcdefghijkl0123", "11ABCDEFG"):
+        assert secret not in out, secret
+    assert "Authorization: Basic ***" in out and "Bearer ***" in out
+
+
+def test_transient_dry_run_failure_names_the_reason(fake_uv, tmp_path):  # noqa: F811
+    shown = packages.plan_packages(MODEL, imports=IMPORTS)
+    assert shown.action == "install"
+    outcome = install_packages(
+        MODEL,
+        lambda line: None,
+        threading.Event(),
+        root=tmp_path,
+        imports=IMPORTS,
+        expected=shown,
+        uv=str(tmp_path / "no-such-uv"),
+    )
+    assert outcome.installed is False and outcome.status.state == "failed"
+    assert "uv is not available" in outcome.status.message
+    assert "(now: error)" not in outcome.status.message

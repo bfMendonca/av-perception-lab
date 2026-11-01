@@ -7,7 +7,9 @@ relative to the working directory, like every other YAML path). Files named in
 `ULTRALYTICS_ASSETS` (the `ultralytics/assets` v8.4.0 release, the table
 `ultralytics.utils.downloads.GITHUB_ASSETS_NAMES` of 8.4.175; sizes read with
 HTTP HEAD in task_0021) are declared as `UrlAsset`; any other file is
-`UserProvided`. Pure stdlib (ultralytics is imported by the adapters' `_load`).
+`UserProvided`. Only a release file at its canonical place
+(`<weights root>/ultralytics/<name>`) is `known` (web-preparable); a release
+name anywhere else in the root is prepared by the CLI only. Pure stdlib (ultralytics is imported by the adapters' `_load`).
 """
 
 from pathlib import Path
@@ -112,4 +114,5 @@ def weights_asset(weights: Path, hint: str) -> Asset | None:
         url=f"{ASSETS_URL}/{path.name}",
         size_bytes=size,
         license=licence,
+        known=target == f"{ULTRALYTICS_DIR}/{path.name}",
     )

@@ -5,6 +5,7 @@ A local `http.server` thread serves files with or without `Range` support, a
 source runs against a monkeypatched `huggingface_hub.snapshot_download`.
 """
 
+import functools
 import hashlib
 import http.server
 import socket
@@ -30,6 +31,10 @@ from det_depth_distance.core.requirements import (
     UserProvided,
     check,
 )
+
+# These tests exercise the engine and the sources as the CLI runs them (any
+# source); the web policy (`allow_unknown=False`) has its own tests.
+prepare = functools.partial(prepare, allow_unknown=True)
 
 DATA = bytes(range(256)) * 2048  # 512 KiB, several CHUNKs
 SHA = hashlib.sha256(DATA).hexdigest()
@@ -386,7 +391,9 @@ def test_user_provided_never_downloads(tmp_path, server, monkeypatch):
     status = prepare(
         Requirements(assets=(asset,)), tmp_path, _no_progress, threading.Event()
     )
-    assert status.state == "failed"
+    # Never possible to download: reported, not a failure (the model stays
+    # missing with the hint).
+    assert status.state == "missing"
     assert "provide this file: Put the checkpoint" in (status.message or "")
     assert server.ranges == []
 
@@ -685,3 +692,41 @@ def test_hf_download_that_misses_declared_files_is_failed(tmp_path, monkeypatch)
 def test_source_error_types_are_exported():
     assert issubclass(ProvisionError, Exception)
     assert not issubclass(ProvisionCancelled, ProvisionError)
+
+
+def test_existing_target_is_never_replaced(tmp_path, server):
+    """A file at the target that is not the declared one (another size) is
+    the user's: Prepare refuses, nothing is requested, nothing changes."""
+    target = tmp_path / "fam/model/w.bin"
+    target.parent.mkdir(parents=True)
+    target.write_bytes(b"fine-tuned")
+    asset = _asset(server, size_bytes=len(DATA))
+    with pytest.raises(ProvisionError, match="never replaced: move or delete it"):
+        src.UrlSource().prepare(asset, tmp_path, _no_progress, threading.Event())
+    status = _prepare(asset, tmp_path)
+    assert status.state == "failed"
+    assert "exists with a different size at fam/model/w.bin" in status.message
+    assert target.read_bytes() == b"fine-tuned"
+    assert server.ranges == []
+    assert not target.with_name("w.bin.part").exists()
+
+
+@pytest.mark.parametrize("path", ["/nolength", "/file.bin"])
+def test_body_larger_than_expected_stops_and_removes_the_part(tmp_path, server, path):
+    # Declared 1000 bytes; the server sends 512 KiB (with or without a length).
+    asset = _asset(server, path, sha256=None, size_bytes=1000)
+    status = _prepare(asset, tmp_path)
+    assert status.state == "failed"
+    assert "larger than expected (more than 1000 bytes)" in status.message
+    assert not (tmp_path / "fam/model/w.bin.part").exists()
+    assert not (tmp_path / "fam/model/w.bin").exists()
+
+
+def test_free_disk_space_is_checked_before_writing(tmp_path, server, monkeypatch):
+    real = src.shutil.disk_usage
+    monkeypatch.setattr(src.shutil, "disk_usage", lambda p: real(p)._replace(free=1000))
+    status = _prepare(_asset(server, size_bytes=len(DATA)), tmp_path)
+    assert status.state == "failed"
+    assert "not enough free disk space" in status.message
+    part = tmp_path / "fam/model/w.bin.part"
+    assert not part.exists() or part.stat().st_size == 0

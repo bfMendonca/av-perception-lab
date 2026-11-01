@@ -13,9 +13,13 @@ also fetches duplicate .pt/.bin files).
 counts as ready unchanged. Sizes and licences of the repos the project ships
 (read from the Hugging Face API, task_0021) are in `HF_FACTS`; any other repo
 is declared without them and with `known=False` (the web server does not
-download it; the CLI does). Local checkpoint directories are not declared.
+download it; the CLI does); so is a known repo in a cache other than the
+canonical `<weights root>/hf`. Local checkpoint directories are not declared.
+A reference is a repo id only when it has the `org/name` shape
+(`REPO_ID_RE`), checked before any file-system probe.
 """
 
+import re
 from pathlib import Path
 from typing import Any
 
@@ -24,6 +28,9 @@ from det_depth_distance.core.options import ConfigError
 from det_depth_distance.core.requirements import HuggingFaceAsset, weights_root
 
 HF_DIR = "hf"  # <weights root>/hf: the Hugging Face cache layout
+# `org/name`: letters, digits, `_`, `.`, `-`; each part starts with a letter or
+# digit (so never `.`/`..`), at most 96 characters.
+REPO_ID_RE = re.compile(r"[A-Za-z0-9][\w.-]{0,95}/[A-Za-z0-9][\w.-]{0,95}", re.ASCII)
 
 # repo -> (weights file bytes, licence tag, gated); Hugging Face API, 2026-10-31.
 HF_FACTS: dict[str, tuple[int, str, bool]] = {
@@ -70,11 +77,13 @@ def resolve_cache(hf_cache: Path | None) -> Path:
 
 
 def is_repo_id(ref: str) -> bool:
-    """True for an `org/name` Hugging Face id, False for a local directory."""
-    if ref.startswith(("/", ".", "~")) or Path(ref).expanduser().exists():
+    """True for an `org/name` Hugging Face id, False for a local directory.
+    The shape is checked first: a string that is not `org/name` is never
+    probed on disk (it is a local path); one that is counts as a local
+    directory only when it exists."""
+    if not REPO_ID_RE.fullmatch(ref) or ".." in ref:
         return False
-    parts = ref.split("/")
-    return len(parts) == 2 and all(parts)
+    return not Path(ref).exists()
 
 
 def hf_asset(
@@ -99,7 +108,7 @@ def hf_asset(
         size_bytes=size,
         license=licence,
         gated=gated,
-        known=repo in HF_FACTS,
+        known=repo in HF_FACTS and target == HF_DIR,
     )
 
 

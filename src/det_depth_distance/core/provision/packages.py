@@ -204,15 +204,28 @@ _SECRETS = (
         ),
         r"\1***",
     ),
-    (re.compile(r"(?i)\b(bearer|token|basic)(\s+)[A-Za-z0-9._~+/=-]{8,}"), r"\1\2***"),
+    # an Authorization header (any scheme), then a lone `Bearer <token>`; prose
+    # such as "basic requirements" or "token count" is left alone
+    (
+        re.compile(
+            r"(?i)\b(authorization[ \t]*[:=][ \t]*"
+            r"(?:(?:bearer|basic|token|digest)[ \t]+)?)[^\s'\"]+"
+        ),
+        r"\1***",
+    ),
+    (re.compile(r"(?i)\b(bearer[ \t]+)[A-Za-z0-9._~+/=-]{8,}"), r"\1***"),
     # well-known token shapes (Hugging Face, GitHub, GitLab, PyPI)
-    (re.compile(r"\b(?:hf_|gh[pousr]_|glpat-|pypi-)[A-Za-z0-9_-]{16,}"), "***"),
+    (
+        re.compile(r"\b(?:hf_|gh[pousr]_|github_pat_|glpat-|pypi-)[A-Za-z0-9_-]{16,}"),
+        "***",
+    ),
 )
 
 
 def scrub(text: str) -> str:
     """`text` without credentials: `user:pass@` in URLs, token-like query
-    values, `Bearer <token>` and well-known token shapes become `***`."""
+    values, `Authorization:` values, `Bearer <token>` and well-known token
+    shapes become `***`."""
     for pattern, repl in _SECRETS:
         text = pattern.sub(repl, text)
     return text
@@ -340,12 +353,19 @@ def dry_run(
     if removed:
         return DryRunResult(
             False,
-            "installing it would remove or replace installed packages: "
-            f"{', '.join(removed)}; the environment is left untouched",
+            relative(
+                "installing it would remove or replace installed packages: "
+                f"{', '.join(removed)}; the environment is left untouched",
+                project,
+            ),
             command,
             kind="replace",
         )
-    message = f"would install {', '.join(added)}" if added else "nothing to install"
+    message = (
+        relative(f"would install {', '.join(added)}", project)
+        if added
+        else "nothing to install"
+    )
     return DryRunResult(True, message, command, added)
 
 

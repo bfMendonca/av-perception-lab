@@ -50,6 +50,7 @@ TWINLITENET_REPO = CodeRepo(
     name="TwinLiteNetPlus",
     url="https://github.com/chequanghuy/TwinLiteNetPlus",
     commit="90f1b8695ae311d5123b05f8534b2e11e42499d2",
+    known=True,  # fixed here, cloned to its fixed folder
 )
 # Google Drive downloads of the upstream README (line 87 of the clone): the
 # folder of every variant, and the file id of `small`.

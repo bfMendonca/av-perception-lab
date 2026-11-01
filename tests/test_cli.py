@@ -395,3 +395,44 @@ def test_run_gate_passes_once_prepared(tmp_path, monkeypatch, capsys):
     # and --prepare itself is not gated.
     assert main(["--config", str(path), "--prepare"]) == 0
     assert "needs_weights  ready" in capsys.readouterr().out
+
+
+@pytest.mark.parametrize("bad", ["/", "~", "parent-of-out"])
+def test_cli_refuses_an_unsafe_weights_root(tmp_path, monkeypatch, capsys, bad):
+    cfg = _prepare_config(tmp_path, "rfdetr")
+    root = {"/": "/", "~": "~", "parent-of-out": str(tmp_path)}[bad]
+    monkeypatch.setenv("DDD_WEIGHTS_ROOT", root)
+    over = ["--set", f"output.out_root={tmp_path / 'outputs'}"]
+    monkeypatch.setattr(cli, "run", lambda cfg: pytest.fail("ran"))
+    monkeypatch.setattr(cli, "prepare_command", lambda *a, **k: pytest.fail("ran"))
+    assert main(["--config", str(cfg), "--prepare", *over]) == 2
+    err = capsys.readouterr().err
+    assert "weights root" in err and "use a dedicated folder" in err
+
+
+def test_cli_prepare_reports_a_user_provided_file_without_failing(
+    tmp_path, monkeypatch, capsys
+):
+    from det_depth_distance.core import registry
+    from det_depth_distance.core.requirements import UserProvided
+
+    root = tmp_path / "weights"
+    monkeypatch.setenv("DDD_WEIGHTS_ROOT", str(root))
+    registry.load_adapters()
+    asset = UserProvided(
+        key="weights", target="m/large.pth", option="weights", hint="get large.pth"
+    )
+    monkeypatch.setitem(
+        registry._REGISTRY["detector"], "needs_weights", _fake_detector(asset)
+    )
+    monkeypatch.setattr("det_depth_distance.core.requirements._top_level_present", bool)
+    cfg = _prepare_config(tmp_path, "needs_weights")
+    data = yaml.safe_load(cfg.read_text())
+    data["depth"]["hf_cache"] = str(tmp_path / "elsewhere")
+    data["camera"] = {"estimate": None}
+    cfg.write_text(yaml.safe_dump(data))
+    assert main(["--config", str(cfg), "--prepare"]) == 1  # not ready: non-zero
+    out = capsys.readouterr().out
+    table = {line.split()[0]: line.split() for line in out.splitlines() if line}
+    assert table["detectors[0]"][2:4] == ["needs_weights", "missing"]
+    assert "provide this file: get large.pth" in out

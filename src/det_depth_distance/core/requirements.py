@@ -15,6 +15,9 @@ reads the HF cache layout on disk (`models--org--name/snapshots/<rev>/...`)
 itself instead of importing `huggingface_hub`. Every path is resolved and
 confined to the weights root (`..`, absolute targets and symlinks that leave
 it raise `UnsafePathError`); a `.part` / `.incomplete` file is never ready.
+An existing file that is not the declared one (another size or sha256: a
+fine-tuned checkpoint saved under a release name) is "invalid", never
+"partial": nothing downloads over it.
 """
 
 import fnmatch
@@ -23,12 +26,14 @@ import importlib.util
 import os
 import re
 import subprocess
+import sys
 from dataclasses import dataclass
 from pathlib import Path, PurePath
 from typing import ClassVar, Literal
 from urllib.parse import urlsplit
 
 CODE_DIR = "_code"  # clones live in <weights root>/_code/<name>
+WEIGHTS_ROOT_ENV = "DDD_WEIGHTS_ROOT"
 _PARTIAL_SUFFIXES = (".part", ".incomplete")
 
 AssetStateName = Literal["ready", "missing", "partial", "invalid"]
@@ -41,7 +46,9 @@ class UnsafePathError(ValueError):
 @dataclass(frozen=True, slots=True)
 class AssetState:
     """Result of `Asset.present`: "ready", "missing" (absent), "partial"
-    (truncated, corrupted or still downloading) or "invalid" (unsafe path)."""
+    (still downloading: a `.part`, an unfinished snapshot or clone) or
+    "invalid" (an unsafe path, or an existing file that is not the declared
+    one: it is never replaced, the user moves it)."""
 
     state: AssetStateName
     detail: str = ""
@@ -65,11 +72,16 @@ class Asset:
     """A file or folder a model needs, `target` relative to the weights root.
 
     Subclasses are registered with `register_asset_kind` and implement
-    `present`; `downloadable` is False for kinds the engine must never fetch.
-    `known` is set by the adapter's code: True when the source is one the
-    adapter vouches for (a table in its code), False when it was derived from
-    a user option (e.g. any Hugging Face repo id typed in the YAML). The CLI
-    prepares both; the web server only prepares known sources.
+    `present`; `downloadable` is False for kinds the engine must never fetch
+    (it still calls their source, which raises "provide this file: ...", and
+    reports the item as missing, not failed). `known` fails closed: False
+    unless the adapter's code sets it, which it does only when both the source
+    (a table in its code) and the target (the canonical location under the
+    weights root) are its own; anything derived from a user option (a
+    Hugging Face repo id typed in the YAML, a `weights` path or `hf_cache`
+    folder of the client's choice) stays False. The CLI prepares both; the
+    web server only prepares known sources. `known` does not apply to kinds
+    that are not downloadable.
     """
 
     kind_name: ClassVar[str] = ""  # set by register_asset_kind
@@ -80,7 +92,7 @@ class Asset:
     size_bytes: int | None = None
     license: str | None = None
     gated: bool = False
-    known: bool = True
+    known: bool = False
 
     def path(self, root: Path) -> Path:
         """Absolute, confined location of `target`."""
@@ -128,6 +140,10 @@ def _check_revision(value: str, what: str = "revision") -> None:
         raise UnsafePathError(f"unsafe {what} {value!r}")
 
 
+# What to do about an existing file that is not the declared one.
+_MOVE_IT = "move or delete it, or point the config at another file"
+
+
 def _sha256(path: Path) -> str:
     digest = hashlib.sha256()
     with path.open("rb") as handle:
@@ -150,20 +166,31 @@ class UrlAsset(Asset):
 
     def present(self, root: Path) -> AssetState:
         path = self.path(root)
+        # An existing target is checked first: one that is not the declared
+        # file is the user's, never "partial" (which would download over it).
+        if path.exists() or path.is_symlink():
+            if not path.is_file():
+                return AssetState(
+                    "invalid",
+                    f"{self.key}: {self.target} exists and is not a file; {_MOVE_IT}",
+                )
+            size = path.stat().st_size
+            if self.size_bytes is not None and size != self.size_bytes:
+                return AssetState(
+                    "invalid",
+                    f"{self.key}: exists with a different size at {self.target} "
+                    f"({size} bytes, expected {self.size_bytes}); {_MOVE_IT}",
+                )
+            if self.sha256 is not None and _sha256(path) != self.sha256.lower():
+                return AssetState(
+                    "invalid",
+                    f"{self.key}: exists with a different sha256 at "
+                    f"{self.target}; {_MOVE_IT}",
+                )
+            return AssetState("ready")
         if path.with_name(path.name + ".part").exists():
             return AssetState("partial", f"{self.key}: unfinished download (.part)")
-        if not path.exists():
-            return AssetState("missing", f"{self.key}: {self.target} not found")
-        if not path.is_file():
-            return AssetState("partial", f"{self.key}: {self.target} is not a file")
-        size = path.stat().st_size
-        if self.size_bytes is not None and size != self.size_bytes:
-            return AssetState(
-                "partial", f"{self.key}: {size} bytes, expected {self.size_bytes}"
-            )
-        if self.sha256 is not None and _sha256(path) != self.sha256.lower():
-            return AssetState("partial", f"{self.key}: sha256 mismatch")
-        return AssetState("ready")
+        return AssetState("missing", f"{self.key}: {self.target} not found")
 
 
 @register_asset_kind("user")
@@ -273,11 +300,13 @@ class HuggingFaceAsset(Asset):
 @dataclass(frozen=True, kw_only=True)
 class CodeRepo:
     """A git clone pinned to `commit` (7-64 hex characters) at
-    `<root>/_code/<name>`."""
+    `<root>/_code/<name>`. `known` fails closed like `Asset.known`: True only
+    for a repo and folder fixed in the adapter's code."""
 
     name: str
     url: str
     commit: str
+    known: bool = False
 
     def __post_init__(self) -> None:
         n = self.name
@@ -300,7 +329,12 @@ class CodeRepo:
         return contained(root, f"{CODE_DIR}/{self.name}")
 
     def describe_source(self) -> str:
-        return f"git · {self.url}"
+        """`git · host/path` (never the URL's credentials or query)."""
+        parts = urlsplit(self.url)
+        if not parts.hostname:
+            return "git"
+        port = f":{parts.port}" if parts.port else ""
+        return f"git · {parts.hostname}{port}{parts.path}"
 
     def present(self, root: Path) -> AssetState:
         path = self.path(root)
@@ -355,16 +389,45 @@ def weights_root() -> Path:
     """Explicit setter, else `DDD_WEIGHTS_ROOT`, else the repo `weights/`."""
     if _explicit_root is not None:
         return _explicit_root
-    env = os.environ.get("DDD_WEIGHTS_ROOT")
+    env = os.environ.get(WEIGHTS_ROOT_ENV)
     if env:
         return Path(env)
     return Path(__file__).resolve().parents[3] / "weights"
 
 
+def _is_within(path: Path, folder: Path) -> bool:
+    return path == folder or path.is_relative_to(folder)
+
+
+def weights_root_problem(root: Path, others: tuple[Path, ...] = ()) -> str | None:
+    """Why `root` cannot be the weights root (None when it can). Prepare
+    writes and the status walks everything under it, so it may not be `/`,
+    the home folder, or contain the project folder, the active Python
+    environment or any of `others` (the run outputs, the video library)."""
+    real = Path(root).expanduser().resolve()
+    if real == Path(real.anchor):
+        return f"weights root {root} is the file system root: use a dedicated folder"
+    if real == Path.home().resolve():
+        return f"weights root {root} is the home folder: use a dedicated folder"
+    project = Path(__file__).resolve().parents[3]
+    guarded = [
+        (project, "the project folder"),
+        (Path(sys.prefix).resolve(), "the active Python environment"),
+        *((Path(o).expanduser().resolve(), str(o)) for o in others),
+    ]
+    for folder, what in guarded:
+        if _is_within(folder, real):
+            return (
+                f"weights root {root} contains {what}: use a dedicated folder "
+                "(for example weights/ inside the project)"
+            )
+    return None
+
+
 # A path ends at the end of the text, a separator or a delimiter (a "." only
 # when it ends a sentence); it starts at the beginning or after a delimiter.
-_PATH_BEFORE = r"(?<![^\s'\"(\[=:,;])"
-_PATH_AFTER = r"(?=$|[/\s'\"),;:\]]|\.(?:\s|$))"
+_PATH_BEFORE = r"(?<![^\s'\"(\[=:,;`<>{}])"
+_PATH_AFTER = r"(?=$|[/\s'\"),;:\]`<>{}]|\.(?:\s|$))"
 
 
 def redact_root(
