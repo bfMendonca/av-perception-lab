@@ -287,6 +287,7 @@ def create_app(
         for row, status in zip(rows, statuses, strict=True):
             if row.req is not None and row.req in busy:
                 status["state"] = "preparing"
+                status["preparable"] = False
         return statuses
 
     def run_folder_or_404(run_id: str) -> Path:
@@ -643,6 +644,10 @@ def create_app(
         except ValueError as exc:  # ConfigError, UnknownSource, nothing selected
             raise HTTPException(422, str(exc)) from None
         return job.to_dict(prepares.position(job))
+
+    @app.get("/api/models/prepare")
+    async def list_prepares() -> list[dict[str, Any]]:
+        return [job.to_dict(prepares.position(job)) for job in prepares.recent()]
 
     @app.get("/api/models/prepare/{job_id}")
     async def get_prepare(job_id: str) -> dict[str, Any]:

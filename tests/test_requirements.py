@@ -395,3 +395,35 @@ def test_hf_revision_and_ref_are_confined(tmp_path):
         Requirements(assets=(_hf(files=("config.json",), revision="evil"),)), tmp_path
     )
     assert status.layers["assets"] == "invalid"
+
+
+def test_describe_source_per_kind():
+    from det_depth_distance.core import requirements as rq
+
+    assert (
+        rq.UrlAsset(
+            key="w", target="a", url="https://host.example/x.pt"
+        ).describe_source()
+        == "host.example"
+    )
+    assert (
+        rq.HuggingFaceAsset(key="w", target="hf", repo="org/m").describe_source()
+        == "Hugging Face · org/m"
+    )
+    assert (
+        rq.UserProvided(
+            key="w", target="a", option="weights", hint="provide it"
+        ).describe_source()
+        == "provide it"
+    )
+    assert (
+        rq.CodeRepo(name="t", url="https://h/t.git", commit="b" * 40).describe_source()
+        == "git · https://h/t.git"
+    )
+
+    @dataclass(frozen=True, kw_only=True)
+    class Bare(rq.Asset):
+        def present(self, root):
+            return rq.AssetState("ready")
+
+    assert Bare(key="k", target="t").describe_source() == "Bare"

@@ -258,149 +258,149 @@ function Studio({ client, video, runs, models, remember, catalog, onRetry }: { c
 
   return (
     <ReadinessProvider value={readiness}>
-    <div
-      className="app"
-      onDragOver={(e) => {
-        if (e.dataTransfer.types.includes("Files")) {
+      <div
+        className="app"
+        onDragOver={(e) => {
+          if (e.dataTransfer.types.includes("Files")) {
+            e.preventDefault();
+            setDragging(true);
+          }
+        }}
+        onDragLeave={(e) => e.currentTarget === e.target && setDragging(false)}
+        onDrop={(e) => {
           e.preventDefault();
-          setDragging(true);
-        }
-      }}
-      onDragLeave={(e) => e.currentTarget === e.target && setDragging(false)}
-      onDrop={(e) => {
-        e.preventDefault();
-        setDragging(false);
-        const files = classifyFiles(Array.from(e.dataTransfer.files));
-        if (files.video) {
-          if (route.view !== "editor") navigate({ view: "editor" });
-          addVideo(files);
-        } else if (files.yaml && ready) void openFile(files.yaml);
-        else if (e.dataTransfer.files.length) editor.notify({ tone: "warn", text: "Drop a video (MP4, MOV, MKV, .h264 with its .meta.json) or a pipeline YAML." });
-      }}
-    >
-      <Shell
-        title={route.view === "runs" ? "Runs & comparison" : "Pipeline editor"}
-        nav={[
-          { id: "editor", label: "Editor", icon: "layers", active: route.view === "editor", onSelect: () => navigate({ view: "editor" }) },
-          {
-            id: "runs",
-            label: "Runs",
-            icon: "history",
-            active: route.view === "runs",
-            badge: jobs.jobs.filter((j) => j.status === "queued" || j.status === "running").length || undefined,
-            onSelect: () => navigate(route.view === "runs" ? route : { view: "runs", runId: null }),
-          },
-        ]}
-        status={ready ? <StatusChips /> : null}
-        actions={
-          <>
-            <input
-              ref={fileInput}
-              type="file"
-              accept=".yaml,.yml,application/x-yaml,text/yaml"
-              hidden
-              data-testid="open-yaml-input"
-              onChange={(e) => {
-                const file = e.target.files?.[0];
-                e.target.value = "";
-                if (file) void openFile(file);
-              }}
-            />
-            <button type="button" className="btn" disabled={!ready} onClick={() => fileInput.current?.click()} title="Open YAML (Ctrl+O)">
-              <Icon name="upload" size={15} /> Open YAML
-            </button>
-            <button type="button" className="btn" disabled={!editor.loaded || saving} onClick={requestSave} title="Save YAML (Ctrl+S)">
-              <Icon name="save" size={15} /> {saving ? "Saving…" : "Save YAML"}
-            </button>
-            <button
-              type="button"
-              className="btn btn--primary"
-              disabled={Boolean(process.blocked) || process.busy}
-              title={process.blocked ?? "Process the selected segment"}
-              onClick={() => void process.process(false)}
-            >
-              <Icon name="play" size={14} /> Process
-            </button>
-          </>
-        }
-        banners={banners}
+          setDragging(false);
+          const files = classifyFiles(Array.from(e.dataTransfer.files));
+          if (files.video) {
+            if (route.view !== "editor") navigate({ view: "editor" });
+            addVideo(files);
+          } else if (files.yaml && ready) void openFile(files.yaml);
+          else if (e.dataTransfer.files.length) editor.notify({ tone: "warn", text: "Drop a video (MP4, MOV, MKV, .h264 with its .meta.json) or a pipeline YAML." });
+        }}
       >
-        {route.view === "runs" ? (
-          <RunsView
-            videoApi={video}
-            api={runs}
-            runId={route.runId}
-            compareId={route.compareId ?? null}
-            onRoute={(runId, compareId) => navigate({ view: "runs", runId, compareId })}
-            onReopen={reopenRun}
-            onRerun={rerunRun}
-            refreshKey={finishedJobs}
-          />
-        ) : (
-          <div className="workspace">
-            <VideoDeck
-              session={session}
-              jobs={jobs}
-              process={process}
-              previewUrl={(runId) => video.runFileUrl(runId, "preview")}
-              onFiles={addVideo}
-              onOpenRun={(runId) => navigate({ view: "runs", runId })}
+        <Shell
+          title={route.view === "runs" ? "Runs & comparison" : "Pipeline editor"}
+          nav={[
+            { id: "editor", label: "Editor", icon: "layers", active: route.view === "editor", onSelect: () => navigate({ view: "editor" }) },
+            {
+              id: "runs",
+              label: "Runs",
+              icon: "history",
+              active: route.view === "runs",
+              badge: jobs.jobs.filter((j) => j.status === "queued" || j.status === "running").length || undefined,
+              onSelect: () => navigate(route.view === "runs" ? route : { view: "runs", runId: null }),
+            },
+          ]}
+          status={ready ? <StatusChips /> : null}
+          actions={
+            <>
+              <input
+                ref={fileInput}
+                type="file"
+                accept=".yaml,.yml,application/x-yaml,text/yaml"
+                hidden
+                data-testid="open-yaml-input"
+                onChange={(e) => {
+                  const file = e.target.files?.[0];
+                  e.target.value = "";
+                  if (file) void openFile(file);
+                }}
+              />
+              <button type="button" className="btn" disabled={!ready} onClick={() => fileInput.current?.click()} title="Open YAML (Ctrl+O)">
+                <Icon name="upload" size={15} /> Open YAML
+              </button>
+              <button type="button" className="btn" disabled={!editor.loaded || saving} onClick={requestSave} title="Save YAML (Ctrl+S)">
+                <Icon name="save" size={15} /> {saving ? "Saving…" : "Save YAML"}
+              </button>
+              <button
+                type="button"
+                className="btn btn--primary"
+                disabled={Boolean(process.blocked) || process.busy}
+                title={process.blocked ?? "Process the selected segment"}
+                onClick={() => void process.process(false)}
+              >
+                <Icon name="play" size={14} /> Process
+              </button>
+            </>
+          }
+          banners={banners}
+        >
+          {route.view === "runs" ? (
+            <RunsView
+              videoApi={video}
+              api={runs}
+              runId={route.runId}
+              compareId={route.compareId ?? null}
+              onRoute={(runId, compareId) => navigate({ view: "runs", runId, compareId })}
+              onReopen={reopenRun}
+              onRerun={rerunRun}
+              refreshKey={finishedJobs}
             />
-            {catalog.status === "loading" ? <LoadingCanvas /> : null}
-            {catalog.status === "error" ? (
-              <div className="state-panel" role="alert">
-                <Icon name="alert" size={28} />
-                <h2>Could not reach the server</h2>
-                <p>
-                  The catalog request failed: <code>{catalog.message}</code>
-                </p>
-                <button type="button" className="btn btn--primary" onClick={onRetry}>
-                  Retry
-                </button>
-              </div>
-            ) : null}
-            {ready ? <EditorView onOpen={() => fileInput.current?.click()} /> : null}
+          ) : (
+            <div className="workspace">
+              <VideoDeck
+                session={session}
+                jobs={jobs}
+                process={process}
+                previewUrl={(runId) => video.runFileUrl(runId, "preview")}
+                onFiles={addVideo}
+                onOpenRun={(runId) => navigate({ view: "runs", runId })}
+              />
+              {catalog.status === "loading" ? <LoadingCanvas /> : null}
+              {catalog.status === "error" ? (
+                <div className="state-panel" role="alert">
+                  <Icon name="alert" size={28} />
+                  <h2>Could not reach the server</h2>
+                  <p>
+                    The catalog request failed: <code>{catalog.message}</code>
+                  </p>
+                  <button type="button" className="btn btn--primary" onClick={onRetry}>
+                    Retry
+                  </button>
+                </div>
+              ) : null}
+              {ready ? <EditorView onOpen={() => fileInput.current?.click()} /> : null}
+            </div>
+          )}
+        </Shell>
+        {dragging ? (
+          <div className="dropzone" aria-hidden="true">
+            <div>
+              <Icon name="film" size={28} />
+              <p>Drop a video to load it, or a pipeline YAML to open it</p>
+            </div>
           </div>
-        )}
-      </Shell>
-      {dragging ? (
-        <div className="dropzone" aria-hidden="true">
-          <div>
-            <Icon name="film" size={28} />
-            <p>Drop a video to load it, or a pipeline YAML to open it</p>
-          </div>
-        </div>
-      ) : null}
-      {process.dialog}
-      <Dialog
-        open={saveDialog}
-        title="Save as regenerated YAML"
-        onClose={() => setSaveDialog(false)}
-        actions={
-          <>
-            <button type="button" className="btn" onClick={() => setSaveDialog(false)}>
-              Cancel
-            </button>
-            <button
-              type="button"
-              className="btn btn--primary"
-              autoFocus
-              onClick={() => {
-                setSaveDialog(false);
-                sessionWarned.current = true;
-                storageSet(SAVE_WARNING_KEY, "1");
-                void save();
-              }}
-            >
-              Save YAML
-            </button>
-          </>
-        }
-      >
-        <p>The file is written from the edited configuration, so comments and the original key order are not kept. Unknown keys are saved as they are.</p>
-        <p className="muted">This notice is shown once.</p>
-      </Dialog>
-    </div>
+        ) : null}
+        {process.dialog}
+        <Dialog
+          open={saveDialog}
+          title="Save as regenerated YAML"
+          onClose={() => setSaveDialog(false)}
+          actions={
+            <>
+              <button type="button" className="btn" onClick={() => setSaveDialog(false)}>
+                Cancel
+              </button>
+              <button
+                type="button"
+                className="btn btn--primary"
+                autoFocus
+                onClick={() => {
+                  setSaveDialog(false);
+                  sessionWarned.current = true;
+                  storageSet(SAVE_WARNING_KEY, "1");
+                  void save();
+                }}
+              >
+                Save YAML
+              </button>
+            </>
+          }
+        >
+          <p>The file is written from the edited configuration, so comments and the original key order are not kept. Unknown keys are saved as they are.</p>
+          <p className="muted">This notice is shown once.</p>
+        </Dialog>
+      </div>
     </ReadinessProvider>
   );
 }

@@ -436,6 +436,14 @@ only when every model is skipped). The CLI `--prepare` downloads any repo. `POST
 option with `core.options.PATH_RESOLVER` field metadata (YOLO / Ultralytics
 SAM `weights` -> `resolve_weights`) is checked as its adapter resolves it.
 
+Status rows also carry (task_0023 review): `source` (each asset kind's
+`Asset.describe_source()`, default the kind name; HF "Hugging Face · <repo>",
+URL host, "git · <url>" for code, the user-provided hint), `license`, `target`
+(weights-root-relative), all "; "-joined and redacted, plus `reason`
+(`unknown_source` | `packages_only` | null) and `preparable` (state `missing`
+and no reason). `GET /api/models/prepare` lists the queue's jobs (newest
+first, `PrepareQueue.recent()`), so a reloaded page re-attaches.
+
 Readiness in the UI (task_0023, `web/src/models/`): `useModelStatus(config,
 {api})` posts the edited pipeline to `/api/models/status` (debounced like the
 validation; a sequence bumped when a request is scheduled drops stale
@@ -443,8 +451,14 @@ answers; 422 -> `invalid`, other errors -> `unavailable`, neither blocks
 Process), follows the Prepare jobs it starts over SSE (`model` / `progress` /
 `end` events -> per-model byte progress) and keeps the outcome of the last
 attempt per model (a failure stays `failed` with its reason after the status
-refresh, until retried or ready; a changed type/name drops it); it polls
-while the server reports `preparing` for a job it did not start. Context
+refresh, until retried or ready; a changed type/name drops it); on mount
+(and while the server reports `preparing` for a job it does not follow) it
+lists the queue and follows every unfinished job; progress never rewinds on a
+replayed stream, a model that finished stays ready until a later status
+answer, and every overlay carries the module's type + name (rows are also
+checked against the edited config), so removing or reordering modules never
+moves a state to another card. The server's `reason`/`preparable`/`target`
+win; message-prefix heuristics remain for older rows. Context
 `ReadinessProvider`/`useReadiness` (null outside it: cards render as before).
 Cards (`ModuleCard` `readiness` prop, `cardReadiness`): `ready` solid;
 `missing`, `conflict` and any unknown state -> `card--notready` (yellow dashed
@@ -452,8 +466,8 @@ outline + alert badge `role="img"` at the top-right); `preparing`/`queued` ->
 `card--preparing` with a `role="progressbar"` (`aria-valuenow` in %); `failed`
 -> red dashed + badge. Rows map to slots by `{stage, index}`; a single-slot
 stage also shows rows of its sub-paths (`camera.estimate` in the general
-`camera` tab). `ReadinessBanner` ("N models need preparing · X GB", X = the
-declared sizes of the models Prepare all would fetch; Prepare all = `models:
+`camera` tab). `ReadinessBanner` ("N models need preparing · X to download", N and X
+counting only the models Prepare all would fetch; licences in the sub line; Prepare all = `models:
 "all"`; model list; overall progress + Cancel; "Check again" when
 unavailable). Inspector "Weights & requirements" (`ModelRequirements`):
 layers, missing items, message, size, source/licence/target when a row

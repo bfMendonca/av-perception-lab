@@ -46,18 +46,25 @@ export function stateLabel(state: ModelState): string {
   }
 }
 
-export const isUnknownSource = (row: Pick<ModelStatus, "message">): boolean =>
-  typeof row.message === "string" && row.message.startsWith(UNKNOWN_SOURCE_PREFIX);
+/** The server's `reason` when it sends one; the message/missing heuristics are for older servers. */
+const hasReason = (row: { reason?: unknown }): boolean => row.reason !== undefined;
+
+export const isUnknownSource = (row: Pick<ModelStatus, "message" | "reason">): boolean =>
+  hasReason(row) ? row.reason === "unknown_source" : typeof row.message === "string" && row.message.startsWith(UNKNOWN_SOURCE_PREFIX);
 
 /** Only Python packages are missing: Prepare (weights and code) cannot fix it. */
-export const onlyPackages = (row: Pick<ModelStatus, "missing">): boolean =>
-  row.missing.length > 0 && row.missing.every((m) => m.startsWith(PACKAGE_PREFIX));
+export const onlyPackages = (row: Pick<ModelStatus, "missing" | "reason">): boolean =>
+  hasReason(row) ? row.reason === "packages_only" : row.missing.length > 0 && row.missing.every((m) => m.startsWith(PACKAGE_PREFIX));
 
 /** A Prepare from the web can make this row ready (or try again). */
-export function preparable(row: Pick<ModelStatus, "state" | "message" | "missing">): boolean {
+export function preparable(row: Pick<ModelStatus, "state" | "message" | "missing" | "reason" | "preparable">): boolean {
   if (row.state === "ready" || row.state === "preparing" || row.state === "queued" || row.state === "conflict") return false;
+  if (typeof row.preparable === "boolean") return row.preparable;
   return !isUnknownSource(row) && !onlyPackages(row);
 }
+
+/** "; "-joined server lists (`source`, `license`, `target`) as items. */
+export const splitList = (value: string | null | undefined): string[] => (value ? value.split("; ").filter(Boolean) : []);
 
 /**
  * Rows shown on the card (or in the inspector) of a slot: the rows of that

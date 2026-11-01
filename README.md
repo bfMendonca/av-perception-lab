@@ -1111,8 +1111,10 @@ uv run --extra infer --extra web det-depth-distance-web --weights-root weights  
 
 - `POST /api/models/status` with `{config}` returns one row per model the
   config would load (`stage`, `index`, `type`, `name`, `state`, `layers`,
-  `missing`, `size_bytes`, `message`) and `total_size_bytes` still to
-  download. Nothing is loaded and torch is not imported.
+  `missing`, `size_bytes`, `message`, plus `source`, `license`, `target`
+  relative to the weights root, `reason` and `preparable`) and
+  `total_size_bytes` still to download. `GET /api/models/prepare` lists the
+  recent Prepare jobs (a reloaded page re-attaches to the unfinished ones). Nothing is loaded and torch is not imported.
 - `POST /api/models/prepare` with `{config, models: "all"}` (or a list of
   `{stage, index}` from the status rows) queues a download; follow it with
   `GET /api/models/prepare/{id}/events` (SSE, per-model progress) and cancel
@@ -1142,8 +1144,9 @@ In the editor (task_0023):
   red dashed with its reason; a dependency conflict (or any state the
   interface does not know yet) uses the yellow warning style with the
   server's message. Ready cards stay solid.
-- A banner above the lanes reads "N models need preparing · X GB" (X: what
-  **Prepare all** would download) and lists the models; while a Prepare runs
+- A banner above the lanes reads "N models need preparing · X to download"
+  (N and X: what **Prepare all** would download, with their licences) and
+  lists the models; while a Prepare runs
   it shows the overall progress and a **Cancel** button. You can keep editing
   meanwhile.
 - The inspector of a model has a **Weights & requirements** section: layers

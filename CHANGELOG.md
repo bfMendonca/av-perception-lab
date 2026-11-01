@@ -33,6 +33,18 @@ with one click and keeps Process locked until every model is ready
 - Process is disabled with "N models are not ready — Prepare them first."
   while a model is not ready; a 409 from `POST /api/runs` opens a dialog that
   lists the models (rerun shows them in the notice).
+- Status rows carry `source` (`Asset.describe_source()`), `license`,
+  `target` (weights-root-relative), `reason` and `preparable`; the UI prefers
+  them to parsing messages. `GET /api/models/prepare` lists Prepare jobs.
+- The banner counts only what Prepare all can fetch: "N models need preparing
+  · X to download".
+
+### Fixed
+
+- A model that finished in a multi-model Prepare no longer flashes back to
+  "Not ready"; a reload re-attaches to a running Prepare (progress, Cancel);
+  an SSE reconnect never rewinds progress; removing or reordering modules
+  during a Prepare never shows its state on another card.
 
 ---
 

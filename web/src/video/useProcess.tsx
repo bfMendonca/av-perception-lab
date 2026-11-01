@@ -162,40 +162,40 @@ export function useProcess(api: VideoApi, session: VideoSession, jobs: Jobs, edi
   );
   const dialog = (
     <>
-    {refusedDialog}
-    <Dialog
-      open={confirm !== null}
-      title="The GPU is busy"
-      onClose={() => setConfirm(null)}
-      actions={
-        <>
-          <button type="button" className="btn" onClick={() => setConfirm(null)}>
-            Cancel
-          </button>
-          <button
-            type="button"
-            className="btn btn--primary"
-            autoFocus
-            onClick={() => {
-              const entire = confirm?.entire ?? false;
-              setConfirm(null);
-              void submit(entire);
-            }}
-          >
-            Process anyway
-          </button>
-        </>
-      }
-    >
-      <p>
-        Only <strong>{confirm?.free.toLocaleString("en-US")} MiB</strong> of GPU memory is free; a run needs about {GPU_MIN_FREE_MIB.toLocaleString("en-US")} MiB. Another process (a batch run, for example) is probably using the device, and this run may fail with an out-of-memory error.
-      </p>
-      {pendingPlan ? (
-        <p className="muted">
-          {pendingPlan.label} · {pendingPlan.frames} frames, {formatDuration(pendingPlan.seconds)} when the GPU is free.
+      {refusedDialog}
+      <Dialog
+        open={confirm !== null}
+        title="The GPU is busy"
+        onClose={() => setConfirm(null)}
+        actions={
+          <>
+            <button type="button" className="btn" onClick={() => setConfirm(null)}>
+              Cancel
+            </button>
+            <button
+              type="button"
+              className="btn btn--primary"
+              autoFocus
+              onClick={() => {
+                const entire = confirm?.entire ?? false;
+                setConfirm(null);
+                void submit(entire);
+              }}
+            >
+              Process anyway
+            </button>
+          </>
+        }
+      >
+        <p>
+          Only <strong>{confirm?.free.toLocaleString("en-US")} MiB</strong> of GPU memory is free; a run needs about {GPU_MIN_FREE_MIB.toLocaleString("en-US")} MiB. Another process (a batch run, for example) is probably using the device, and this run may fail with an out-of-memory error.
         </p>
-      ) : null}
-    </Dialog>
+        {pendingPlan ? (
+          <p className="muted">
+            {pendingPlan.label} · {pendingPlan.frames} frames, {formatDuration(pendingPlan.seconds)} when the GPU is free.
+          </p>
+        ) : null}
+      </Dialog>
     </>
   );
 

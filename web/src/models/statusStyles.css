@@ -383,8 +383,13 @@
   font-size: 12.5px;
 }
 
-.reqs__layers {
-  gap: 6px !important;
+.reqs__facts dd.reqs__layers {
+  gap: 6px;
+}
+
+.reqs__facts dd.reqs__list {
+  flex-direction: column;
+  gap: 2px;
 }
 
 .reqs__layer {

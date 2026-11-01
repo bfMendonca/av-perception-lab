@@ -40,6 +40,7 @@ from typing import Any, Literal
 from det_depth_distance import cli, config
 from det_depth_distance.core.provision import prepare
 from det_depth_distance.core.requirements import (
+    CODE_DIR,
     Asset,
     ModelStatus,
     Requirements,
@@ -153,23 +154,73 @@ def status_view(status: ModelStatus, root: Path) -> dict[str, Any]:
     }
 
 
+PACKAGE_PREFIX = "package:"
+
+
+def _joined(values: Iterable[str | None]) -> str | None:
+    unique = list(dict.fromkeys(v for v in values if v))
+    return "; ".join(unique) or None
+
+
+def declaration_view(req: Requirements | None, root: Path) -> dict[str, Any]:
+    """`{source, license, target}` of a declaration, for display: where it
+    comes from (each kind's `describe_source`), the declared licences and the
+    targets relative to the weights root ("; "-joined, None when empty;
+    redacted, never an absolute path)."""
+    if req is None:
+        return {"source": None, "license": None, "target": None}
+    sources = [a.describe_source() for a in req.assets]
+    sources += [c.describe_source() for c in req.code]
+    targets = [a.target for a in req.assets] + [
+        f"{CODE_DIR}/{c.name}" for c in req.code
+    ]
+    return {
+        "source": redact(_joined(sources), root),
+        "license": redact(_joined(a.license for a in req.assets), root),
+        "target": redact(_joined(targets), root),
+    }
+
+
+def with_action(row: dict[str, Any], unknown: bool) -> dict[str, Any]:
+    """Add `reason` (why the web cannot prepare it: "unknown_source",
+    "packages_only", or None) and `preparable` (a web Prepare can fix it)."""
+    missing = row.get("missing") or []
+    if unknown:
+        reason = "unknown_source"
+    elif missing and all(m.startswith(PACKAGE_PREFIX) for m in missing):
+        reason = "packages_only"
+    else:
+        reason = None
+    row["reason"] = reason
+    row["preparable"] = row["state"] == "missing" and reason is None
+    return row
+
+
 def status_row(row: ModelRow, root: Path) -> dict[str, Any]:
     """`{stage, index, type, name, state, layers, missing, size_bytes,
-    message}` of one model, checked on disk (call from a thread: it walks
-    files and may run `git rev-parse`)."""
+    message, source, license, target, reason, preparable}` of one model,
+    checked on disk (call from a thread: it walks files and may run
+    `git rev-parse`)."""
     if row.req is None:
-        return {
-            **row.head(),
-            "state": "failed",
-            "layers": {},
-            "missing": [],
-            "size_bytes": None,
-            "message": redact(row.error, root),
-        }
+        return with_action(
+            {
+                **row.head(),
+                "state": "failed",
+                "layers": {},
+                "missing": [],
+                "size_bytes": None,
+                "message": redact(row.error, root),
+                **declaration_view(None, root),
+            },
+            False,
+        )
     view = status_view(check(row.req, root), root)
-    if view["state"] != "failed" and unknown_sources(row.req, root):
+    unknown = view["state"] != "failed" and bool(unknown_sources(row.req, root))
+    if unknown:
         view["state"], view["message"] = "missing", UNKNOWN_SOURCE
-    return {**row.head(), **view}
+    return with_action(
+        {**row.head(), **view, **declaration_view(row.req, root)}, unknown
+    )
 
 
 def report(statuses: list[dict[str, Any]]) -> dict[str, Any]:
@@ -316,6 +367,11 @@ class PrepareQueue:
     def get(self, job_id: str) -> PrepareJob:
         """The job, or KeyError."""
         return self._jobs[job_id]
+
+    def recent(self) -> list[PrepareJob]:
+        """Unfinished jobs and the latest finished ones, newest first (a
+        reloaded page re-attaches to the unfinished ones)."""
+        return list(reversed(self._jobs.values()))
 
     def position(self, job: PrepareJob) -> int | None:
         """Place in the waiting line (0 = starts next); None once started."""

@@ -6,7 +6,8 @@ import type { ModelStatus, ModelsApi, StatusReport } from "../api/models";
 import { StatusRejected } from "../api/models";
 import { createEditorStore } from "../editor/yamlState";
 import { fakeClient, fakeModelsApi, makeCatalog, modelRow, sampleConfig } from "../test/fixtures";
-import { useModelStatus } from "./useModelStatus";
+import type { PrepareJob } from "../api/models";
+import { rowMatchesConfig, useModelStatus } from "./useModelStatus";
 
 const ready = (patch: Partial<ModelStatus> = {}) => modelRow({ state: "ready", layers: { assets: "ready", code: "ready", packages: "ready" }, missing: [], size_bytes: null, message: null, ...patch });
 
@@ -131,7 +132,7 @@ describe("readiness banner", () => {
     const rows = [modelRow(), modelRow({ stage: "camera.estimate", index: null, type: "beta", name: "focal", size_bytes: 1.5 * 1024 ** 3, message: null }), ready({ stage: "aggregation", index: null, type: "merge", name: "merge" })];
     const { models } = await renderEditor(rows);
     const banner = await screen.findByRole("region", { name: "Model readiness" });
-    expect(banner).toHaveTextContent("2 models need preparing · 1.5 GB");
+    expect(banner).toHaveTextContent("2 models need preparing · 1.5 GB to download");
     // rows without a lane card are listed too
     await userEvent.click(within(banner).getByRole("button", { name: "Show models" }));
     const list = within(banner).getByRole("list", { name: "Models that are not ready" });
@@ -163,7 +164,7 @@ describe("readiness banner", () => {
     expect(status).toHaveTextContent("502 Bad Gateway");
     models.failWith = null;
     await userEvent.click(within(status).getByRole("button", { name: "Check again" }));
-    expect(await screen.findByRole("region", { name: "Model readiness" })).toHaveTextContent("1 model needs preparing · 8.0 MB");
+    expect(await screen.findByRole("region", { name: "Model readiness" })).toHaveTextContent("1 model needs preparing · 8.0 MB to download");
   });
 });
 
@@ -243,5 +244,211 @@ describe("useModelStatus", () => {
     const { result } = renderHook(() => useModelStatus({ a: 1 }, { api, debounceMs: 0 }));
     await waitFor(() => expect(result.current.status).toBe("invalid"));
     expect(result.current.rows).toEqual([]);
+  });
+});
+
+// -- fix round 1: lifecycle, identity, server fields ------------------------------
+
+const MB = 1024 * 1024;
+const trio = {
+  ...sampleConfig.config,
+  detectors: [
+    { type: "alpha", name: "first" },
+    { type: "beta", name: "second" },
+    { type: "alpha", name: "third" },
+  ],
+};
+const rowOf = (index: number, name: string, type: string, patch: Partial<ModelStatus> = {}) => modelRow({ index, name, type, message: `weights: <weights root>/${name}.bin not found`, ...patch });
+const event = (index: number, name: string, type: string, state: string) => ({ event: "model", ...rowOf(index, name, type, { state }), item: null, done: 0, total: null });
+const progress = (index: number, done: number, total = 8 * MB) => ({ event: "progress", stage: "detectors", index, item: "weights", done, total });
+
+describe("prepare lifecycle (fix round)", () => {
+  it("a model that finished stays ready while the rest of the job runs", async () => {
+    const { lane, models } = await renderEditor([rowOf(0, "first", "alpha"), rowOf(1, "second", "beta"), rowOf(2, "third", "alpha")], trio);
+    await userEvent.click(within(await screen.findByRole("region", { name: "Model readiness" })).getByRole("button", { name: "Prepare all" }));
+    await waitFor(() => expect(models.prepared).toHaveLength(1));
+    act(() => {
+      models.emit("prep1", event(0, "first", "alpha", "preparing"));
+      models.emit("prep1", progress(0, 8 * MB));
+      models.emit("prep1", event(0, "first", "alpha", "ready"));
+      models.emit("prep1", event(1, "second", "beta", "preparing"));
+    });
+    const first = cardOf(lane, /first/);
+    // the server row still says "missing" (no status asked since): no flash back
+    expect(first).toHaveAttribute("data-model-state", "ready");
+    expect(first).not.toHaveClass("card--notready");
+    expect(cardOf(lane, /second/)).toHaveClass("card--preparing");
+    await userEvent.click(first);
+    const section = await screen.findByRole("region", { name: "Weights & requirements" });
+    expect(within(section).queryByRole("button", { name: /prepare model|retry/i })).not.toBeInTheDocument();
+    // job ends; the next answer is the server's truth
+    models.rows = [rowOf(0, "first", "alpha", { state: "ready", missing: [], message: null }), rowOf(1, "second", "beta", { state: "ready", missing: [], message: null }), rowOf(2, "third", "alpha")];
+    const calls = models.statusCalls.length;
+    act(() => {
+      models.emit("prep1", event(1, "second", "beta", "ready"));
+      models.emit("prep1", { event: "end", status: "done", error: null });
+    });
+    await waitFor(() => expect(models.statusCalls.length).toBeGreaterThan(calls));
+    await waitFor(() => expect(cardOf(lane, /second/)).toHaveAttribute("data-model-state", "ready"));
+    expect(first).toHaveAttribute("data-model-state", "ready");
+  });
+
+  it("re-attaches to a job started before a reload: progress and Cancel", async () => {
+    const running: PrepareJob = {
+      id: "older",
+      status: "running",
+      position: null,
+      error: null,
+      created: "",
+      cancel_requested: false,
+      models: [
+        { ...modelRow({ state: "preparing" }), item: "weights", done: 0, total: 8 * MB },
+        { ...modelRow({ stage: "aggregation", index: null, type: "merge", name: "merge", state: "queued" }), item: null, done: 0, total: null },
+      ],
+      skipped: [],
+    };
+    const client = fakeClient();
+    const store = createEditorStore(client, { debounceMs: 0 });
+    await store.load("ignored", "p.yaml");
+    const models = fakeModelsApi([modelRow({ state: "preparing" }), modelRow({ stage: "aggregation", index: null, type: "merge", name: "merge", state: "ready", missing: [], message: null })]);
+    models.listed = [running, { ...running, id: "gone", status: "done" }];
+    render(<App client={client} store={store} modelsApi={models} />);
+    const lane = await screen.findByRole("region", { name: "Detectors" });
+    act(() => models.emit("older", { event: "progress", stage: "detectors", index: 0, item: "weights", done: 4 * MB, total: 8 * MB }));
+    expect(within(cardOf(lane, /alpha/)).getByRole("progressbar")).toHaveAttribute("aria-valuenow", "50");
+    // queued in that job but ready on the server (attached before the rows came): ready
+    const aggregation = screen.getByRole("region", { name: "Aggregation" });
+    await waitFor(() => expect(within(aggregation).getByRole("button", { name: /merge/i })).toHaveAttribute("data-model-state", "ready"));
+    act(() => models.emit("gone", { event: "progress", stage: "detectors", index: 0, item: "weights", done: 1, total: 8 * MB })); // finished jobs are not followed
+    const status = screen.getByRole("status", { name: "Model readiness" });
+    await userEvent.click(within(status).getByRole("button", { name: "Cancel" }));
+    expect(models.cancelled).toEqual(["older"]);
+  });
+
+  it("a replayed stream never rewinds progress nor takes a finished model back", async () => {
+    const { lane, models } = await renderEditor([rowOf(0, "first", "alpha"), rowOf(1, "second", "beta"), rowOf(2, "third", "alpha")], trio);
+    await userEvent.click(within(await screen.findByRole("region", { name: "Model readiness" })).getByRole("button", { name: "Prepare all" }));
+    await waitFor(() => expect(models.prepared).toHaveLength(1));
+    act(() => {
+      models.emit("prep1", { event: "running" });
+      models.emit("prep1", event(0, "first", "alpha", "preparing"));
+      models.emit("prep1", progress(0, 8 * MB));
+      models.emit("prep1", event(0, "first", "alpha", "ready"));
+      models.emit("prep1", event(1, "second", "beta", "preparing"));
+      models.emit("prep1", progress(1, 6 * MB));
+    });
+    const second = within(cardOf(lane, /second/)).getByRole("progressbar");
+    expect(second).toHaveAttribute("aria-valuenow", "75");
+    // EventSource reconnect: the server replays the job from the start
+    act(() => {
+      models.emit("prep1", { event: "queued" });
+      models.emit("prep1", { event: "running" });
+      models.emit("prep1", event(0, "first", "alpha", "preparing"));
+      models.emit("prep1", progress(0, 2 * MB));
+      models.emit("prep1", event(1, "second", "beta", "queued"));
+      models.emit("prep1", progress(1, 2 * MB));
+    });
+    expect(cardOf(lane, /first/)).toHaveAttribute("data-model-state", "ready");
+    expect(within(cardOf(lane, /first/)).queryByRole("progressbar")).not.toBeInTheDocument();
+    expect(cardOf(lane, /second/)).toHaveAttribute("data-model-state", "preparing");
+    expect(within(cardOf(lane, /second/)).getByRole("progressbar")).toHaveAttribute("aria-valuenow", "75");
+  });
+
+  it("removing a module during a job never moves its progress to another card", async () => {
+    const { lane, models, store } = await renderEditor([rowOf(0, "first", "alpha"), rowOf(1, "second", "beta"), rowOf(2, "third", "alpha")], trio);
+    await userEvent.click(within(await screen.findByRole("region", { name: "Model readiness" })).getByRole("button", { name: "Prepare all" }));
+    await waitFor(() => expect(models.prepared).toHaveLength(1));
+    act(() => {
+      models.emit("prep1", event(1, "second", "beta", "preparing"));
+      models.emit("prep1", progress(1, 4 * MB));
+    });
+    expect(within(cardOf(lane, /second/)).getByRole("progressbar")).toHaveAttribute("aria-valuenow", "50");
+    // remove "first": "second" moves to index 0, "third" to index 1
+    models.rows = [rowOf(0, "second", "beta", { state: "preparing" }), rowOf(1, "third", "alpha")];
+    act(() => {
+      store.removeModule("detectors", 0);
+    });
+    // at once (old rows, new config): no card shows another module's progress
+    expect(within(cardOf(lane, /third/)).queryByRole("progressbar")).not.toBeInTheDocument();
+    expect(cardOf(lane, /third/)).not.toHaveAttribute("data-model-state");
+    // after the new answer each card shows its own module: the progress follows "second"
+    await waitFor(() => expect(within(cardOf(lane, /second/)).getByRole("progressbar")).toHaveAttribute("aria-valuenow", "50"));
+    expect(cardOf(lane, /third/)).toHaveAttribute("data-model-state", "queued"); // its own overlay (queued in the job)
+    expect(within(cardOf(lane, /third/)).getByRole("progressbar")).not.toHaveAttribute("aria-valuenow");
+    act(() => models.emit("prep1", progress(1, 6 * MB))); // the job still names "second" by its old index
+    expect(within(cardOf(lane, /second/)).getByRole("progressbar")).toHaveAttribute("aria-valuenow", "75");
+    expect(within(cardOf(lane, /third/)).getByRole("progressbar")).not.toHaveAttribute("aria-valuenow");
+  });
+
+  it("reordering modules during a job keeps each state on its own card", async () => {
+    const pair = { ...sampleConfig.config, detectors: [{ type: "alpha", name: "first" }, { type: "beta", name: "second" }] };
+    const { lane, models, store } = await renderEditor([rowOf(0, "first", "alpha"), rowOf(1, "second", "beta", { state: "ready", missing: [], message: null })], pair);
+    await userEvent.click(within(await screen.findByRole("region", { name: "Model readiness" })).getByRole("button", { name: "Prepare all" }));
+    await waitFor(() => expect(models.prepared).toHaveLength(1));
+    act(() => {
+      models.emit("prep1", event(0, "first", "alpha", "preparing"));
+      models.emit("prep1", progress(0, 4 * MB));
+    });
+    models.rows = [rowOf(0, "second", "beta", { state: "ready", missing: [], message: null }), rowOf(1, "first", "alpha", { state: "preparing" })];
+    act(() => store.setOption(["detectors"], [pair.detectors[1], pair.detectors[0]]));
+    expect(within(cardOf(lane, /second/)).queryByRole("progressbar")).not.toBeInTheDocument();
+    await waitFor(() => expect(cardOf(lane, /second/)).toHaveAttribute("data-model-state", "ready"));
+    expect(cardOf(lane, /first/)).toHaveAttribute("data-model-state", "preparing");
+    expect(within(cardOf(lane, /first/)).getByRole("progressbar")).toHaveAttribute("aria-valuenow", "50"); // its progress moved with it
+  });
+
+  it("rowMatchesConfig checks type, name and index against the edited config", () => {
+    const row = rowOf(1, "second", "beta");
+    expect(rowMatchesConfig(row, trio)).toBe(true);
+    expect(rowMatchesConfig(row, { detectors: [trio.detectors[0], trio.detectors[2]] })).toBe(false); // another module there now
+    expect(rowMatchesConfig(row, { detectors: [trio.detectors[0]] })).toBe(false); // index past the end
+    expect(rowMatchesConfig(row, { detectors: [{}, { type: "beta" }] })).toBe(true); // unnamed spec: server default name
+    expect(rowMatchesConfig(modelRow({ stage: "render.overlay", index: null }), trio)).toBe(true); // sub-path: kept
+    expect(rowMatchesConfig(row, {})).toBe(true); // key not set: server defaults
+  });
+});
+
+describe("server display fields (fix round)", () => {
+  it("renders source, licence, target and the server's action fields", async () => {
+    const row = modelRow({ source: "Hugging Face · org/model; git · https://example.invalid/tool.git", license: "Apache-2.0", target: "hf; _code/tool", reason: null, preparable: true, message: "files missing" });
+    const { lane } = await renderEditor([row]);
+    const banner = await screen.findByRole("region", { name: "Model readiness" });
+    expect(banner).toHaveTextContent("Licences: Apache-2.0.");
+    expect(within(banner).getByRole("button", { name: "Prepare all" })).toHaveAttribute("title", expect.stringMatching(/8\.0 MB to download.*licences: Apache-2\.0/));
+    await userEvent.click(cardOf(lane, /alpha/i));
+    const section = await screen.findByRole("region", { name: "Weights & requirements" });
+    expect(section).toHaveTextContent("Hugging Face · org/model");
+    expect(section).toHaveTextContent("git · https://example.invalid/tool.git");
+    expect(section).toHaveTextContent("Apache-2.0");
+    expect(within(section).getByText("<weights root>/hf")).toBeInTheDocument();
+    expect(within(section).getByText("<weights root>/_code/tool")).toBeInTheDocument();
+    expect(within(section).getByRole("button", { name: /prepare model/i })).toBeInTheDocument();
+  });
+
+  it("the server's reason wins over the message wording", async () => {
+    const { lane } = await renderEditor([modelRow({ reason: "unknown_source", preparable: false, message: "this source is not vouched for" })]);
+    await userEvent.click(cardOf(lane, /alpha/i));
+    const section = await screen.findByRole("region", { name: "Weights & requirements" });
+    expect(within(section).queryByRole("button", { name: /prepare model/i })).not.toBeInTheDocument();
+    expect(within(section).getByLabelText("Command")).toHaveTextContent("--prepare");
+    const banner = screen.getByRole("region", { name: "Model readiness" });
+    expect(banner).toHaveTextContent("1 model is not ready");
+    expect(banner).toHaveTextContent("1 model cannot be prepared from here");
+    expect(within(banner).getByRole("button", { name: "Prepare all" })).toBeDisabled();
+  });
+
+  it("an unknown-source message no longer hides Prepare when the server says preparable", async () => {
+    const { lane } = await renderEditor([modelRow({ reason: null, preparable: true, message: "unknown source: wording changed" })]);
+    await userEvent.click(cardOf(lane, /alpha/i));
+    const section = await screen.findByRole("region", { name: "Weights & requirements" });
+    expect(within(section).getByRole("button", { name: /prepare model/i })).toBeInTheDocument();
+  });
+
+  it("packages-only rows (server reason) have no Prepare and a note", async () => {
+    const { lane } = await renderEditor([modelRow({ reason: "packages_only", preparable: false, missing: ["package:somepkg"], message: "package somepkg is not installed" })]);
+    await userEvent.click(cardOf(lane, /alpha/i));
+    const section = await screen.findByRole("region", { name: "Weights & requirements" });
+    expect(within(section).queryByRole("button", { name: /prepare model/i })).not.toBeInTheDocument();
+    expect(section).toHaveTextContent("Only Python packages are missing");
   });
 });

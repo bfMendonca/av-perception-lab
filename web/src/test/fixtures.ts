@@ -1,7 +1,7 @@
 // Test catalog: same shape as GET /api/catalog. Names are test data only;
 // the UI code never refers to them.
 import type { ApiClient } from "../api/client";
-import type { ModelKey, ModelStatus, ModelsApi, PrepareEvent } from "../api/models";
+import type { ModelKey, ModelStatus, ModelsApi, PrepareEvent, PrepareJob } from "../api/models";
 import type { Catalog, ConfigDict, Field, ParsedConfig, ValidationError } from "../api/types";
 
 export const thresholdField: Field = {
@@ -114,6 +114,8 @@ export interface FakeModelsApi extends ModelsApi {
   cancelled: string[];
   /** Make the next status calls fail with this error. */
   failWith: Error | null;
+  /** What `GET /api/models/prepare` lists (jobs started before a reload). */
+  listed: PrepareJob[];
   emit(jobId: string, event: PrepareEvent): void;
 }
 
@@ -125,6 +127,7 @@ export function fakeModelsApi(rows: ModelStatus[] = []): FakeModelsApi {
     prepared: [],
     cancelled: [],
     failWith: null,
+    listed: [],
     emit: (id, event) => listeners.get(id)?.(event),
     status: async (config) => {
       api.statusCalls.push(config);
@@ -148,6 +151,7 @@ export function fakeModelsApi(rows: ModelStatus[] = []): FakeModelsApi {
       };
     },
     getPrepare: async () => Promise.reject(new Error("not used")),
+    listPrepares: async () => api.listed,
     cancelPrepare: async (id) => {
       api.cancelled.push(id);
       return { id, status: "cancelled", position: null, error: "cancelled", created: "", cancel_requested: true, models: [], skipped: [] };

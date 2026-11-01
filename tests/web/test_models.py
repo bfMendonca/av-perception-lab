@@ -121,9 +121,15 @@ def test_status_for_fresh_config_lists_missing_models_without_torch(tmp_path):
                 "missing",
                 "size_bytes",
                 "message",
+                "source",
+                "license",
+                "target",
+                "reason",
+                "preparable",
             }
             # Absolute paths of the server never reach the client.
-            assert str(tmp_path) not in (row["message"] or ""), (name, row)
+            for key in ("message", "source", "license", "target"):
+                assert str(tmp_path) not in (row[key] or ""), (name, key, row)
 
 
 def test_status_ready_after_fake_asset_present(api, fake_models, tmp_path):  # noqa: F811
@@ -574,3 +580,101 @@ def test_redact_relative_root_and_sibling_folders(tmp_path, monkeypatch):
     link.symlink_to(abs_root, target_is_directory=True)
     abs_root.mkdir()
     assert redact(f"{link}/a {abs_root}/b", link) == "<weights root>/a <weights root>/b"
+
+
+# -- display fields and actions (task_0023 fix round) ------------------------------
+
+
+def test_status_rows_carry_source_license_target_and_action(api, fake_models, tmp_path):  # noqa: F811
+    cfg = {
+        **gate_config(tmp_path, "a"),
+        "refiners": [{"type": "sam2"}, {"type": "sam2", "model": "someone/else"}],
+    }
+    rows = by_key(status_of(api, cfg))
+    gate = rows[("detectors", 0)]
+    assert gate["source"] == "GateAsset"  # unregistered kind: the class name
+    assert gate["target"] == "gate/a.bin"
+    assert gate["license"] is None
+    assert gate["reason"] is None and gate["preparable"] is True
+    known = rows[("refiners", 0)]
+    assert known["source"] == "Hugging Face · facebook/sam2.1-hiera-large"
+    assert known["license"]  # declared by the adapter's table
+    assert known["preparable"] is True
+    unknown = rows[("refiners", 1)]
+    assert unknown["reason"] == "unknown_source" and unknown["preparable"] is False
+    assert unknown["source"] == "Hugging Face · someone/else"
+    ready = rows[("depth", None)]
+    assert ready["state"] == "ready" and ready["preparable"] is False
+    root = str(fake_models.root.resolve())
+    for row in rows.values():
+        for key in ("source", "license", "target", "message"):
+            value = row[key] or ""
+            assert root not in value and str(tmp_path) not in value
+            assert not value.startswith("/")
+
+
+def test_declaration_view_redacts_and_classifies(tmp_path):
+    from det_depth_distance.core import requirements as rq
+    from det_depth_distance.web import models
+
+    root = tmp_path / "weights"
+    req = rq.Requirements(
+        assets=(
+            rq.UserProvided(
+                key="weights",
+                target="x/custom.pt",
+                option="weights",
+                hint=f"provide this file at {root / 'x/custom.pt'}",
+                license="custom",
+            ),
+            rq.UrlAsset(
+                key="w2",
+                target="x/w2.pt",
+                url="https://example.invalid/a/b.pt",
+                size_bytes=1,
+            ),
+        ),
+        code=(
+            rq.CodeRepo(
+                name="tool", url="https://example.invalid/tool.git", commit="a" * 40
+            ),
+        ),
+    )
+    view = models.declaration_view(req, root)
+    assert view["source"] == (
+        "provide this file at <weights root>/x/custom.pt; example.invalid; "
+        "git · https://example.invalid/tool.git"
+    )
+    assert view["target"] == "x/custom.pt; x/w2.pt; _code/tool"
+    assert view["license"] == "custom"
+    packages = {"state": "missing", "missing": ["package:nopkg_xyz"]}
+    assert models.with_action(dict(packages), False)["reason"] == "packages_only"
+    assert models.with_action(dict(packages), False)["preparable"] is False
+    assert (
+        models.with_action({"state": "missing", "missing": ["weights"]}, False)[
+            "preparable"
+        ]
+        is True
+    )
+    assert (
+        models.with_action({"state": "conflict", "missing": ["weights"]}, False)[
+            "preparable"
+        ]
+        is False
+    )
+
+
+def test_prepare_listing_returns_recent_jobs(api, fake_models, tmp_path):  # noqa: F811
+    assert api.get("/api/models/prepare").json() == []
+    cfg = gate_config(tmp_path, ("a", "block"))
+    job = api.post("/api/models/prepare", json={"config": cfg, "models": "all"}).json()
+    assert fake_models.source.started.wait(5)
+    listed = api.get("/api/models/prepare").json()
+    assert [j["id"] for j in listed] == [job["id"]]
+    assert listed[0]["status"] == "running"
+    assert listed[0]["models"][0]["stage"] == "detectors"
+    rows = by_key(status_of(api, cfg))
+    assert rows[("detectors", 0)]["state"] == "preparing"
+    assert rows[("detectors", 0)]["preparable"] is False
+    api.delete(f"/api/models/prepare/{job['id']}")
+    assert wait_prepare(api, job["id"])["status"] == "cancelled"

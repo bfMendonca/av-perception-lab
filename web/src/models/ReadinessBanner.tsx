@@ -4,7 +4,7 @@
 import { useState } from "react";
 import { Icon } from "../ui/icons";
 import "./statusStyles.css";
-import { plural, preparable, stateLabel, toneOf, where } from "./readiness";
+import { plural, preparable, splitList, stateLabel, toneOf, where } from "./readiness";
 import { useReadiness, type ModelView } from "./useModelStatus";
 
 export interface ReadinessBannerProps {
@@ -68,8 +68,10 @@ export function ReadinessBanner({ onShow }: ReadinessBannerProps) {
   }
 
   const failed = notReady.filter((r) => r.state === "failed");
-  const sizeText = size.bytes ? size.text : null;
+  // Count and size cover only what Prepare all can fetch (I6); the others are named below.
+  const sizeText = size.bytes ? `${size.text} to download` : null;
   const blocked = notReady.length - toPrepare.length;
+  const licences = [...new Set(toPrepare.flatMap((r) => splitList(r.license)))];
   return (
     <div className={`readiness${failed.length ? " readiness--failed" : ""}`} role="region" aria-label="Model readiness">
       <span className="readiness__icon" aria-hidden="true">
@@ -77,11 +79,13 @@ export function ReadinessBanner({ onShow }: ReadinessBannerProps) {
       </span>
       <div className="readiness__text">
         <strong>
-          {plural(notReady.length, "model needs", "models need")} preparing{sizeText ? <span className="readiness__size"> · {sizeText}</span> : null}
+          {toPrepare.length ? plural(toPrepare.length, "model needs", "models need") + " preparing" : `${plural(notReady.length, "model is", "models are")} not ready`}
+          {toPrepare.length && sizeText ? <span className="readiness__size"> · {sizeText}</span> : null}
         </strong>
         <span className="readiness__sub">
           {failed.length ? `${plural(failed.length, "model")} failed to prepare. ` : ""}
           {blocked ? `${plural(blocked, "model")} cannot be prepared from here (see the inspector). ` : ""}
+          {licences.length ? `Licences: ${licences.join(", ")}. ` : ""}
           Process unlocks when every model is ready.{" "}
           <button type="button" className="linkish" aria-expanded={open} onClick={() => setOpen(!open)}>
             {open ? "Hide models" : "Show models"}
@@ -106,7 +110,11 @@ export function ReadinessBanner({ onShow }: ReadinessBannerProps) {
         type="button"
         className="btn btn--warn"
         disabled={!toPrepare.length || readiness.submitting}
-        title={toPrepare.length ? `Download what ${plural(toPrepare.length, "model")} need${toPrepare.length === 1 ? "s" : ""}` : "None of these models can be prepared from the web"}
+        title={
+          toPrepare.length
+            ? `Download what ${plural(toPrepare.length, "model")} need${toPrepare.length === 1 ? "s" : ""}${sizeText ? ` (${sizeText})` : ""}${licences.length ? `; licences: ${licences.join(", ")}` : ""}`
+            : "None of these models can be prepared from the web"
+        }
         onClick={() => void readiness.prepare("all")}
       >
         {readiness.submitting ? <span className="spinner spinner--ink" aria-hidden="true" /> : <Icon name="open" size={14} />}

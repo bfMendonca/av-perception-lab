@@ -26,6 +26,7 @@ import subprocess
 from dataclasses import dataclass
 from pathlib import Path, PurePath
 from typing import ClassVar, Literal
+from urllib.parse import urlsplit
 
 CODE_DIR = "_code"  # clones live in <weights root>/_code/<name>
 _PARTIAL_SUFFIXES = (".part", ".incomplete")
@@ -88,6 +89,11 @@ class Asset:
     def present(self, root: Path) -> AssetState:
         raise NotImplementedError(f"{type(self).__name__}.present")
 
+    def describe_source(self) -> str:
+        """One human-readable line naming where the asset comes from (shown
+        by the UI); kinds override it, the default is the kind name."""
+        return self.kind_name or type(self).__name__
+
 
 _ASSET_KINDS: dict[str, type[Asset]] = {}
 
@@ -139,6 +145,9 @@ class UrlAsset(Asset):
     url: str
     sha256: str | None = None
 
+    def describe_source(self) -> str:
+        return urlsplit(self.url).hostname or self.url
+
     def present(self, root: Path) -> AssetState:
         path = self.path(root)
         if path.with_name(path.name + ".part").exists():
@@ -168,6 +177,9 @@ class UserProvided(Asset):
     option: str
     hint: str
 
+    def describe_source(self) -> str:
+        return self.hint
+
     def present(self, root: Path) -> AssetState:
         if self.path(root).exists():
             return AssetState("ready")
@@ -190,6 +202,9 @@ class HuggingFaceAsset(Asset):
     def __post_init__(self) -> None:
         if self.revision is not None:
             _check_revision(self.revision)
+
+    def describe_source(self) -> str:
+        return f"Hugging Face · {self.repo}"
 
     def _snapshots(self, repo_dir: Path) -> list[Path]:
         snaps = repo_dir / "snapshots"
@@ -283,6 +298,9 @@ class CodeRepo:
 
     def path(self, root: Path) -> Path:
         return contained(root, f"{CODE_DIR}/{self.name}")
+
+    def describe_source(self) -> str:
+        return f"git · {self.url}"
 
     def present(self, root: Path) -> AssetState:
         path = self.path(root)

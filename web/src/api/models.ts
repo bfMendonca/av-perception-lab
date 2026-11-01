@@ -26,9 +26,16 @@ export interface ModelStatus extends ModelKey {
   /** Bytes still to download (declared sizes), null when unknown. */
   size_bytes: number | null;
   message: string | null;
+  /** Declared licences ("; "-joined), null when none. */
   license?: string | null;
+  /** Where the files come from, one line per kind ("; "-joined). */
   source?: string | null;
+  /** Folders/files relative to the weights root ("; "-joined). */
   target?: string | null;
+  /** Why the web cannot prepare it: "unknown_source", "packages_only" (or another server word), null otherwise. */
+  reason?: string | null;
+  /** A Prepare from the web can make it ready. Absent from older servers (then the UI infers it). */
+  preparable?: boolean;
   [key: string]: unknown;
 }
 
@@ -77,6 +84,8 @@ export interface ModelsApi {
   status(config: ConfigDict): Promise<StatusReport>;
   prepare(models: ModelKey[] | "all", config: ConfigDict): Promise<PrepareJob>;
   getPrepare(id: string): Promise<PrepareJob>;
+  /** Unfinished and recent Prepare jobs of the server, newest first. */
+  listPrepares(): Promise<PrepareJob[]>;
   cancelPrepare(id: string): Promise<PrepareJob>;
   /** Subscribe to a job's events (replayed from the start); returns the unsubscribe. */
   prepareEvents(id: string, onEvent: (event: PrepareEvent) => void, onError?: () => void): () => void;
@@ -107,6 +116,7 @@ export function createModelsApi(base = "", fetchImpl: typeof fetch = (...a) => f
     status: (config) => call<StatusReport>("/api/models/status", post({ config })),
     prepare: (models, config) => call<PrepareJob>("/api/models/prepare", post({ models, config })),
     getPrepare: (id) => call<PrepareJob>(`/api/models/prepare/${enc(id)}`),
+    listPrepares: () => call<PrepareJob[]>("/api/models/prepare"),
     cancelPrepare: (id) => call<PrepareJob>(`/api/models/prepare/${enc(id)}`, { method: "DELETE" }),
     prepareEvents: (id, onEvent, onError) => {
       const source = new EventSource(`${base}/api/models/prepare/${enc(id)}/events`);

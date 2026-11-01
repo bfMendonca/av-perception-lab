@@ -6,7 +6,7 @@ import type { Field } from "../api/types";
 import { formatBytes } from "../video/DropZone";
 import { Icon } from "../ui/icons";
 import "./statusStyles.css";
-import { isUnknownSource, locations, onlyPackages, prepareCommand, preparable, ROOT_LABEL, stateLabel, toneOf, where } from "./readiness";
+import { isUnknownSource, locations, onlyPackages, prepareCommand, preparable, ROOT_LABEL, splitList, stateLabel, toneOf, where } from "./readiness";
 import { useReadiness, type ModelView } from "./useModelStatus";
 
 export interface ModelRequirementsProps {
@@ -64,7 +64,10 @@ function ModelBlock({ row, single, fileName }: { row: ModelView; single: boolean
   const unknownSource = isUnknownSource(row);
   const packagesOnly = onlyPackages(row);
   const canPrepare = readiness !== null && preparable(row);
-  const places = row.target ? [row.target] : locations(row.serverMessage ?? row.message);
+  // The server's weights-root-relative targets; older servers: paths named in the message.
+  const places = row.target ? splitList(row.target).map((t) => `${ROOT_LABEL}/${t}`) : locations(row.serverMessage ?? row.message);
+  const sources = splitList(row.source);
+  const licences = splitList(row.license);
   const failedNow = row.state === "failed";
   const p = row.progress;
 
@@ -154,16 +157,20 @@ function ModelBlock({ row, single, fileName }: { row: ModelView; single: boolean
             <dd>{row.size_bytes ? `${formatBytes(row.size_bytes)} to download` : "not declared"}</dd>
           </div>
         ) : null}
-        {typeof row.source === "string" && row.source ? (
+        {sources.length ? (
           <div>
             <dt>Source</dt>
-            <dd>{row.source}</dd>
+            <dd className="reqs__list">
+              {sources.map((src) => (
+                <span key={src}>{src}</span>
+              ))}
+            </dd>
           </div>
         ) : null}
-        {typeof row.license === "string" && row.license ? (
+        {licences.length ? (
           <div>
             <dt>Licence</dt>
-            <dd>{row.license}</dd>
+            <dd>{licences.join(", ")}</dd>
           </div>
         ) : null}
         {tone === "ready" && !places.length ? null : (
