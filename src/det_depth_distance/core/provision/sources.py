@@ -1,4 +1,4 @@
-"""Built-in sources: Hugging Face, plain URL, git clone, user-provided.
+"""Built-in sources: Hugging Face, plain URL, Google Drive, git clone, user-provided.
 
 Every write path is resolved through `core.requirements.contained` before
 anything is written, so a target, a `.part` file or a clone folder cannot
@@ -21,14 +21,17 @@ leave the weights root. Only the standard library is imported here;
   body is bounded by the expected size (the server's length, else the
   declared one): more bytes fail and remove the `.part`; free disk space is
   checked before the first byte is written.
+- `GoogleDriveAsset`: the same download code as `UrlAsset` (one base class,
+  `_HttpFileSource`) from the fixed endpoint `DRIVE_DOWNLOAD` with
+  `id=<file_id>&export=download&confirm=t`. Redirects stay on https and on
+  the Google hosts Drive downloads use (`DRIVE_HOSTS`, `*.googleusercontent.com`);
+  an HTML answer (the virus-scan confirmation or the quota page) is refused
+  before anything is kept, never saved as the file.
 - `CodeRepo`: `git clone --no-checkout` into `<name>.part`, `switch --detach`
   to the pinned commit (hex only, after `--end-of-options`), rename. Each git
   command is killed (with its helpers) on cancel or after `GIT_TIMEOUT_S`. An existing clone at another commit is fetched and
   checked out, never deleted; a folder that is not a clone is left alone.
 - `UserProvided`: never downloads; raises with the declared hint.
-
-Google Drive is not implemented: a Drive source would be one more class
-registered with `register_source` for a `GoogleDriveAsset` kind.
 """
 
 import hashlib
@@ -52,7 +55,9 @@ from det_depth_distance.core.provision.engine import (
 )
 from det_depth_distance.core.requirements import (
     CODE_DIR,
+    Asset,
     CodeRepo,
+    GoogleDriveAsset,
     HuggingFaceAsset,
     UrlAsset,
     UserProvided,
@@ -96,29 +101,39 @@ def _validator(headers) -> str | None:
     return headers.get("Last-Modified")
 
 
-def _http_reason(exc: Exception, asset: UrlAsset) -> str:
+def _http_reason(exc: Exception, where: str, gated: bool = False) -> str:
     if isinstance(exc, urllib.error.HTTPError):
         if exc.code == 404:
-            return f"not found (HTTP 404) at {asset.url}"
+            return f"not found (HTTP 404) at {where}"
         if exc.code in (401, 403):
             hint = (
                 " - the file is gated: accept the licence on the source site"
-                if asset.gated
+                if gated
                 else ""
             )
-            return f"access denied (HTTP {exc.code}) at {asset.url}{hint}"
-        return f"HTTP {exc.code} {exc.reason} at {asset.url}"
+            return f"access denied (HTTP {exc.code}) at {where}{hint}"
+        return f"HTTP {exc.code} {exc.reason} at {where}"
     reason = getattr(exc, "reason", exc)
-    return f"offline or unreachable: cannot download {asset.url} ({reason})"
+    return f"offline or unreachable: cannot download {where} ({reason})"
 
 
 class _SafeRedirect(urllib.request.HTTPRedirectHandler):
-    """Follow redirects only to http(s), never from https down to http."""
+    """Follow redirects only to http(s), never from https down to http.
+    Subclasses narrow it with `_refuse(new_url)` (a reason, or None)."""
+
+    def _refuse(self, new: str) -> str | None:
+        return None
 
     def http_error_302(self, req, fp, code, msg, headers):
         location = headers.get("Location") or headers.get("URI")
         if location:
             new = urllib.parse.urljoin(req.full_url, location)
+            # The narrower policy first: its message names no URL (a Drive
+            # redirect may carry a signed query).
+            why = self._refuse(new)
+            if why:
+                fp.close()
+                raise ProvisionError(f"refused redirect: {why}")
             scheme = urllib.parse.urlsplit(new).scheme.lower()
             old = urllib.parse.urlsplit(req.full_url).scheme.lower()
             if scheme not in ("http", "https") or (old == "https" and scheme == "http"):
@@ -135,13 +150,17 @@ class _SafeRedirect(urllib.request.HTTPRedirectHandler):
 _OPENER = urllib.request.build_opener(_SafeRedirect)
 
 
-def _open(request: urllib.request.Request):
-    return _OPENER.open(request, timeout=HTTP_TIMEOUT_S)
+def _open(request: urllib.request.Request, opener=None):
+    """Open `request` with `opener` (default: the plain URL policy). Every
+    download goes through here (tests replace it to forbid the network)."""
+    return (opener or _OPENER).open(request, timeout=HTTP_TIMEOUT_S)
 
 
-@register_source(UrlAsset)
-class UrlSource:
-    """Plain HTTP(S) download with resume and integrity checks (`urllib`).
+class _HttpFileSource:
+    """One file over HTTP(S) with resume and integrity checks (`urllib`);
+    subclasses say where (`_url`, `_where`), how redirects are followed
+    (`_opener`) and what a wrong answer looks like (`_check_response`,
+    `_check_first_chunk`).
 
     A file is accepted only when its integrity is known: the declared
     `size_bytes` or `sha256` matches, or the server's `Content-Length` (or
@@ -152,15 +171,33 @@ class UrlSource:
     started; anything else restarts from zero.
     """
 
+    def _url(self, asset: Asset) -> str:
+        raise NotImplementedError
+
+    def _where(self, asset: Asset) -> str:
+        """How messages name the file (default: its URL)."""
+        return self._url(asset)
+
+    def _opener(self):
+        return None  # the plain URL redirect policy
+
+    def _reason(self, exc: Exception, asset: Asset) -> str:
+        return _http_reason(exc, self._where(asset), asset.gated)
+
+    def _check_response(self, asset: Asset, response) -> None:
+        """Raise ProvisionError for an answer that is not the file."""
+
+    def _check_first_chunk(self, asset: Asset, chunk: bytes) -> None:
+        """Raise ProvisionError when the first bytes show it is not the file."""
+
     def prepare(
         self,
-        asset: UrlAsset,
+        asset: Asset,
         root: Path,
         progress: ItemProgress,
         cancel: threading.Event,
     ) -> None:
-        if not asset.url.lower().startswith(("http://", "https://")):
-            raise ProvisionError(f"unsupported URL scheme: {asset.url}")
+        url = self._url(asset)
         target = contained(root, asset.target)
         part = contained(root, asset.target + ".part")
         meta = contained(root, asset.target + ".part.meta")
@@ -169,15 +206,15 @@ class UrlSource:
         if part.is_dir() or meta.is_dir():
             raise ProvisionError(f"{part} is a folder, expected a partial file")
         try:
-            server_total = self._download(asset, part, meta, progress, cancel)
+            server_total = self._download(asset, url, part, meta, progress, cancel)
         except (ProvisionCancelled, ProvisionError):
             raise
         except (urllib.error.URLError, TimeoutError, ConnectionError) as exc:
-            raise ProvisionError(_http_reason(exc, asset)) from None
+            raise ProvisionError(self._reason(exc, asset)) from None
         except http.client.HTTPException as exc:  # connection dropped mid-body
             raise ProvisionError(
-                f"download of {asset.url} interrupted ({type(exc).__name__}); "
-                "run Prepare again to resume"
+                f"download of {self._where(asset)} interrupted "
+                f"({type(exc).__name__}); run Prepare again to resume"
             ) from None
         self._verify(asset, part, meta, server_total)
         self._refuse_existing(asset, target)  # appeared during the download
@@ -185,7 +222,7 @@ class UrlSource:
         meta.unlink(missing_ok=True)
 
     @staticmethod
-    def _refuse_existing(asset: UrlAsset, target: Path) -> None:
+    def _refuse_existing(asset: Asset, target: Path) -> None:
         """Never replace a file (or anything) already at the target."""
         if target.exists() or target.is_symlink():
             raise ProvisionError(
@@ -217,14 +254,17 @@ class UrlSource:
 
     def _download(
         self,
-        asset: UrlAsset,
+        asset: Asset,
+        url: str,
         part: Path,
         meta: Path,
         progress: ItemProgress,
         cancel: threading.Event,
     ) -> int | None:
         """Fill `part`; returns the full size announced by the server, if any."""
-        resumable = asset.size_bytes is not None or asset.sha256 is not None
+        sha256 = getattr(asset, "sha256", None)
+        where = self._where(asset)
+        resumable = asset.size_bytes is not None or sha256 is not None
         offset = part.stat().st_size if part.is_file() else 0
         validator = meta.read_text().strip() if meta.is_file() else ""
         if offset and (
@@ -239,17 +279,18 @@ class UrlSource:
         if offset:
             headers["Range"] = f"bytes={offset}-"
             headers["If-Range"] = validator
-        request = urllib.request.Request(asset.url, headers=headers)
+        request = urllib.request.Request(url, headers=headers)
         _check_cancel(cancel)
         try:
-            response = _open(request)
+            response = _open(request, self._opener())
         except urllib.error.HTTPError as exc:
             if exc.code != 416 or not offset:
                 raise
             # Range not satisfiable: the .part is not a prefix we can trust.
             self._restart(part, meta)
-            return self._download(asset, part, meta, progress, cancel)
+            return self._download(asset, url, part, meta, progress, cancel)
         with response:
+            self._check_response(asset, response)
             start, range_total = _content_range(response.headers.get("Content-Range"))
             if response.status == 206:
                 if not offset or start != offset:
@@ -258,9 +299,9 @@ class UrlSource:
                     self._restart(part, meta)
                     if not offset:
                         raise ProvisionError(
-                            f"server sent a partial answer to a full request: {asset.url}"
+                            f"server sent a partial answer to a full request: {where}"
                         )
-                    return self._download(asset, part, meta, progress, cancel)
+                    return self._download(asset, url, part, meta, progress, cancel)
                 mode = "ab"
             else:
                 # 200: a fresh file, or the server ignored Range / If-Range
@@ -285,17 +326,26 @@ class UrlSource:
             self._check_disk(part, None if total is None else total - offset)
             done = offset
             progress(done, total)
+            first = True
             with part.open(mode) as out:
                 while True:
                     _check_cancel(cancel)
                     chunk = response.read1(CHUNK)
                     if not chunk:
                         break
+                    if first:
+                        first = False
+                        try:
+                            self._check_first_chunk(asset, chunk)
+                        except ProvisionError:
+                            out.close()
+                            self._restart(part, meta)
+                            raise
                     if limit is not None and done + len(chunk) > limit:
                         out.close()
                         self._restart(part, meta)
                         raise ProvisionError(
-                            f"download of {asset.url} is larger than expected "
+                            f"download of {where} is larger than expected "
                             f"(more than {limit} bytes); partial file removed"
                         )
                     out.write(chunk)
@@ -306,38 +356,131 @@ class UrlSource:
         if server_total is not None and done != server_total:
             # Connection closed early: keep the .part, the next run resumes.
             raise ProvisionError(
-                f"download of {asset.url} interrupted at {done} of {server_total} "
+                f"download of {where} interrupted at {done} of {server_total} "
                 "bytes; run Prepare again to resume"
             )
         return server_total
 
     @staticmethod
-    def _verify(
-        asset: UrlAsset, part: Path, meta: Path, server_total: int | None
-    ) -> None:
+    def _verify(asset: Asset, part: Path, meta: Path, server_total: int | None) -> None:
         size = part.stat().st_size
+        sha256 = getattr(asset, "sha256", None)
         if asset.size_bytes is not None and size != asset.size_bytes:
-            UrlSource._restart(part, meta)
+            _HttpFileSource._restart(part, meta)
             raise ProvisionError(
                 f"size mismatch: {size} bytes, expected {asset.size_bytes} "
                 "(partial file removed)"
             )
-        if asset.sha256 is not None:
+        if sha256 is not None:
             digest = hashlib.sha256()
             with part.open("rb") as handle:
                 for chunk in iter(lambda: handle.read(1 << 20), b""):
                     digest.update(chunk)
             got = digest.hexdigest()
-            if got != asset.sha256.lower():
-                UrlSource._restart(part, meta)
+            if got != sha256.lower():
+                _HttpFileSource._restart(part, meta)
                 raise ProvisionError(
-                    f"sha256 mismatch: expected {asset.sha256.lower()}, got {got} "
+                    f"sha256 mismatch: expected {sha256.lower()}, got {got} "
                     "(partial file removed)"
                 )
             return
         if asset.size_bytes is None and server_total != size:
-            UrlSource._restart(part, meta)
+            _HttpFileSource._restart(part, meta)
             raise ProvisionError(UNVERIFIABLE)
+
+
+@register_source(UrlAsset)
+class UrlSource(_HttpFileSource):
+    """Plain HTTP(S) download of `UrlAsset.url` (see `_HttpFileSource`)."""
+
+    def _url(self, asset: UrlAsset) -> str:
+        if not asset.url.lower().startswith(("http://", "https://")):
+            raise ProvisionError(f"unsupported URL scheme: {asset.url}")
+        return asset.url
+
+
+# --------------------------------------------------------------- Google Drive
+
+DRIVE_DOWNLOAD = "https://drive.usercontent.google.com/download"
+# Hosts a Drive download may be redirected to (exact names, then suffixes).
+DRIVE_HOSTS = ("drive.usercontent.google.com", "drive.google.com")
+DRIVE_HOST_SUFFIXES = (".googleusercontent.com",)
+_HTML_STARTS = (b"<!doctype html", b"<html", b"<head", b"<body", b"<?xml")
+
+
+class _DriveRedirect(_SafeRedirect):
+    """`_SafeRedirect` plus: https only (`schemes`) and Google hosts only."""
+
+    def __init__(self, hosts, suffixes, schemes) -> None:
+        super().__init__()
+        self.hosts, self.suffixes, self.schemes = hosts, suffixes, schemes
+
+    def _refuse(self, new: str) -> str | None:
+        parts = urllib.parse.urlsplit(new)
+        host = (parts.hostname or "").lower()
+        if parts.scheme.lower() not in self.schemes:
+            return (
+                f"Google Drive downloads stay on {'/'.join(self.schemes)} "
+                f"(redirect to {parts.scheme or '?'}://{host or '?'})"
+            )
+        if host in self.hosts or host.endswith(self.suffixes):
+            return None
+        return f"host {host or '?'} is not a Google Drive download host"
+
+
+@register_source(GoogleDriveAsset)
+class GoogleDriveSource(_HttpFileSource):
+    """A public Google Drive file through the direct download endpoint
+    (`DRIVE_DOWNLOAD?id=<id>&export=download&confirm=t`, which skips the
+    virus-scan page for files Drive does not scan), with the URL source's
+    resume and integrity rules. An HTML answer is the confirmation or quota
+    page, not the file: it fails with a readable message and nothing is kept.
+    `endpoint`, `hosts`, `host_suffixes` and `schemes` are class attributes
+    so tests can point the source at a local server."""
+
+    endpoint = DRIVE_DOWNLOAD
+    hosts = DRIVE_HOSTS
+    host_suffixes = DRIVE_HOST_SUFFIXES
+    schemes: tuple[str, ...] = ("https",)
+
+    def _url(self, asset: GoogleDriveAsset) -> str:
+        query = urllib.parse.urlencode(
+            {"id": asset.file_id, "export": "download", "confirm": "t"}
+        )
+        return f"{self.endpoint}?{query}"
+
+    def _where(self, asset: GoogleDriveAsset) -> str:
+        return f"Google Drive file {asset.file_id}"
+
+    def _opener(self):
+        return urllib.request.build_opener(
+            _DriveRedirect(self.hosts, self.host_suffixes, self.schemes)
+        )
+
+    def _manual(self, asset: GoogleDriveAsset) -> str:
+        where = asset.manual or f"https://drive.google.com/file/d/{asset.file_id}"
+        return f"download it manually from {where}"
+
+    def _reason(self, exc: Exception, asset: GoogleDriveAsset) -> str:
+        reason = super()._reason(exc, asset)
+        if isinstance(exc, urllib.error.HTTPError) and exc.code in (403, 429):
+            reason += f" (Drive quota or access limit: try again later or {self._manual(asset)})"
+        return reason
+
+    def _not_the_file(self, asset: GoogleDriveAsset) -> ProvisionError:
+        return ProvisionError(
+            "Google Drive returned a confirmation or quota page instead of the "
+            f"file; try again later or {self._manual(asset)}"
+        )
+
+    def _check_response(self, asset: GoogleDriveAsset, response) -> None:
+        kind = (response.headers.get("Content-Type") or "").lower()
+        if kind.startswith(("text/html", "application/xhtml")):
+            raise self._not_the_file(asset)
+
+    def _check_first_chunk(self, asset: GoogleDriveAsset, chunk: bytes) -> None:
+        if chunk[:512].lstrip().lower().startswith(_HTML_STARTS):
+            raise self._not_the_file(asset)
 
 
 # --------------------------------------------------------------- Hugging Face

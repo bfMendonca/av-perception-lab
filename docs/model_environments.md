@@ -74,7 +74,7 @@ size" below), which nothing ever replaces. Fields common to every asset
 | `size_bytes` | expected size (shown before Prepare; integrity check for URLs; a lower bound for Hugging Face) |
 | `license` | shown in the UI next to the size |
 | `gated` | the source requires accepting a licence (see 5.3) |
-| `known` | **fails closed: `False` by default.** The adapter's code sets `known=True` only when both the source (a table in its code) and the target (the canonical location under the weights root) are its own: `ultralytics/<release name>`, the `hf` cache for repos in `HF_FACTS`, the RF-DETR table. A release file name at a `weights` path of the YAML's choosing, a known repo in another `hf_cache` folder or a repo typed in the YAML stays `False`. The web prepares only known sources (`engine.prepare(..., allow_unknown=False)`, re-checked when the job runs); the CLI prepares both (`allow_unknown=True`). `CodeRepo.known` follows the same rule (the pinned TwinLiteNet+ clone is known). `known` does not apply to kinds that are never downloaded (`UserProvided`) |
+| `known` | **fails closed: `False` by default.** The adapter's code sets `known=True` only when both the source (a table in its code) and the target (the canonical location under the weights root) are its own: `ultralytics/<release name>`, the `hf` cache for repos in `HF_FACTS`, the RF-DETR table, the TwinLiteNet+ Drive files at `_code/TwinLiteNetPlus/pretrained/<variant>.pth` of the pinned clone. A release file name at a `weights` path of the YAML's choosing, a known repo in another `hf_cache` folder or a repo typed in the YAML stays `False`. The web prepares only known sources (`engine.prepare(..., allow_unknown=False)`, re-checked when the job runs); the CLI prepares both (`allow_unknown=True`). `CodeRepo.known` follows the same rule (the pinned TwinLiteNet+ clone is known). `known` does not apply to kinds that are never downloaded (`UserProvided`) |
 
 Built-in kinds:
 
@@ -82,31 +82,61 @@ Built-in kinds:
 |---|---|---|---|
 | Hugging Face (`huggingface`) | `HuggingFaceAsset(repo, files, patterns, revision)` | a model repo on the Hub | `target` is a **cache folder** (e.g. `hf`), read in the Hub's own layout `models--org--name/snapshots/<rev>/…`, so an existing `weights/hf` cache counts as ready unchanged. `files` are exact names, `patterns` fnmatch globs (both empty = the whole snapshot). `revision` is a branch, tag or commit name **without `/`**: a pull-request ref such as `refs/pr/1` is refused; use the commit hash of that PR instead. A `.incomplete` blob is never ready. |
 | URL (`url`) | `UrlAsset(url, sha256)` | one file over http(s) | **declare `size_bytes` or `sha256`** (project rule). The download goes to `<target>.part` and is renamed only when the declared size or sha256 matches, or the server's full length was received; otherwise it fails with "cannot verify download integrity: declare size_bytes or sha256 for this asset". A `.part` is resumed (`Range` + `If-Range`) only when size or sha256 is declared and the server answers 206 at the right offset; anything else restarts. Redirects go only to http(s), never from https down to http. The body is bounded by the expected size (the smaller of the server's length and the declared size): more bytes fail and remove the `.part`; free disk space is checked before the first byte is written. **An existing file at the target whose size or sha256 differs** (for example a fine-tuned checkpoint saved under a release name) is never downloaded over, in the CLI either: the model is `failed` with "exists with a different size at <target>; move or delete it, or point the config at another file". |
+| Google Drive (`gdrive`) | `GoogleDriveAsset(file_id, sha256, manual)` | one public file on Google Drive | the same rules as URL (`present`, `.part`, resume, size cap, free disk, never over an existing file; **declare `size_bytes` and `sha256`**), downloaded from the fixed endpoint `https://drive.usercontent.google.com/download?id=<file_id>&export=download&confirm=t`. `file_id` must match `[A-Za-z0-9_-]{10,}` (never a URL). Redirects only over https and only to `drive.usercontent.google.com`, `drive.google.com` or `*.googleusercontent.com`; any other host is refused. An HTML answer (`Content-Type: text/html`, or a body that starts like HTML) is the virus-scan confirmation or the quota page, never the file: it fails with "Google Drive returned a confirmation or quota page instead of the file; try again later or download it manually from <manual>" and nothing is kept. `describe_source()` is "Google Drive file <id>". |
 | User-provided (`user`) | `UserProvided(option, hint)` | a file only the user can supply (a custom `.pt`, a manual download) | never downloaded: Prepare reports "provide this file: <hint> (expected at …, or set the option '<option>')" and the model stays `missing` (not `failed`; `--prepare` exits 1 only because the model is not ready). When such files are all that is missing (the code layer ready), the web row has `reason: "user_provided"`, no Prepare button, and Prepare all skips it. |
 | Code repo (layer `code`) | `CodeRepo(name, url, commit)` | an upstream repository used as code | `name` is one plain folder name; `commit` must be **7–64 hexadecimal characters** (a branch or tag is refused: they move). Prepare runs `git clone --no-checkout` into `_code/<name>.part`, `git switch --detach` to the pin, then renames. An existing clone at another commit is fetched and switched, never deleted; a folder that is not a clone is left alone (error: move it away). Each git command times out after 900 s. |
 
-Google Drive is **not** a source in v1. TwinLiteNet+ pretrained weights are
-on the upstream Google Drive, so they are declared `UserProvided` with the
-download command in the hint (see 5.4).
+The TwinLiteNet+ pretrained weights (`pretrained/<variant>.pth`) are
+`GoogleDriveAsset`s (see 5.4): Prepare downloads them into the pinned clone.
+A file whose target lies inside a declared clone's folder is fetched only
+after that clone is ready (code first; otherwise it fails "not downloaded:
+it goes inside code:<name>, which is not ready"), so a download never creates
+the folder that `git clone` would then refuse.
+
+**Limitation of the Drive source.** `confirm=t` skips the virus-scan page
+that Drive shows for large files, and public files under a few hundred MB
+come straight back. Drive can still answer with an HTML page (a file shared
+too often hits a daily download quota; the endpoint's behaviour is not a
+documented API): the source refuses it as above, a later Prepare retries.
+Only public files work (no Google sign-in, no token).
 
 ### 1.2 Adding a source kind
 
-A new source (Google Drive, an S3 bucket, a mirror) is two classes and two
-decorators, and never an edit of `check`, `prepare` or the web layer:
+A new source (an S3 bucket, a mirror) is two classes and two decorators,
+and never an edit of `check`, `prepare` or the web layer. Google Drive is
+the worked example (`GoogleDriveAsset` in `core/requirements.py`,
+`GoogleDriveSource` in `core/provision/sources.py`); declaring a Drive file
+in an adapter is one value:
+
+```python
+GoogleDriveAsset(
+    key="weights",
+    target="_code/Tool/pretrained/model.pth",  # under the weights root
+    file_id="1N7jNsa8P1dM-UevqPRsx6heUpN4L00FJ",  # from the share link
+    size_bytes=594_777,  # Content-Length of a verified download
+    sha256="0dd3bd73...",  # sha256sum of the same file (full 64 hex digits)
+    license="MIT",
+    manual="https://drive.google.com/drive/folders/<folder id>",  # shown on failure
+    known=True,  # only for a fixed id at its canonical target
+)
+```
+
+A new kind:
 
 ```python
 # a stdlib-only module (no framework imports)
 from dataclasses import dataclass
 from det_depth_distance.core.requirements import Asset, AssetState, register_asset_kind
 
-@register_asset_kind("gdrive")
+@register_asset_kind("s3")
 @dataclass(frozen=True, kw_only=True)
-class GoogleDriveAsset(Asset):
-    file_id: str
+class S3Asset(Asset):
+    bucket: str
+    key_name: str
     sha256: str | None = None
 
     def describe_source(self) -> str:      # shown in the UI "source" column
-        return "Google Drive"
+        return f"S3 · {self.bucket}"
 
     def present(self, root) -> AssetState:  # ready / missing / partial
         ...
@@ -117,8 +147,8 @@ class GoogleDriveAsset(Asset):
 # core/provision/__init__.py imports, so it is registered before any Prepare)
 from det_depth_distance.core.provision.engine import ProvisionError, register_source
 
-@register_source(GoogleDriveAsset)
-class GoogleDriveSource:
+@register_source(S3Asset)
+class S3Source:
     def prepare(self, asset, root, progress, cancel) -> None:
         # write through core.requirements.contained(root, ...) to "<target>.part",
         # call progress(done, total), check cancel between chunks (raise
@@ -173,7 +203,7 @@ under `<root>/_code/<name>/`.
 | DA3 (`depth`, `camera.estimate`), SAM family, SegFormer | `weights/hf` (Hugging Face cache layout) | Hugging Face: the weights file + `*.json` |
 | RF-DETR (`variant`) | `weights/rfdetr/<library file name>` | the URL table of the `rfdetr` library |
 | YOLO, Ultralytics SAM (`weights`) | `weights/ultralytics/<file>` for a bare file name | `ultralytics/assets` v8.4.0 for published names; any other file is user-provided |
-| TwinLiteNet+ (`repo`) | `weights/_code/TwinLiteNetPlus` (pinned clone) | git; `pretrained/<variant>.pth` is user-provided (Google Drive) |
+| TwinLiteNet+ (`repo`) | `weights/_code/TwinLiteNetPlus` (pinned clone) | git; `pretrained/<variant>.pth` from Google Drive (size and sha256 pinned, `docs/task_0028.md`) |
 
 Sources, sizes and licences of every declared file are recorded in
 `docs/task_0021.md`. Nothing is downloaded at run time (DA3 included: a
@@ -335,11 +365,11 @@ The CLI prepares any repo the user typed (local trust).
 
 **User-provided files** (`reason: "user_provided"`). When everything a
 Prepare can fetch is there and only files the user must provide are missing
-(TwinLiteNet+ `pretrained/<variant>.pth`, a custom YOLO `.pt`), the row is not
+(a custom YOLO `.pt`, a TwinLiteNet+ `weights` file with another name than `<variant>.pth`), the row is not
 preparable: its message is the manual-download hint, Prepare all lists it
 under `skipped`, naming it is a 422, and Process stays locked until the file
-exists. A Prepare that fetched the rest (for example the TwinLiteNet+ clone)
-ends `done`, not `failed`, and the row then shows the hint.
+exists. A Prepare that fetched the rest ends `done`, not `failed`, and the
+row then shows the hint.
 
 **Existing files of another size.** A file at a target whose size or sha256
 differs from the declaration is the user's (a fine-tuned checkpoint saved
@@ -358,25 +388,31 @@ licence at https://huggingface.co/<repo> and set HF_TOKEN (or run
 `hf auth login`)". Start the server with `HF_TOKEN` exported (or log in
 first) to prepare a gated model from the web.
 
-### 5.4 The manual step: TwinLiteNet+ weights
+### 5.4 TwinLiteNet+ weights (Google Drive, automatic)
 
-TwinLiteNet+ (`semantic` type `twinlitenet`) is a pinned clone (Prepare
-clones it) plus `pretrained/<variant>.pth`, which is on the upstream Google
-Drive and is **user-provided**. Run Prepare (or `--prepare`) **first**, so
-that the clone exists (Prepare refuses to clone over a folder that is not a
-git clone), then download the file into the clone. For `variant: small` the
-status message carries the exact command; for example, with the default
-root:
+TwinLiteNet+ (`semantic` type `twinlitenet`) is a pinned clone plus
+`pretrained/<variant>.pth`, which upstream publishes only in a public Google
+Drive folder
+(`https://drive.google.com/drive/folders/1EqBzUw0b17aEumZmWYrGZmbx_XJqU-vz`).
+Prepare (web or `--prepare`) clones the repository first, then downloads the
+file into `<weights root>/_code/TwinLiteNetPlus/pretrained/` with the Google
+Drive source; the file id, size and sha256 of each variant are fixed in the
+adapter (`TWINLITENET_WEIGHTS`, verified in `docs/task_0028.md`):
 
-```bash
-mkdir -p weights/_code/TwinLiteNetPlus/pretrained
-curl -fL -o weights/_code/TwinLiteNetPlus/pretrained/small.pth \
-  "https://drive.usercontent.google.com/download?id=1N7jNsa8P1dM-UevqPRsx6heUpN4L00FJ&export=download&confirm=t"
-```
+| Variant | Drive file id | Bytes |
+|---|---|---|
+| `nano` | `1SvD03WZOq8eN4X0bMFNZyzj4upZM1QVl` | 217 395 |
+| `small` | `1N7jNsa8P1dM-UevqPRsx6heUpN4L00FJ` | 594 777 |
+| `medium` | `121z9XUh7_lgze8i6nS6Ne2HQ7ZG5_uG9` | 2 054 463 |
+| `large` | `1H8P-GrOUBOaVs5LEqXBfz0dC9gguUUio` | 7 959 943 |
 
-For the other variants the message links the upstream Drive folder
-(`https://drive.google.com/drive/folders/1EqBzUw0b17aEumZmWYrGZmbx_XJqU-vz`):
-save `<variant>.pth` at the path it names.
+The web prepares it only at that canonical place (`known`); a `weights`
+path elsewhere in the root named `<variant>.pth`, or a `repo` the YAML names,
+is prepared by the CLI only, and a file with another name is user-provided.
+Licence: the repository is MIT; the Drive files carry no licence of their
+own, so the repository's is assumed. If Drive answers with a confirmation or
+quota page, Prepare fails with that message: retry later, or save
+`<variant>.pth` from the folder above at the path the message names.
 
 ---
 

@@ -152,6 +152,38 @@ def _sha256(path: Path) -> str:
     return digest.hexdigest()
 
 
+def _single_file_state(asset: Asset, sha256: str | None, root: Path) -> AssetState:
+    """`present` of a single downloaded file (URL, Google Drive): an existing
+    target must match the declared size and sha256 (else "invalid": it is the
+    user's, never downloaded over); a `.part` alone is "partial"."""
+    path = asset.path(root)
+    # An existing target is checked first: one that is not the declared
+    # file is the user's, never "partial" (which would download over it).
+    if path.exists() or path.is_symlink():
+        if not path.is_file():
+            return AssetState(
+                "invalid",
+                f"{asset.key}: {asset.target} exists and is not a file; {_MOVE_IT}",
+            )
+        size = path.stat().st_size
+        if asset.size_bytes is not None and size != asset.size_bytes:
+            return AssetState(
+                "invalid",
+                f"{asset.key}: exists with a different size at {asset.target} "
+                f"({size} bytes, expected {asset.size_bytes}); {_MOVE_IT}",
+            )
+        if sha256 is not None and _sha256(path) != sha256.lower():
+            return AssetState(
+                "invalid",
+                f"{asset.key}: exists with a different sha256 at "
+                f"{asset.target}; {_MOVE_IT}",
+            )
+        return AssetState("ready")
+    if path.with_name(path.name + ".part").exists():
+        return AssetState("partial", f"{asset.key}: unfinished download (.part)")
+    return AssetState("missing", f"{asset.key}: {asset.target} not found")
+
+
 @register_asset_kind("url")
 @dataclass(frozen=True, kw_only=True)
 class UrlAsset(Asset):
@@ -165,32 +197,38 @@ class UrlAsset(Asset):
         return urlsplit(self.url).hostname or self.url
 
     def present(self, root: Path) -> AssetState:
-        path = self.path(root)
-        # An existing target is checked first: one that is not the declared
-        # file is the user's, never "partial" (which would download over it).
-        if path.exists() or path.is_symlink():
-            if not path.is_file():
-                return AssetState(
-                    "invalid",
-                    f"{self.key}: {self.target} exists and is not a file; {_MOVE_IT}",
-                )
-            size = path.stat().st_size
-            if self.size_bytes is not None and size != self.size_bytes:
-                return AssetState(
-                    "invalid",
-                    f"{self.key}: exists with a different size at {self.target} "
-                    f"({size} bytes, expected {self.size_bytes}); {_MOVE_IT}",
-                )
-            if self.sha256 is not None and _sha256(path) != self.sha256.lower():
-                return AssetState(
-                    "invalid",
-                    f"{self.key}: exists with a different sha256 at "
-                    f"{self.target}; {_MOVE_IT}",
-                )
-            return AssetState("ready")
-        if path.with_name(path.name + ".part").exists():
-            return AssetState("partial", f"{self.key}: unfinished download (.part)")
-        return AssetState("missing", f"{self.key}: {self.target} not found")
+        return _single_file_state(self, self.sha256, root)
+
+
+# A Drive file id: letters, digits, "_" and "-" only (never a URL or a query).
+_DRIVE_ID_RE = re.compile(r"[A-Za-z0-9_-]{10,}")
+
+
+@register_asset_kind("gdrive")
+@dataclass(frozen=True, kw_only=True)
+class GoogleDriveAsset(Asset):
+    """One public Google Drive file, by `file_id`; downloaded like a URL
+    asset (see `provision.sources.GoogleDriveSource`) and ready under the
+    same rules: `size_bytes` and `sha256`, when declared, must match.
+    `manual` is shown when Drive answers with a confirmation or quota page
+    (where to download the file by hand, e.g. the upstream folder)."""
+
+    file_id: str
+    sha256: str | None = None
+    manual: str | None = None
+
+    def __post_init__(self) -> None:
+        if not _DRIVE_ID_RE.fullmatch(self.file_id):
+            raise UnsafePathError(
+                f"{self.key}: Google Drive file id {self.file_id!r} must be 10 or "
+                "more letters, digits, '_' or '-'"
+            )
+
+    def describe_source(self) -> str:
+        return f"Google Drive file {self.file_id}"
+
+    def present(self, root: Path) -> AssetState:
+        return _single_file_state(self, self.sha256, root)
 
 
 @register_asset_kind("user")

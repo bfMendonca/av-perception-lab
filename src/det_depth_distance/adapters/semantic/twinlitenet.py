@@ -15,9 +15,13 @@ Location: `repo` defaults to the pinned clone `<weights root>/_code/
 TwinLiteNetPlus` (declared as a `CodeRepo`, cloned by `--prepare`); any other
 clone (e.g. `~/dev/TwinLiteNetPlus`) is an explicit override and is not
 declared when it is outside the weights root. The pretrained files are not in
-the git repository (upstream serves them from Google Drive, not a v1 source),
-so `pretrained/<variant>.pth` is declared `UserProvided` with the download
-hint.
+the git repository: upstream serves them from a public Google Drive folder, so
+`pretrained/<variant>.pth` is a `GoogleDriveAsset` (file id, size and sha256 in
+`TWINLITENET_WEIGHTS`, verified in task_0028) that Prepare downloads into the
+clone once the clone is ready. It is `known` (web-preparable) only at the
+canonical place `<weights root>/_code/TwinLiteNetPlus/pretrained/<variant>.pth`
+of the pinned clone; a `<variant>.pth` elsewhere in the root is prepared by the
+CLI only, and any other file name in the root is `UserProvided`.
 """
 
 import importlib
@@ -37,6 +41,7 @@ from det_depth_distance.core.registry import register
 from det_depth_distance.core.requirements import (
     CODE_DIR,
     CodeRepo,
+    GoogleDriveAsset,
     Requirements,
     UserProvided,
     weights_root,
@@ -52,15 +57,39 @@ TWINLITENET_REPO = CodeRepo(
     commit="90f1b8695ae311d5123b05f8534b2e11e42499d2",
     known=True,  # fixed here, cloned to its fixed folder
 )
-# Google Drive downloads of the upstream README (line 87 of the clone): the
-# folder of every variant, and the file id of `small`.
-_DRIVE_FOLDER = (
+# The upstream README's "Pre-trained Model" link (line 87 of the clone): the
+# public Drive folder of every variant (shown for a manual download).
+DRIVE_FOLDER = (
     "https://drive.google.com/drive/folders/1EqBzUw0b17aEumZmWYrGZmbx_XJqU-vz"
 )
-_SMALL_URL = (
-    "https://drive.usercontent.google.com/download?"
-    "id=1N7jNsa8P1dM-UevqPRsx6heUpN4L00FJ&export=download&confirm=t"
-)
+# The repository is MIT (LICENSE of the pinned clone, (c) 2025 Che Quang Huy);
+# the Drive files carry no licence of their own: the repository's is assumed.
+WEIGHTS_LICENSE = "MIT"
+# variant -> (Drive file id, bytes, sha256): ids from the folder listing,
+# sizes from Content-Length, sha256 of the downloaded files, equal to the
+# author's local copies (task_0028, 2026-11-01).
+TWINLITENET_WEIGHTS: dict[str, tuple[str, int, str]] = {
+    "nano": (
+        "1SvD03WZOq8eN4X0bMFNZyzj4upZM1QVl",
+        217_395,
+        "4b76d7fe57b86a7f0583f8a07fcd767a60177fc9b054386161e1c3e12a492129",
+    ),
+    "small": (
+        "1N7jNsa8P1dM-UevqPRsx6heUpN4L00FJ",
+        594_777,
+        "0dd3bd7356a5b70e1d21ae60cd09b55641b48bde738393177f94daff17ab6360",
+    ),
+    "medium": (
+        "121z9XUh7_lgze8i6nS6Ne2HQ7ZG5_uG9",
+        2_054_463,
+        "04a7959946f687482256d1a499ee4e0ab5d523e9c1760be41e7e797dc65066ff",
+    ),
+    "large": (
+        "1H8P-GrOUBOaVs5LEqXBfz0dC9gguUUio",
+        7_959_943,
+        "5605d1a8ce762c1b6f7d23f4c2e7ec9384bfd6e6887b040b43e1f8902a817e22",
+    ),
+}
 
 
 def default_repo() -> Path:
@@ -68,12 +97,17 @@ def default_repo() -> Path:
     return weights_root() / CODE_DIR / TWINLITENET_REPO.name
 
 
+def canonical_weights_target(variant: str) -> str:
+    """Target (relative to the weights root) of `<variant>.pth` in the
+    pinned clone: the only place where the Drive asset is `known`."""
+    return f"{CODE_DIR}/{TWINLITENET_REPO.name}/pretrained/{variant}.pth"
+
+
 def _weights_hint(variant: str, path: Path) -> str:
-    if variant == "small":
-        return f'manual download (Google Drive): curl -fL -o {path} "{_SMALL_URL}"'
     return (
-        f"manual download (Google Drive, not fetched by --prepare): get "
-        f"{variant}.pth from {_DRIVE_FOLDER} and save it as {path}"
+        f"run `det-depth-distance --config <yaml> --prepare` (downloads "
+        f"{variant}.pth from Google Drive), or get {variant}.pth from "
+        f"{DRIVE_FOLDER} and save it as {path}"
     )
 
 
@@ -105,23 +139,41 @@ class TwinLiteNetSegmenter(SemanticSegmenter):
     @classmethod
     def requirements(cls, options: Options) -> Requirements:
         """The pinned clone (default repo only) and the pretrained file, each
-        declared when it lies inside the weights root."""
+        declared when it lies inside the weights root: `<variant>.pth` is the
+        Google Drive file of `TWINLITENET_WEIGHTS` (known only at its
+        canonical place in the pinned clone), any other file is
+        `UserProvided`."""
         repo = _repo(options)
         weights = _weights(options, repo)
         code = (TWINLITENET_REPO,) if options.repo is None else ()
         target = under_root(weights)
-        assets = (
-            ()
-            if target is None
-            else (
+        assets: tuple = ()
+        if target is not None and weights.name == f"{options.variant}.pth":
+            file_id, size, sha256 = TWINLITENET_WEIGHTS[options.variant]
+            assets = (
+                GoogleDriveAsset(
+                    key="weights",
+                    target=target,
+                    file_id=file_id,
+                    size_bytes=size,
+                    sha256=sha256,
+                    license=WEIGHTS_LICENSE,
+                    manual=DRIVE_FOLDER,
+                    known=options.repo is None
+                    and target == canonical_weights_target(options.variant),
+                ),
+            )
+        elif target is not None:
+            assets = (
                 UserProvided(
                     key="weights",
                     target=target,
                     option="weights",
-                    hint=_weights_hint(options.variant, weights),
+                    hint=f"provide your TwinLiteNet+ {options.variant} weights at "
+                    f"{weights} (or use the published {options.variant}.pth: "
+                    f"{DRIVE_FOLDER})",
                 ),
             )
-        )
         return Requirements(
             assets=assets, code=code, packages=("torch",), extra=INFER_EXTRA
         )

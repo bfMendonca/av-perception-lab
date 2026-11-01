@@ -9,7 +9,10 @@ decorator and never an edit of `prepare`. Built-in sources live in
 `prepare` is framework-free and runs in the calling thread (a web layer wraps
 it in its own thread): it checks first (a ready requirement is a no-op, no
 source is called), runs the source of every non-ready code repo and asset,
-then checks again. Sources raise `ProvisionError` with a readable reason
+then checks again. Code repos come first, and an asset whose target lies
+inside a declared clone's folder (TwinLiteNet+ `pretrained/*.pth`) is only
+fetched once that clone is ready (otherwise it fails "not downloaded": the
+file would create the folder and `git clone` would refuse it). Sources raise `ProvisionError` with a readable reason
 (offline, HTTP 404, gated, sha256 mismatch); `prepare` never raises for those
 and returns a `ModelStatus` whose state is "failed" with the reasons joined in
 `message`. An item whose kind is not downloadable (`Asset.downloadable`
@@ -35,6 +38,7 @@ from typing import TYPE_CHECKING, Any, Protocol
 
 from det_depth_distance.core.requirements import (
     AssetState,
+    CodeRepo,
     ModelStatus,
     Requirements,
     UnsafePathError,
@@ -111,6 +115,26 @@ def _present(item: Any, root: Path) -> AssetState:
 UNKNOWN_SOURCE = "unknown source: prepare it from the CLI (--prepare)"
 
 
+def _unready_clone_around(item: Any, req: Requirements, root: Path) -> str | None:
+    """Name of a declared code repo whose folder contains `item`'s target
+    and is not ready, else None. Such a file waits for the clone: writing it
+    first would create the folder and make `git clone` refuse it."""
+    if isinstance(item, CodeRepo) or not hasattr(item, "path"):
+        return None
+    try:
+        target = item.path(root)
+    except (UnsafePathError, ValueError, OSError):
+        return None
+    for repo in req.code:
+        try:
+            folder = repo.path(root)
+        except (UnsafePathError, ValueError, OSError):
+            continue
+        if target.is_relative_to(folder) and _present(repo, root).state != "ready":
+            return repo.name
+    return None
+
+
 def prepare(
     req: Requirements,
     root: Path | None,
@@ -155,6 +179,13 @@ def prepare(
         downloadable = getattr(type(item), "downloadable", True)
         if downloadable and not allow_unknown and not getattr(item, "known", False):
             failures.append(f"{label}: {UNKNOWN_SOURCE}")
+            continue
+        waiting = _unready_clone_around(item, req, root)
+        if waiting is not None:
+            failures.append(
+                f"{label}: not downloaded: it goes inside code:{waiting}, "
+                "which is not ready (the clone comes first)"
+            )
             continue
         source = source_for(item)
         if source is None:

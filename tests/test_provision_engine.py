@@ -20,6 +20,7 @@ from det_depth_distance.core.provision import (
 from det_depth_distance.core.requirements import (
     Asset,
     AssetState,
+    CodeRepo,
     Requirements,
     UrlAsset,
 )
@@ -248,3 +249,54 @@ def test_non_downloadable_item_is_reported_not_failed(tmp_path, sources):
     assert status.state == "missing"
     assert status.message == "manual: provide this file: put m/file.pth there"
     assert (tmp_path / "b/fixed.bin").is_file()
+
+
+# --- clone before the files that go inside it (task_0028) --------------------
+
+
+@dataclass(frozen=True, kw_only=True)
+class _FakeRepo(CodeRepo):
+    """A code repo whose clone is a folder with a `.git` marker file."""
+
+    def present(self, root: Path) -> AssetState:
+        ok = (self.path(root) / ".git").is_file()
+        return AssetState("ready") if ok else AssetState("missing", "not cloned")
+
+
+class _FakeGit:
+    fail = False
+    seen_folder_before: ClassVar[list[bool]] = []
+
+    def prepare(self, repo, root, progress, cancel) -> None:
+        path = repo.path(root)
+        # A folder created before the clone would make `git clone` refuse it.
+        _FakeGit.seen_folder_before.append(path.exists())
+        if _FakeGit.fail:
+            raise ProvisionError("git clone failed: offline")
+        path.mkdir(parents=True)
+        (path / ".git").write_text("x")
+
+
+@pytest.mark.parametrize("fail", [False, True])
+def test_file_inside_a_clone_waits_for_the_clone(tmp_path, sources, fail):
+    register_source(_BlobAsset)(_BlobSource)
+    register_source(_FakeRepo)(_FakeGit)
+    _FakeGit.fail, _FakeGit.seen_folder_before = fail, []
+    repo = _FakeRepo(name="Tool", url="https://h/t.git", commit="a" * 40)
+    inside = _BlobAsset(key="weights", target="_code/Tool/pretrained/w.pth")
+    outside = _BlobAsset(key="other", target="elsewhere/o.bin")
+    # Assets listed first: the engine still runs the code layer first.
+    req = Requirements(assets=(inside, outside), code=(repo,))
+    status = prepare(req, tmp_path, _none, threading.Event())
+    assert _FakeGit.seen_folder_before == [False]
+    assert (tmp_path / "elsewhere/o.bin").is_file()
+    if fail:
+        assert status.state == "failed"
+        assert "code:Tool: git clone failed: offline" in status.message
+        assert "weights: not downloaded: it goes inside code:Tool" in status.message
+        assert not (tmp_path / "_code/Tool").exists()  # the next clone can run
+        assert _BlobSource.calls == ["other"]
+    else:
+        assert status.state == "ready", status.message
+        assert (tmp_path / "_code/Tool/pretrained/w.pth").is_file()
+        assert _BlobSource.calls == ["weights", "other"]

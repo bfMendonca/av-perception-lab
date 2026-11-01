@@ -18,7 +18,11 @@ from det_depth_distance.adapters._hf_hub import HF_FACTS
 from det_depth_distance.adapters._ultralytics import ULTRALYTICS_ASSETS
 from det_depth_distance.adapters.depth import da3
 from det_depth_distance.adapters.detectors import rfdetr as rfdetr_adapter
-from det_depth_distance.adapters.semantic.twinlitenet import TWINLITENET_REPO
+from det_depth_distance.adapters.semantic.twinlitenet import (
+    DRIVE_FOLDER,
+    TWINLITENET_REPO,
+    TWINLITENET_WEIGHTS,
+)
 from det_depth_distance.config import load_config
 from det_depth_distance.core import registry
 from det_depth_distance.core.components import Component, LoadContext
@@ -26,6 +30,7 @@ from det_depth_distance.core.options import ConfigError
 from det_depth_distance.core.provision import prepare, sources
 from det_depth_distance.core.requirements import (
     CodeRepo,
+    GoogleDriveAsset,
     HuggingFaceAsset,
     Requirements,
     UrlAsset,
@@ -232,18 +237,21 @@ def test_twinlitenet_declares_pinned_clone(root):
     assert code.url == "https://github.com/chequanghuy/TwinLiteNetPlus"
     assert code.commit.startswith("90f1b86") and len(code.commit) == 40
     assert code.path(root) == root / "_code" / "TwinLiteNetPlus"
-    (weights,) = req.assets  # not in the git repo upstream: user-provided
-    assert isinstance(weights, UserProvided)
+    # Not in the git repo upstream: the public Google Drive file, pinned.
+    (weights,) = req.assets
+    assert isinstance(weights, GoogleDriveAsset) and weights.downloadable
     assert weights.target == "_code/TwinLiteNetPlus/pretrained/small.pth"
-    assert "drive.usercontent.google.com" in weights.hint
-    assert weights.hint.startswith("manual download")
-    large = _build("semantic", "twinlitenet")  # variant large: the folder link
-    (large_weights,) = type(large).requirements(large.options).assets
-    assert large_weights.hint.startswith("manual download")
-    assert (
-        "https://drive.google.com/drive/folders/1EqBzUw0b17aEumZmWYrGZmbx_XJqU-vz"
-        in large_weights.hint
-    )
+    assert weights.file_id == "1N7jNsa8P1dM-UevqPRsx6heUpN4L00FJ"
+    assert (weights.size_bytes, weights.sha256) == TWINLITENET_WEIGHTS["small"][1:]
+    assert weights.known and weights.license == "MIT"
+    assert weights.describe_source() == f"Google Drive file {weights.file_id}"
+    assert weights.manual == DRIVE_FOLDER
+    for variant, (file_id, size, sha) in TWINLITENET_WEIGHTS.items():
+        other = _build("semantic", "twinlitenet", variant=variant)
+        (asset,) = type(other).requirements(other.options).assets
+        assert isinstance(asset, GoogleDriveAsset) and asset.known, variant
+        assert (asset.file_id, asset.size_bytes, asset.sha256) == (file_id, size, sha)
+        assert asset.target == f"_code/TwinLiteNetPlus/pretrained/{variant}.pth"
     assert check(req, root).layers["code"] == "missing"
     with pytest.raises(
         ConfigError, match=r"^repo: no TwinLiteNetPlus clone.*--prepare"
@@ -389,6 +397,25 @@ def test_known_only_for_the_canonical_target_of_each_table(root):
     assert TWINLITENET_REPO.known
     twin = _assets("semantic", "twinlitenet")
     assert twin.code == (TWINLITENET_REPO,)
+    assert twin.assets[0].known  # <root>/_code/TwinLiteNetPlus/pretrained/large.pth
+    # The Drive file at another place in the root, or in a clone the YAML
+    # names: CLI only. Another file name: the user's.
+    (moved,) = _assets(
+        "semantic", "twinlitenet", weights=str(root / "x/large.pth")
+    ).assets
+    assert isinstance(moved, GoogleDriveAsset) and moved.known is False
+    other_repo = _assets("semantic", "twinlitenet", repo=str(root / "_code/mine"))
+    assert other_repo.code == ()
+    assert other_repo.assets[0].target == "_code/mine/pretrained/large.pth"
+    assert other_repo.assets[0].known is False
+    same_place = _assets(
+        "semantic", "twinlitenet", repo=str(root / "_code/TwinLiteNetPlus")
+    )
+    assert same_place.code == () and same_place.assets[0].known is False
+    (custom,) = _assets(
+        "semantic", "twinlitenet", weights=str(root / "x/finetuned.pth")
+    ).assets
+    assert isinstance(custom, UserProvided)
     # Hostile in-root targets: a release name in another folder, a known repo
     # in another cache folder.
     for hostile in (

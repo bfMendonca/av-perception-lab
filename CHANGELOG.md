@@ -4,6 +4,42 @@ Todas as mudancas relevantes do det-depth-distance serao documentadas neste arqu
 
 ---
 
+## [2026-11-01] Google Drive source: TwinLiteNet+ weights are prepared automatically
+
+Prepare (CLI `--prepare` and the web "Prepare model") now downloads the
+TwinLiteNet+ pretrained weights from the upstream Google Drive folder
+(task_0028).
+
+### Added
+
+- Asset kind `GoogleDriveAsset(file_id, sha256, manual)` (`gdrive`) and its
+  source `GoogleDriveSource`: the fixed endpoint
+  `drive.usercontent.google.com/download?id=<id>&export=download&confirm=t`,
+  the URL source's rules (`.part` + atomic rename, Range/If-Range resume,
+  size and sha256 checked before the rename, size cap, free-disk check,
+  cancel, never over an existing file), redirects only over https to
+  `drive.usercontent.google.com`, `drive.google.com` or
+  `*.googleusercontent.com`. An HTML answer (confirmation or quota page) is
+  refused with "Google Drive returned a confirmation or quota page instead of
+  the file; try again later or download it manually from <folder>" and never
+  saved.
+
+### Changed
+
+- TwinLiteNet+ `pretrained/<variant>.pth` (nano/small/medium/large) is a
+  `GoogleDriveAsset` with pinned file id, size and sha256 (verified against
+  the author's copies), licence MIT; `known` (web-preparable) only at
+  `<weights root>/_code/TwinLiteNetPlus/pretrained/<variant>.pth` of the
+  pinned clone. A `weights` file with another name stays user-provided; the
+  `repo`/`weights` overrides keep working.
+- The provisioning engine fetches a file whose target lies inside a declared
+  clone's folder only once that clone is ready, so a download never blocks
+  `git clone`.
+- `UrlSource` and `GoogleDriveSource` share one download implementation
+  (`_HttpFileSource`); the URL source behaves as before.
+
+---
+
 ## [2026-11-01] Remove remote GPU host references and the sync script
 
 The project is now documented as running only on the local machine

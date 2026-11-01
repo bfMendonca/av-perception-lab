@@ -13,6 +13,7 @@ import subprocess
 import sys
 import threading
 import time
+import urllib.parse
 from pathlib import Path
 
 import pytest
@@ -25,6 +26,7 @@ from det_depth_distance.core.provision import (
 from det_depth_distance.core.provision import sources as src
 from det_depth_distance.core.requirements import (
     CodeRepo,
+    GoogleDriveAsset,
     HuggingFaceAsset,
     Requirements,
     UrlAsset,
@@ -730,3 +732,222 @@ def test_free_disk_space_is_checked_before_writing(tmp_path, server, monkeypatch
     assert "not enough free disk space" in status.message
     part = tmp_path / "fam/model/w.bin.part"
     assert not part.exists() or part.stat().st_size == 0
+
+
+# --------------------------------------------------------------- Google Drive
+# A local server emulating `drive.usercontent.google.com/download` (task_0028):
+# the file id picks the behaviour. Tests never touch the real network.
+
+DRIVE_FILE = "goodfile0001"
+DRIVE_PAGE = (
+    b"<!DOCTYPE html><html><head><title>Google Drive - Virus scan warning"
+    b"</title></head><body>Google Drive can't scan this file</body></html>"
+)
+
+
+class _DriveHandler(http.server.BaseHTTPRequestHandler):
+    server: _Server
+
+    def log_message(self, *args) -> None:
+        pass
+
+    def do_GET(self) -> None:
+        srv = self.server
+        parts = urllib.parse.urlsplit(self.path)
+        query = urllib.parse.parse_qs(parts.query)
+        srv.ranges.append(self.headers.get("Range"))
+        srv.if_ranges.append(query.get("confirm", [None])[0])
+        file_id = query.get("id", [""])[0]
+        port = srv.server_address[1]
+        if parts.path != "/download" or query.get("export") != ["download"]:
+            self.send_error(400)
+            return
+        if file_id in ("htmlpage0001", "htmlbody0001"):
+            self.send_response(200)
+            kind = (
+                "text/html; charset=utf-8"
+                if file_id == "htmlpage0001"
+                else ("application/octet-stream")
+            )
+            self.send_header("Content-Type", kind)
+            self.send_header("Content-Length", str(len(DRIVE_PAGE)))
+            self.end_headers()
+            self.wfile.write(DRIVE_PAGE)
+            return
+        if file_id in ("quotaredir01", "sameredir001"):
+            host = "localhost" if file_id == "quotaredir01" else "127.0.0.1"
+            self.send_response(302)
+            self.send_header(
+                "Location",
+                f"http://{host}:{port}/download?id={DRIVE_FILE}&export=download",
+            )
+            self.send_header("Content-Length", "0")
+            self.end_headers()
+            return
+        if file_id == "quota0000001":
+            self.send_error(429, "Too Many Requests")
+            return
+        if file_id != DRIVE_FILE:
+            self.send_error(404)
+            return
+        start = 0
+        header = self.headers.get("Range")
+        if header and self.headers.get("If-Range") == ETAG:
+            start = int(header.removeprefix("bytes=").split("-")[0])
+            self.send_response(206)
+            self.send_header(
+                "Content-Range", f"bytes {start}-{len(DATA) - 1}/{len(DATA)}"
+            )
+        else:
+            self.send_response(200)
+        body = DATA[start:]
+        self.send_header("Content-Type", "application/octet-stream")
+        self.send_header("Content-Length", str(len(body)))
+        self.send_header("ETag", ETAG)
+        self.end_headers()
+        self.wfile.write(body)
+
+
+@pytest.fixture
+def drive(monkeypatch):
+    """The emulated endpoint; the source accepts http and 127.0.0.1 only here."""
+    srv = _Server(("127.0.0.1", 0), _DriveHandler)
+    srv.ranges, srv.if_ranges = [], []
+    thread = threading.Thread(target=srv.serve_forever, daemon=True)
+    thread.start()
+    port = srv.server_address[1]
+    monkeypatch.setattr(
+        src.GoogleDriveSource, "endpoint", f"http://127.0.0.1:{port}/download"
+    )
+    monkeypatch.setattr(src.GoogleDriveSource, "hosts", ("127.0.0.1",))
+    monkeypatch.setattr(src.GoogleDriveSource, "schemes", ("http", "https"))
+    yield srv
+    srv.shutdown()
+    srv.server_close()
+
+
+def _drive_asset(file_id: str = DRIVE_FILE, **kw) -> GoogleDriveAsset:
+    return GoogleDriveAsset(
+        key="weights",
+        target="_code/T/pretrained/w.pth",
+        file_id=file_id,
+        manual="https://drive.google.com/drive/folders/FOLDER",
+        **({"size_bytes": len(DATA), "sha256": SHA} | kw),
+    )
+
+
+def _drive_prepare(tmp_path, asset) -> None:
+    src.GoogleDriveSource().prepare(
+        asset, tmp_path, lambda d, t: None, threading.Event()
+    )
+
+
+def test_drive_source_builds_the_fixed_endpoint_url():
+    asset = _drive_asset("1N7jNsa8P1dM-UevqPRsx6heUpN4L00FJ")
+    assert src.GoogleDriveSource()._url(asset) == (
+        "https://drive.usercontent.google.com/download?"
+        "id=1N7jNsa8P1dM-UevqPRsx6heUpN4L00FJ&export=download&confirm=t"
+    )
+    from det_depth_distance.core.provision import source_for
+
+    assert isinstance(source_for(asset), src.GoogleDriveSource)
+
+
+def test_drive_source_downloads_and_verifies(tmp_path, drive):
+    _drive_prepare(tmp_path, _drive_asset())
+    target = tmp_path / "_code/T/pretrained/w.pth"
+    assert target.read_bytes() == DATA
+    assert not target.with_name("w.pth.part").exists()
+    assert not target.with_name("w.pth.part.meta").exists()
+    assert drive.if_ranges == ["t"]  # confirm=t is always sent
+
+
+def test_drive_source_through_the_engine_is_ready(tmp_path, drive):
+    req = Requirements(assets=(_drive_asset(),))
+    status = prepare(req, tmp_path, _no_progress, threading.Event())
+    assert status.state == "ready", status.message
+
+
+@pytest.mark.parametrize("file_id", ["htmlpage0001", "htmlbody0001"])
+def test_drive_html_page_is_refused_and_never_saved(tmp_path, drive, file_id):
+    # Even without a declared size or sha256 the page is never the file.
+    asset = _drive_asset(file_id, size_bytes=None, sha256=None)
+    with pytest.raises(ProvisionError) as info:
+        _drive_prepare(tmp_path, asset)
+    message = str(info.value)
+    assert message.startswith(
+        "Google Drive returned a confirmation or quota page instead of the file"
+    )
+    assert "https://drive.google.com/drive/folders/FOLDER" in message
+    folder = tmp_path / "_code/T/pretrained"
+    assert sorted(p.name for p in folder.iterdir()) == []
+
+
+def test_drive_404_and_quota_are_readable(tmp_path, drive):
+    with pytest.raises(
+        ProvisionError, match=r"not found \(HTTP 404\) at Google Drive file nosuchfile1"
+    ):
+        _drive_prepare(tmp_path, _drive_asset("nosuchfile1"))
+    with pytest.raises(ProvisionError, match="HTTP 429") as info:
+        _drive_prepare(tmp_path, _drive_asset("quota0000001"))
+    assert (
+        "download it manually from https://drive.google.com/drive/folders/FOLDER"
+        in str(info.value)
+    )
+    assert not (tmp_path / "_code/T/pretrained/w.pth").exists()
+
+
+def test_drive_redirect_to_another_host_is_refused(tmp_path, drive):
+    with pytest.raises(
+        ProvisionError, match="host localhost is not a Google Drive"
+    ) as info:
+        _drive_prepare(tmp_path, _drive_asset("quotaredir01"))
+    assert "export=download" not in str(info.value)  # no URL (signed queries)
+    assert not (tmp_path / "_code/T/pretrained/w.pth").exists()
+    _drive_prepare(tmp_path, _drive_asset("sameredir001"))  # an allowed host
+    assert (tmp_path / "_code/T/pretrained/w.pth").read_bytes() == DATA
+
+
+def test_drive_part_is_resumed_with_range(tmp_path, drive):
+    folder = tmp_path / "_code/T/pretrained"
+    folder.mkdir(parents=True)
+    (folder / "w.pth.part").write_bytes(DATA[:100_000])
+    (folder / "w.pth.part.meta").write_text(ETAG)
+    _drive_prepare(tmp_path, _drive_asset())
+    assert (folder / "w.pth").read_bytes() == DATA
+    assert drive.ranges == ["bytes=100000-"]
+
+
+def test_drive_sha_mismatch_removes_the_part(tmp_path, drive):
+    with pytest.raises(ProvisionError, match="sha256 mismatch"):
+        _drive_prepare(tmp_path, _drive_asset(sha256="0" * 64))
+    assert list((tmp_path / "_code/T/pretrained").iterdir()) == []
+
+
+def test_drive_existing_file_is_never_replaced(tmp_path, drive):
+    target = tmp_path / "_code/T/pretrained/w.pth"
+    target.parent.mkdir(parents=True)
+    target.write_bytes(b"my own weights")
+    with pytest.raises(ProvisionError, match="never replaced"):
+        _drive_prepare(tmp_path, _drive_asset())
+    assert target.read_bytes() == b"my own weights"
+    assert drive.ranges == []  # no request was made
+
+
+@pytest.mark.parametrize(
+    ("url", "refused"),
+    [
+        ("https://drive.usercontent.google.com/download?id=x", None),
+        ("https://drive.google.com/uc?id=x", None),
+        ("https://doc-0s-1c.docs.googleusercontent.com/docs/x", None),
+        ("http://drive.google.com/uc?id=x", "stay on https"),
+        ("https://evil.example/x", "not a Google Drive download host"),
+        ("https://googleusercontent.com.evil.example/x", "not a Google Drive"),
+        ("https://xgoogleusercontent.com/x", "not a Google Drive"),
+        ("https://google.com/x", "not a Google Drive"),
+    ],
+)
+def test_drive_redirect_policy(url, refused):
+    policy = src._DriveRedirect(src.DRIVE_HOSTS, src.DRIVE_HOST_SUFFIXES, ("https",))
+    why = policy._refuse(url)
+    assert (why is None) if refused is None else (refused in why)

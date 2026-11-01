@@ -464,3 +464,51 @@ def test_weights_root_problem_refuses_unsafe_roots(tmp_path, monkeypatch):
     # Dedicated folders are fine, inside the project too (the default).
     assert rq.weights_root_problem(tmp_path / "weights", (out,)) is None
     assert rq.weights_root_problem(project / "weights") is None
+
+
+# --- Google Drive kind (task_0028) ------------------------------------------
+
+
+def test_google_drive_asset_present_follows_the_url_rules(tmp_path):
+    data = b"drive weights"
+    sha = hashlib.sha256(data).hexdigest()
+    asset = rq.GoogleDriveAsset(
+        key="weights",
+        target="m/w.pth",
+        file_id="1N7jNsa8P1dM-UevqPRsx6heUpN4L00FJ",
+        size_bytes=len(data),
+        sha256=sha,
+    )
+    assert rq.asset_kinds()["gdrive"] is rq.GoogleDriveAsset
+    assert asset.downloadable and asset.known is False  # fails closed
+    assert asset.describe_source() == (
+        "Google Drive file 1N7jNsa8P1dM-UevqPRsx6heUpN4L00FJ"
+    )
+    assert asset.present(tmp_path).state == "missing"
+    path = tmp_path / "m/w.pth"
+    path.parent.mkdir()
+    path.with_name("w.pth.part").write_bytes(data)
+    assert asset.present(tmp_path).state == "partial"  # a .part is never ready
+    path.write_bytes(b"x" * len(data))  # same size, another file: the user's
+    state = asset.present(tmp_path)
+    assert state.state == "invalid" and "different sha256" in state.detail
+    path.write_bytes(b"short")
+    assert "different size" in asset.present(tmp_path).detail
+    path.write_bytes(data)
+    assert asset.present(tmp_path).state == "ready"
+
+
+@pytest.mark.parametrize(
+    "file_id",
+    [
+        "",
+        "short",
+        "1N7jNsa8P1dM?x=1",
+        "a/b/cccccccccc",
+        "https://x.y/zzzzzzzz",
+        "-" * 9,
+    ],
+)
+def test_google_drive_file_id_is_validated(file_id):
+    with pytest.raises(rq.UnsafePathError, match="Google Drive file id"):
+        rq.GoogleDriveAsset(key="w", target="w.pth", file_id=file_id)
