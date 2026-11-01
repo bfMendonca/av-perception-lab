@@ -152,9 +152,9 @@ uv run det-depth-distance-evaluate --refs refs/IMG_4100.yaml RUN_A RUN_B RUN_C -
 
 # Gráficos (precisa do matplotlib: extra eval no laptop)
 uv run --extra eval det-depth-distance-evaluate --refs refs/IMG_4100.yaml RUN_A --plot
-# No gpu-host, NUNCA --extra eval sozinho (o sync exato removeria a stack GPU);
+# Com o ambiente de inferência, NUNCA --extra eval sozinho (o sync exato removeria a stack GPU);
 # o --extra infer já traz o matplotlib:
-#   ~/.local/bin/uv run --extra infer det-depth-distance-evaluate --refs ... RUN_A --plot
+#   uv run --extra infer det-depth-distance-evaluate --refs ... RUN_A --plot
 ```
 
 Leitura do `eval.md`:

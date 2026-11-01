@@ -5,10 +5,10 @@ repositório. Protótipo de pesquisa em Python que executa um ou mais
 detectores (RF-DETR, YOLO26) e a profundidade métrica Depth Anything 3 sobre
 os mesmos quadros de um vídeo e estima, para cada caixa detectada, a distância do objeto à câmera a
 partir de estatísticas robustas dos pixels de profundidade dentro da caixa,
-gerando um vídeo anotado. A inferência roda no servidor GPU `gpu-host`
-(sincronizado por rsync) e, com o exemplo leve `configs/yolo_light_da3.yaml`,
-também na GPU de 4 GB do notebook, num ambiente isolado; o desenvolvimento e os testes unitários rodam
-localmente.
+gerando um vídeo anotado. A inferência roda na máquina local,
+com o exemplo leve `configs/yolo_light_da3.yaml` na GPU de 4 GB do notebook,
+num ambiente isolado; o desenvolvimento e os testes unitários rodam no
+ambiente leve.
 Detalhes de arquitetura, build e uso estão no `README.md`.
 
 **Language:** all new documentation and every `docs/task_DDDD.md` file are written in English (decision of 2026-10-31); existing pt-BR documents are not migrated.
@@ -39,12 +39,9 @@ documentação) não exigem atualização.
 # Local: ambiente leve (numpy, OpenCV, Pillow + pytest/ruff)
 uv sync
 
-# Servidor GPU: envia o código e instala a stack de inferência (torch cu128, rfdetr, depth-anything-3, ultralytics)
-utils/sync_gpu_host.sh push
-ssh gpu-host 'cd ~/dev/det-depth-distance && ~/.local/bin/uv sync --extra infer'
-
-# Executa o pipeline no servidor (`uv sync` sem --extra infer removeria a stack GPU)
-ssh gpu-host 'cd ~/dev/det-depth-distance && ~/.local/bin/uv run --extra infer python -m det_depth_distance --config configs/rfdetr_da3.yaml _testbed/data/VIDEO.MOV'
+# Executa o pipeline (stack de inferência: torch cu128, rfdetr, depth-anything-3, ultralytics;
+# `uv sync` sem --extra infer a removeria; ambiente isolado, ver "Notebook" abaixo)
+#   uv run --extra infer python -m det_depth_distance --config configs/rfdetr_da3.yaml _testbed/data/VIDEO.MOV
 # Ajustes rápidos sem editar o YAML; lista de adaptadores e opções
 #   ... --config configs/multi_detector.yaml --set source.max_frames=300 --set render.show_stats=true
 #   ... --list-models
@@ -56,23 +53,20 @@ ssh gpu-host 'cd ~/dev/det-depth-distance && ~/.local/bin/uv run --extra infer p
 #   uv run --extra infer python -m det_depth_distance --config configs/yolo_light_da3.yaml _testbed/data/VIDEO.MOV
 
 # Pesos dos refinadores SAM e do SegFormer: só com confirmação do usuário (~3,9 GB); vão para o
-# cache HF weights/hf (ignorado pelo git e pelo push); a execução nunca baixa nada.
-# No gpu-host, dentro do repo (lista completa e opcionais no README, "Pesos dos refinadores e do SegFormer"):
-#   ~/.local/bin/uv run --extra infer python -c "from huggingface_hub import snapshot_download as d; d('facebook/sam2.1-hiera-large', cache_dir='weights/hf', allow_patterns=['*.json', 'model.safetensors'])"
+# cache HF weights/hf (ignorado pelo git); a execução nunca baixa nada.
+# Dentro do repo (lista completa e opcionais no README, "Pesos dos refinadores e do SegFormer"):
+#   uv run --extra infer python -c "from huggingface_hub import snapshot_download as d; d('facebook/sam2.1-hiera-large', cache_dir='weights/hf', allow_patterns=['*.json', 'model.safetensors'])"
 
-# Traz as saídas de volta para o _testbed/ local
-utils/sync_gpu_host.sh pull [RUN_DIR]
-
-# Calibração e avaliação (ambiente leve, local ou no gpu-host; protocolo em
+# Calibração e avaliação (ambiente leve; protocolo em
 # docs/refs/protocolo_calibracao_e_referencias.md)
 uv run det-depth-distance-calibrate board --out _testbed/board.png              # alvo para impressão
 uv run det-depth-distance-calibrate inspect _testbed/data/VIDEO.MOV             # lente, 35 mm-eq.
 uv run det-depth-distance-calibrate calibrate _testbed/data/CALIB.MOV --square-mm 25 \
     --out configs/calibration/<aparelho>_<lente>_<modo>.yaml
 uv run det-depth-distance-evaluate --refs REFS.yaml _testbed/outputs/RUN [RUN ...] [--out DIR]
-uv sync --extra eval   # laptop, só para --plot (matplotlib); `uv sync` volta ao ambiente leve
-# No gpu-host NUNCA `--extra eval` sozinho (removeria a stack GPU): o --extra infer já traz o matplotlib
-#   ~/.local/bin/uv run --extra infer det-depth-distance-evaluate ... --plot
+uv sync --extra eval   # só para --plot (matplotlib); `uv sync` volta ao ambiente leve
+# Com o ambiente de inferência NUNCA `--extra eval` sozinho (removeria a stack GPU): o --extra infer já traz o matplotlib
+#   uv run --extra infer det-depth-distance-evaluate ... --plot
 ```
 
 ## Comandos de Teste
@@ -81,18 +75,18 @@ uv sync --extra eval   # laptop, só para --plot (matplotlib); `uv sync` volta a
 uv run pytest                      # local: unitários + smoke, sem GPU (pula -m gpu; ~21 s)
 uv run pytest -m smoke             # só o smoke ponta a ponta (tests/smoke/, ~10 s)
 uv run pytest -m "not gpu and not smoke"   # ciclo rápido: só os unitários (~10 s; um -m substitui o do addopts)
-# gpu-host: contratos dos adaptadores + regressão + smoke gpu (precisa de --extra infer e pesos)
-ssh gpu-host 'cd ~/dev/det-depth-distance && ~/.local/bin/uv run --extra infer pytest -m gpu -v'
-# gpu-host: todas as pendências de GPU das tasks 0002-0009, em ordem, com logs
-utils/gpu_pending.sh list                           # passos (local ou no gpu-host)
+# GPU: contratos dos adaptadores + regressão + smoke gpu (precisa de --extra infer e pesos)
+uv run --extra infer pytest -m gpu -v
+# GPU: todas as pendências das tasks 0002-0009, em ordem, com logs
+utils/gpu_pending.sh list                           # passos
 utils/gpu_pending.sh run --dry-run                  # só imprime os comandos
-ssh -t gpu-host 'cd ~/dev/det-depth-distance && utils/gpu_pending.sh run'   # em tmux
+utils/gpu_pending.sh run                            # em tmux
 ```
 
 Marcador `gpu` (`[tool.pytest.ini_options]`: `addopts = "-m 'not gpu'"`):
 todo teste sob `tests/gpu/` é marcado automaticamente pelo
 `tests/gpu/conftest.py`, então o `uv run pytest` local nunca roda testes de
-GPU; `-m gpu` (a última opção `-m` vence) os seleciona no servidor. A
+GPU; `-m gpu` (a última opção `-m` vence) os seleciona na máquina com GPU. A
 regressão compara 60 quadros de IMG_4021 com a referência da `task_0001`
 congelada em `_testbed/regression/` (ou `$DDD_REGRESSION_REF`).
 
@@ -364,10 +358,8 @@ Commits seguem **Conventional Commits** com assunto em **inglês** (decisão de 
   demais projetos da casa.
 
 - **Casos especiais deste repositório:**
-  - Sem git remote: o código chega ao servidor GPU por
-    `utils/sync_gpu_host.sh push` (rsync, inclui `.git`). Não commitar no
-    servidor; o repositório local é a fonte da verdade.
+  - Sem git remote: o repositório local é a fonte da verdade.
   - `_testbed/` (vídeos de teste, saídas, logs) e `weights/` nunca são
     versionados (`.gitignore`).
-  - Sem CI: a validação de inferência é manual, no servidor GPU, seguindo o
+  - Sem CI: a validação de inferência é manual, na máquina com GPU, seguindo o
     Test notebook de cada task.

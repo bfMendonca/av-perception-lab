@@ -53,12 +53,12 @@ still pending.
 | `web` extra (optional) | `fastapi`, `uvicorn`, `python-multipart`, `httpx`, `av` (locked; python-multipart 0.0.32 added by task_0013; `av` (PyAV 18.1) declared by task_0016 for the `.h264` remux, already transitive via `infer`): backend of the web interface (`det_depth_distance.web`), torch-free |
 | Web front-end (`web/`, not Python) | React 18.3.1, TypeScript 5.9, Vite 8, `yaml` 2 (raw-YAML field editor); tests with vitest 5 + Testing Library + jsdom; Node 24 LTS installed without sudo (README); `web/node_modules` and `web/dist` are not versioned |
 | `eval` extra (optional) | `matplotlib>=3.8` (locked 3.11.2): plots of `det-depth-distance-evaluate --plot` only; imported lazily |
-| `infer` extra (GPU hosts: `gpu-host`; optionally the laptop's 4 GB GPU in an isolated env, `UV_PROJECT_ENVIRONMENT=_testbed/venv-infer`) | torch 2.8.0 + torchvision 0.23.0 + xformers 0.0.32.post2 from the PyTorch cu128 index; `rfdetr` @ git 1f2af2ea; `depth-anything-3` @ git 3d835ec; `addict` (imported by depth-anything-3 but not declared by it); `ultralytics==8.4.175` (YOLO26 and the optional `ultralytics_sam` refiner; **AGPL-3.0** — acceptable for this internal research prototype, optional extra); `transformers>=5.1,<6` (locked 5.19.0; previously only transitive via rfdetr; SAM-family refiners and SegFormer); `timm>=1.0.17` (locked 1.0.30; only for EdgeTAM's TimmWrapper backbone) |
-| External code (GPU hosts) | TwinLiteNet+ clone @ 90f1b86 (MIT; not a package, imported with a temporary `sys.path` entry), default `weights/_code/TwinLiteNetPlus` (cloned by `--prepare`; `repo:` overrides, e.g. `~/dev/TwinLiteNetPlus`); `pretrained/<variant>.pth` is user-provided (upstream Google Drive) |
+| `infer` extra (GPU machine; the laptop's 4 GB GPU in an isolated env, `UV_PROJECT_ENVIRONMENT=_testbed/venv-infer`) | torch 2.8.0 + torchvision 0.23.0 + xformers 0.0.32.post2 from the PyTorch cu128 index; `rfdetr` @ git 1f2af2ea; `depth-anything-3` @ git 3d835ec; `addict` (imported by depth-anything-3 but not declared by it); `ultralytics==8.4.175` (YOLO26 and the optional `ultralytics_sam` refiner; **AGPL-3.0** — acceptable for this internal research prototype, optional extra); `transformers>=5.1,<6` (locked 5.19.0; previously only transitive via rfdetr; SAM-family refiners and SegFormer); `timm>=1.0.17` (locked 1.0.30; only for EdgeTAM's TimmWrapper backbone) |
+| External code (GPU machine) | TwinLiteNet+ clone @ 90f1b86 (MIT; not a package, imported with a temporary `sys.path` entry), default `weights/_code/TwinLiteNetPlus` (cloned by `--prepare`; `repo:` overrides, e.g. `~/dev/TwinLiteNetPlus`); `pretrained/<variant>.pth` is user-provided (upstream Google Drive) |
 | Model licences (task_0005) | Apache-2.0: SAM, SAM 2.1, SAM-HQ, EdgeTAM, MobileSAM, `timm`; "SAM License", gated: SAM 3 (`sam3_tracker`, optional, never a default); `other` (NVIDIA terms, read before non-academic use): SegFormer checkpoints; MIT: TwinLiteNet+; AGPL-3.0: ultralytics |
 | Dev group | pytest, ruff |
 | Video I/O | system ffmpeg/ffprobe |
-| Inference host | `gpu-host`: NVIDIA RTX PRO 6000 Blackwell 96 GB (sm_120), no sudo |
+| GPU used so far | NVIDIA RTX PRO 6000 Blackwell 96 GB (sm_120); laptop RTX A1000 4 GB for the light example |
 | CI / Docker | none |
 
 ## 3. Project Structure
@@ -107,8 +107,8 @@ det-depth-distance/
 │   ├── runtime.py           # DeviceMonitor (torch, lazy), package versions, git commit
 │   ├── cli.py               # --config/--set/--list-models/--prepare; composition root
 │   └── __main__.py          # python -m det_depth_distance
-├── tests/                   # pytest without GPU; tests/smoke/ (auto-marked "smoke", end-to-end); tests/gpu/ (auto-marked "gpu") runs on gpu-host
-├── utils/sync_gpu_host.sh    # rsync push code / pull outputs with the GPU host
+├── tests/                   # pytest without GPU; tests/smoke/ (auto-marked "smoke", end-to-end); tests/gpu/ (auto-marked "gpu") runs on a machine with a GPU
+├── utils/gpu_pending.sh     # pending GPU steps of the tasks, in order, with logs
 ├── docs/                    # task files (docs/task_DDDD.md) + template; refs/ (diagrams, calibration and field-reference protocol); web_extending.md (adding models/stages/views, incl. model requirements); model_environments.md (model recipe, weights root and locations, readiness states, Prepare in CLI/web, packages layer, the five dependency-conflict resolution paths: only detection is implemented)
 └── _testbed/                # git-ignored: test videos, outputs, regression reference, ultralytics settings
 ```
@@ -142,7 +142,7 @@ Per run: `video.mp4`, `detections.csv` (one row per box; task_0001 columns then 
 ## 5. Architecture Patterns
 
 - Two environments from one manifest: a light local env for developing and
-  unit-testing, and the heavy `infer` extra on the GPU host. Framework
+  unit-testing, and the heavy `infer` extra for the GPU. Framework
   imports (`torch`, `rfdetr`, `depth_anything_3`, `ultralytics`) happen only
   inside adapters' `_load` (and `runtime.DeviceMonitor`), so `--help`,
   `--list-models` and config validation run without torch.
@@ -654,22 +654,20 @@ supported one shows a non-blocking banner. Process is disabled until task_0016.
 ## 9. Security Model
 
 No secrets are read by the code. Hugging Face model downloads use the
-user's existing token cache on the GPU host, outside this repository; the
+user's existing token cache, outside this repository; the
 gated `facebook/sam3` checkpoint additionally needs approved access and
 `HF_TOKEN` there. Adapters never download at run time.
 
 ## 10. Development & Deployment
 
 - Local: `uv sync`, `uv run pytest` (unit + smoke, GPU tests deselected), `uv run ruff check . && uv run ruff format --check .`
-- Three test levels: unit (each module, fixed doubles); smoke (`-m smoke`, `tests/smoke/`, ~8 s): the real CLI entry point in process on a synthetic 320x180 grey-level video of known depth planes, with frame-reading test doubles (detector, box-prompt refiner, semantic segmenter) inserted into the registry by `monkeypatch` and the real `DA3Depth` with a fake network; a pairwise matrix of 9 configurations checks every output and every distance analytically, plus the all-off = task_0002 invariant and a calibrate -> run -> evaluate chain; `tests/run_outputs.py` checks any run folder's structure; gpu (`-m gpu`, on `gpu-host`).
-- GPU tests (adapter contracts + 60-frame regression against task_0001 + a 5-frame smoke of 10 example configs, one per real adapter family plus the light 4 GB example, which skips where its weights are missing): `uv run --extra infer pytest -m gpu -v` on `gpu-host`.
-- `utils/gpu_pending.sh` (run ON `gpu-host`): every pending GPU step of tasks 0002-0008 in dependency order, a log per step and `summary.tsv` in `_testbed/outputs/gpu_pending_<stamp>/`; `list`, `run --dry-run|--from|--only|--skip-long`; downloads only with `--allow-downloads` plus a per-item confirmation (task_0004 downloads only printed).
-- Weights (task_0021): everything under the weights root (`weights/`, git-ignored and excluded from the rsync push; `DDD_WEIGHTS_ROOT` / `--weights-root`), fetched by `--prepare`; nothing is downloaded at run time (DA3 included). Layout: `hf/` (Hugging Face cache: DA3, SAM family, SegFormer; an existing cache keeps working), `rfdetr/<library file name>` (Apache-2.0, ~135–405 MB), `ultralytics/<name>.pt` (YOLO26 COCO/Objects365 and SAM/MobileSAM from the `ultralytics/assets` v8.4.0 release; any other `.pt` is user-provided), `_code/TwinLiteNetPlus` (pinned clone; `pretrained/<variant>.pth` user-provided). Existing `~/.roboflow`, `~/dev/...` files are untouched and usable as explicit YAML paths. Sources, sizes and licences: `docs/task_0021.md`.
+- Three test levels: unit (each module, fixed doubles); smoke (`-m smoke`, `tests/smoke/`, ~8 s): the real CLI entry point in process on a synthetic 320x180 grey-level video of known depth planes, with frame-reading test doubles (detector, box-prompt refiner, semantic segmenter) inserted into the registry by `monkeypatch` and the real `DA3Depth` with a fake network; a pairwise matrix of 9 configurations checks every output and every distance analytically, plus the all-off = task_0002 invariant and a calibrate -> run -> evaluate chain; `tests/run_outputs.py` checks any run folder's structure; gpu (`-m gpu`, on a machine with a GPU).
+- GPU tests (adapter contracts + 60-frame regression against task_0001 + a 5-frame smoke of 10 example configs, one per real adapter family plus the light 4 GB example, which skips where its weights are missing): `uv run --extra infer pytest -m gpu -v`.
+- `utils/gpu_pending.sh` (run on the GPU machine): every pending GPU step of tasks 0002-0008 in dependency order, a log per step and `summary.tsv` in `_testbed/outputs/gpu_pending_<stamp>/`; `list`, `run --dry-run|--from|--only|--skip-long`; downloads only with `--allow-downloads` plus a per-item confirmation (task_0004 downloads only printed).
+- Weights (task_0021): everything under the weights root (`weights/`, git-ignored; `DDD_WEIGHTS_ROOT` / `--weights-root`), fetched by `--prepare`; nothing is downloaded at run time (DA3 included). Layout: `hf/` (Hugging Face cache: DA3, SAM family, SegFormer; an existing cache keeps working), `rfdetr/<library file name>` (Apache-2.0, ~135–405 MB), `ultralytics/<name>.pt` (YOLO26 COCO/Objects365 and SAM/MobileSAM from the `ultralytics/assets` v8.4.0 release; any other `.pt` is user-provided), `_code/TwinLiteNetPlus` (pinned clone; `pretrained/<variant>.pth` user-provided). Existing `~/.roboflow`, `~/dev/...` files are untouched and usable as explicit YAML paths. Sources, sizes and licences: `docs/task_0021.md`.
 - Light example (task_0010, `configs/yolo_light_da3.yaml`, for the laptop's RTX A1000 4 GB): YOLO26s-seg, SegFormer-B0 `nvidia/segformer-b0-finetuned-cityscapes-640-1280`, the DA3 checkpoints and TwinLiteNet+ `small.pth`, all under the weights root. Estimated peak ~2.4 GB allocated (main phase) and ~3 GB in the focal phase, which is not recorded in `metrics.json`; VRAM on the 4 GB GPU still to be measured. GPU tests skip when a weight is missing.
-- GPU host: `utils/sync_gpu_host.sh push`, then on `gpu-host`
-  `~/.local/bin/uv sync --extra infer`; outputs fetched with
-  `utils/sync_gpu_host.sh pull`.
-- No deployment target beyond running the CLI on the GPU host.
+- GPU machine: `uv sync --extra infer` (in the notebook, with `UV_PROJECT_ENVIRONMENT=_testbed/venv-infer`).
+- No deployment target beyond running the CLI locally.
 
 ## 11. Conventions Summary
 

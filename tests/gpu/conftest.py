@@ -1,10 +1,10 @@
-"""GPU test fixtures (run on gpu-host: `uv run --extra infer pytest -m gpu -v`).
+"""GPU test fixtures (run on the GPU machine: `uv run --extra infer pytest -m gpu -v`).
 
 Every test under tests/gpu/ is marked `gpu` by the collection hook below, so
 the local `uv run pytest` (addopts "-m 'not gpu'") deselects them without a
 marker on each test. torch is checked inside an autouse fixture, not at
 import: a module-level skip would prevent the hook from registering. Weights
-and caches come from environment variables, with gpu-host's paths as defaults;
+and caches come from environment variables, with the default paths below;
 missing assets skip the test that needs them (nothing is downloaded; RF-DETR
 checkpoints are looked up under the weights root, `weights/rfdetr/`, task_0021).
 

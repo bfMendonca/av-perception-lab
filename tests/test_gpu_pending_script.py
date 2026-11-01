@@ -1,7 +1,7 @@
 """utils/gpu_pending.sh checked locally: syntax, step order, a dry run that
 prints every command and executes, creates and downloads nothing, and real
 runs of a copy of the script against a fake uv (statuses, abort, download
-gating); the run with the real uv only happens on the GPU host."""
+gating); the run with the real uv only happens on the GPU machine."""
 
 import re
 import shutil

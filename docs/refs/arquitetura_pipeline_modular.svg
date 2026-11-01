@@ -330,5 +330,5 @@
   <rect x="890" y="1235" width="22" height="16" rx="3" class="t5" stroke-width="1.5"/><text x="919" y="1248" class="t">0005 refinadores + semântica</text>
   <rect x="1100" y="1235" width="22" height="16" rx="3" class="t6" stroke-width="1.5"/><text x="1129" y="1248" class="t">0006 rastreamento + suavização</text>
   <rect x="1370" y="1235" width="22" height="16" rx="3" class="t7" stroke-width="1.5"/><text x="1399" y="1248" class="t">0007 calibração + avaliação</text>
-  <text x="45" y="1274" class="s">Ambientes: núcleo numpy (distance, temporal, core/boxes, agreement, tracking, config) roda no ambiente leve do laptop; adaptadores (torch, rfdetr, depth-anything-3, ultralytics, transformers, timm) só com --extra infer no gpu-host.</text>
+  <text x="45" y="1274" class="s">Ambientes: núcleo numpy (distance, temporal, core/boxes, agreement, tracking, config) roda no ambiente leve do laptop; adaptadores (torch, rfdetr, depth-anything-3, ultralytics, transformers, timm) só com --extra infer.</text>
 </svg>

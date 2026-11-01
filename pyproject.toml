@@ -12,7 +12,7 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-# Heavy GPU stack, installed only on the inference host (gpu-host): uv sync --extra infer
+# Heavy GPU stack, installed only where inference runs: uv sync --extra infer
 infer = [
     "torch==2.8.0",
     "torchvision==0.23.0",
@@ -68,10 +68,10 @@ packages = ["src/det_depth_distance"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
-# GPU tests (tests/gpu/, marked automatically by its conftest) run only on gpu-host: pytest -m gpu.
+# GPU tests (tests/gpu/, marked automatically by its conftest) run only on a machine with a GPU: pytest -m gpu.
 # Smoke tests (tests/smoke/, marked by theirs) run by default; -m smoke selects only them.
 markers = [
-    "gpu: needs CUDA, the infer extra and model weights (gpu-host)",
+    "gpu: needs CUDA, the infer extra and model weights",
     "smoke: end-to-end CLI runs with fake adapters on a synthetic video (tests/smoke/)",
 ]
 addopts = "-m 'not gpu'"

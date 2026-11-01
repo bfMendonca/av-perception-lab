@@ -4,6 +4,27 @@ Todas as mudancas relevantes do det-depth-distance serao documentadas neste arqu
 
 ---
 
+## [2026-11-01] Remove remote GPU host references and the sync script
+
+The project is now documented as running only on the local machine
+(task_0027).
+
+### Removed
+
+- The rsync push/pull sync script (`utils/`) for the former GPU server and
+  every command, section, table row and gotcha about syncing to, running on
+  or pulling outputs from that host, including its address.
+
+### Changed
+
+- `utils/gpu_pending.sh` header and final message are local ("run on the GPU
+  machine"); behaviour is unchanged.
+- Comments in `pyproject.toml` and `tests/gpu/conftest.py`, and incidental
+  mentions in the docs and task records, name no host; technical results are
+  kept.
+
+---
+
 ## [2026-11-01] Model readiness: final fixes
 
 The whole model-readiness branch was reviewed; this wave fixes what the
@@ -50,7 +71,7 @@ reviews found before merge (task_0026).
 - After a packages install the note says new runs use the packages (each run
   starts a fresh worker); a server restart is only for an upgraded package the
   server had already imported.
-- README "From a fresh clone": prerequisites, what `gpu-host` is, start with
+- README "From a fresh clone": prerequisites, start with
   `rfdetr_da3.yaml`, and the manual TwinLiteNet+ download.
 
 ---
@@ -568,7 +589,7 @@ num arquivo novo. Sem a secao `motion` as saidas sao as de antes.
 
 ### Novo: Exemplo `configs/rfdetr_sam2_lanes_motion_da3.yaml`
 
-- Stack completa no servidor GPU: RF-DETR + mascaras SAM 2.1 + DA3 +
+- Stack completa na máquina com GPU: RF-DETR + mascaras SAM 2.1 + DA3 +
   TwinLiteNet+ `lanes` (faixas pintadas fora da distancia) + rastreamento,
   Kalman, `motion` e painel BEV. Primeira execucao nos videos da Raspberry
   Pi (`RPI_0000`/`RPI_0001`, 1296x972 a 25 fps).
@@ -592,7 +613,7 @@ num arquivo novo. Sem a secao `motion` as saidas sao as de antes.
 
 - Sem ego-motion tudo e relativo a camera; a estimacao do movimento proprio
   pelo video fica para uma task futura (task_0011).
-- Validado no servidor GPU (`utils/gpu_pending.sh` passo `20-motion` e
+- Validado na máquina com GPU (`utils/gpu_pending.sh` passo `20-motion` e
   smoke `gpu`); a conferencia visual dos videos segue pendente.
 
 ### O que nao muda
@@ -678,7 +699,7 @@ no notebook fica pendente.
 ## [2026-10-14] Smoke test ponta a ponta do pipeline sem GPU
 
 As tasks 0002 a 0007 foram verificadas so com testes unitarios no laptop,
-com o servidor GPU fora do ar, e as execucoes reais ficaram espalhadas em
+com a máquina com GPU fora do ar, e as execucoes reais ficaram espalhadas em
 seis arquivos de task. A task_0008 cria um smoke test que roda o sistema
 inteiro pelo ponto de entrada real da CLI sem GPU, um smoke com os modelos
 reais para o servidor e um unico script que executa, em ordem, todas as
@@ -714,11 +735,9 @@ a recusar duas execucoes com o mesmo nome de pasta.
 
 ### Novo: Script de pendencias de GPU (`utils/gpu_pending.sh`)
 
-- Roda no `gpu-host` os 19 passos pendentes das tasks 0002 a 0008 na ordem
+- Roda os 19 passos pendentes das tasks 0002 a 0008 na ordem
   de dependencia, com um log por passo e um `summary.tsv`.
-- **Como usar:** `utils/sync_gpu_host.sh push`, depois
-  `ssh -t gpu-host 'cd ~/dev/det-depth-distance && utils/gpu_pending.sh run'`
-  e `utils/sync_gpu_host.sh pull gpu_pending_<carimbo>` (so os logs).
+- **Como usar:** `utils/gpu_pending.sh run`, na maquina com GPU.
 - Opcoes `list`, `--dry-run`, `--from`, `--only`, `--skip-long`; downloads
   so com `--allow-downloads` e confirmacao por item; os da task_0004 (fora
   do repositorio) so sao impressos.
@@ -732,7 +751,7 @@ a recusar duas execucoes com o mesmo nome de pasta.
 
 ### Observacoes importantes
 
-- A execucao no servidor GPU continua pendente (servidor fora do ar).
+- A execucao na máquina com GPU continua pendente (servidor fora do ar).
 
 ---
 
@@ -823,7 +842,7 @@ avaliacao das execucoes contra distancias medidas em campo. Sem
 - Tudo foi testado localmente com dados sinteticos (tabuleiros
   renderizados com distorcao conhecida, execucoes ficticias). Ficam
   pendentes: a calibracao real do iPhone 14 Pro Max, a coleta de
-  referencias de campo e a validacao no servidor GPU (fora do ar durante a
+  referencias de campo e a validacao na máquina com GPU (fora do ar durante a
   implementacao).
 - A focal equivalente a 35 mm dos metadados nao serve como focal do video
   (o recorte da estabilizacao nao e registrado): e mostrada so como
@@ -832,7 +851,7 @@ avaliacao das execucoes contra distancias medidas em campo. Sem
   referencias continuam anotadas no video original e a avaliacao as
   transforma com a K e a distorcao gravadas no `metrics.json` da execucao
   (recalibrar depois nao muda a avaliacao de execucoes antigas).
-- No servidor GPU, os graficos usam o `--extra infer` (ja traz o
+- Na máquina com GPU, os graficos usam o `--extra infer` (ja traz o
   matplotlib); `--extra eval` sozinho removeria a stack GPU.
 
 ### O que nao muda
@@ -922,7 +941,7 @@ resultados sao exatamente os de antes.
 - Reproducao offline com as caixas e distancias dos videos da task_0001
   confirmou os numeros do planejamento (uma unica trilha para o veiculo
   lider; jitter 0,213 -> 0,060 m e 0,568 -> 0,127 m por quadro). A
-  validacao no servidor GPU (testes `-m gpu` e execucoes nos videos) ficou
+  validacao na máquina com GPU (testes `-m gpu` e execucoes nos videos) ficou
   pendente: o servidor estava fora do ar durante a implementacao.
 
 ### O que nao muda
@@ -1021,7 +1040,7 @@ sem segmentador, os resultados sao exatamente os de antes.
 
 ### Observacoes importantes
 
-- A validacao no servidor GPU (testes `-m gpu`, download dos pesos e
+- A validacao na máquina com GPU (testes `-m gpu`, download dos pesos e
   execucoes de comparacao entre refinadores e de exclusao semantica) ficou
   pendente: o servidor estava fora do ar durante a implementacao.
 - SegFormer e TwinLiteNet+ foram treinados em cenas de rua; em cenas
@@ -1092,7 +1111,7 @@ continuam com exatamente o mesmo resultado de antes.
 1. Baixar os pesos YOLO26-seg desejados em
    `~/dev/ultralytics/_testbed/weights/` (release `v8.4.0` de
    `ultralytics/assets`); os do RF-DETR Seg vem sozinhos.
-2. No servidor: `uv run --extra infer python -m det_depth_distance --config configs/rfdetr_seg_da3.yaml`.
+2. `uv run --extra infer python -m det_depth_distance --config configs/rfdetr_seg_da3.yaml`.
 3. Para comparar erosoes: `--set distance.mask_erode=0` (ou 2).
 
 ### Detalhes tecnicos
@@ -1112,7 +1131,7 @@ continuam com exatamente o mesmo resultado de antes.
 - Objeto pequeno cuja mascara tem menos de `min_valid_px` pixels do mapa
   fica "n/a" pela mascara; com `both`, a distancia pela caixa fica no CSV.
 - O vocabulario dos pesos `yolo26*-objv1-seg.pt` (esperado Objects365) e a
-  validacao no servidor GPU (testes `-m gpu`, regressao da task_0002 e as
+  validacao na máquina com GPU (testes `-m gpu`, regressao da task_0002 e as
   execucoes caixa x mascara) ficaram pendentes: o servidor estava fora do
   ar durante a implementacao.
 
@@ -1177,9 +1196,8 @@ comportamento padrao (`concat`) nao muda.
 
 ### Como usar
 
-1. No laptop: `utils/sync_gpu_host.sh push`.
-2. No servidor: `uv run --extra infer python -m det_depth_distance --config configs/multi_detector_fused.yaml`.
-3. Mesmo YAML sem fusao: `--set 'aggregation={type: concat}'`; com NMS:
+1. `uv run --extra infer python -m det_depth_distance --config configs/multi_detector_fused.yaml`.
+2. Mesmo YAML sem fusao: `--set 'aggregation={type: concat}'`; com NMS:
    `--set aggregation.type=nms`.
 
 ### Detalhes tecnicos
@@ -1205,7 +1223,7 @@ comportamento padrao (`concat`) nao muda.
 - O YOLO26 Objects365 costuma emitir duas caixas de veiculo diferentes
   (ex.: `pickup truck` e `suv`) para o mesmo objeto; com o mapa para
   `vehicle`, a fusao as junta.
-- A validacao de ponta a ponta no servidor GPU (testes `-m gpu` dos mapas,
+- A validacao de ponta a ponta na máquina com GPU (testes `-m gpu` dos mapas,
   regressao da task_0002 e execucoes concat/nms/wbf) ficou pendente: o
   servidor estava fora do ar durante a implementacao.
 
@@ -1263,10 +1281,9 @@ identicas byte a byte.
 
 ### Como usar
 
-1. No laptop: `utils/sync_gpu_host.sh push`.
-2. No servidor: `uv sync --extra infer` (instala o ultralytics).
-3. Rodar: `uv run --extra infer python -m det_depth_distance --config configs/multi_detector.yaml --set source.max_frames=300`.
-4. Testes de GPU (contratos + regressao): `uv run --extra infer pytest -m gpu -v`.
+1. `uv sync --extra infer` (instala o ultralytics).
+2. Rodar: `uv run --extra infer python -m det_depth_distance --config configs/multi_detector.yaml --set source.max_frames=300`.
+3. Testes de GPU (contratos + regressao): `uv run --extra infer pytest -m gpu -v`.
 
 ### Detalhes tecnicos
 
@@ -1357,10 +1374,8 @@ por deteccao e um arquivo de metricas da execucao.
 
 ### Como usar
 
-1. No laptop, enviar o codigo: `utils/sync_gpu_host.sh push`.
-2. No servidor, instalar a stack GPU: `uv sync --extra infer`.
-3. Rodar: `uv run --extra infer python -m det_depth_distance VIDEO --layout side-by-side --show-stats`.
-4. Trazer o resultado: `utils/sync_gpu_host.sh pull <PASTA_DA_EXECUCAO>`.
+1. Instalar a stack GPU: `uv sync --extra infer`.
+2. Rodar: `uv run --extra infer python -m det_depth_distance VIDEO --layout side-by-side --show-stats`.
 
 ### Detalhes tecnicos
 
@@ -1408,13 +1423,6 @@ o pipeline de inferencia chega na task_0001.
   0.0.32.post2 do indice cu128, `rfdetr` (commit `1f2af2ea`) e
   `depth-anything-3` (commit `3d835ec`) fixados por git.
 - `uv.lock` versionado; pacote `src/det_depth_distance/`.
-
-### Novo: Sincronizacao com o servidor GPU
-
-- `utils/sync_gpu_host.sh push` envia o codigo para
-  `gpu-host:~/dev/det-depth-distance` por rsync, sem tocar `.venv/`,
-  `_testbed/` e `weights/` remotos.
-- `utils/sync_gpu_host.sh pull [RUN]` traz as saidas de `_testbed/outputs/`.
 
 ### Novo: Padrao de projeto da casa
 

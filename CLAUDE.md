@@ -28,23 +28,21 @@ uv sync                                   # ambiente leve local
 uv run pytest                             # unitários + smoke (sem GPU; pula -m gpu)
 uv run pytest -m smoke                    # só o smoke ponta a ponta (tests/smoke/)
 uv run ruff check --fix . && uv run ruff format .
-utils/sync_gpu_host.sh push                # código -> gpu-host:~/dev/det-depth-distance
-ssh gpu-host 'cd ~/dev/det-depth-distance && ~/.local/bin/uv sync --extra infer'
-ssh gpu-host 'cd ~/dev/det-depth-distance && ~/.local/bin/uv run --extra infer pytest -m gpu -v'
-ssh gpu-host 'cd ~/dev/det-depth-distance && ~/.local/bin/uv run --extra infer python -m det_depth_distance --config configs/rfdetr_da3.yaml'
-utils/sync_gpu_host.sh pull [RUN_DIR]      # saídas <- gpu-host
-utils/gpu_pending.sh {list,run} [--dry-run] [--from ID] ...   # pendências de GPU (rodar NO gpu-host)
+uv sync --extra infer                     # stack GPU (no notebook: ver UV_PROJECT_ENVIRONMENT abaixo)
+uv run --extra infer pytest -m gpu -v
+uv run --extra infer python -m det_depth_distance --config configs/rfdetr_da3.yaml
+utils/gpu_pending.sh {list,run} [--dry-run] [--from ID] ...   # pendências de GPU
 uv run det-depth-distance-calibrate {calibrate,board,inspect} ...   # calibração (ambiente leve)
 uv run det-depth-distance-evaluate --refs REFS.yaml RUN [RUN ...]   # erro contra referências de campo
 ```
 
 ## Arquitetura (big picture)
 
-Dois ambientes, um manifesto: o laptop roda só o ambiente leve (numpy,
-OpenCV, Pillow) para desenvolver e testar a lógica de distância; o servidor
-GPU `gpu-host` (RTX PRO 6000 Blackwell, sm_120) instala o extra `infer`
+Dois ambientes, um manifesto: o ambiente leve (numpy, OpenCV, Pillow)
+serve para desenvolver e testar a lógica de distância; o extra `infer`
 (torch 2.8.0+cu128, xformers, `rfdetr` e `depth-anything-3` fixados por
-commit git, `ultralytics==8.4.175`, `transformers` e `timm`). Não há git remote: o código vai por rsync.
+commit git, `ultralytics==8.4.175`, `transformers` e `timm`) instala a stack
+GPU (testada numa RTX PRO 6000 Blackwell, sm_120). Não há git remote.
 
 Código em camadas: `core/` (contratos `Instances`/`DepthResult`/`SemanticMap`/
 `MotionEstimate`, ABCs `Detector`/`DepthEstimator`/`MaskRefiner`/
@@ -71,7 +69,7 @@ no ambiente leve; só os gráficos pedem o extra `eval` (matplotlib).
   `process_res=504`) e proporção ligeiramente diferente; caixas precisam de
   escala separada em x e y, e os métodos `*_crop` ainda deslocam a origem
   (`adapters/depth/da3.py: da3_map_geometry` replica o `InputProcessor` privado do DA3).
-- No servidor, `uv sync` sem `--extra infer` remove a stack GPU (o sync é
+- Com a stack GPU instalada, `uv sync` sem `--extra infer` remove a stack GPU (o sync é
   exato por padrão); use `--extra infer` no `uv sync` e no `uv run` —
   também para `--plot` da avaliação (`--extra eval` sozinho removeria a
   stack; o `infer` já traz o matplotlib).
@@ -223,17 +221,17 @@ no ambiente leve; só os gráficos pedem o extra `eval` (matplotlib).
 - O `MetricsSink` relê `Pipeline.describe()` no `close` (o `pipeline` do
   `metrics.json` é o final): contadores que só fecham no último quadro
   (`motion.ego_motion.clamped_frames`) entram em `describe()`.
-- No `gpu-host`: sem sudo, `uv` em `~/.local/bin` (fora do PATH), disco quase
-  cheio (preferir `/dev/shm` para temporários grandes), e `nvidia-smi` pode
-  falhar por driver mismatch — usar `torch.cuda.mem_get_info()`.
 
 ## Ciclo de vida de tarefas e proteção de branch
 
 - **Toda implementação exige um arquivo de tarefa** `docs/task_DDDD.md`
-  criado **antes** do código (Descrição, Escopo, Planejamento, Análise de
-  Impacto, Verificação, Dependências). Ao concluir, marque o título com
-  `(CONCLUÍDA)` e adicione `Detalhes de Implementação` + `Caderno de Testes`
+  criado **antes** do código (Description, Scope, Plan, Impact analysis,
+  Verification, Dependencies). Ao concluir, marque o título com
+  `(COMPLETED)` e adicione `Implementation details` + `Test notebook`
   — no **mesmo commit** da implementação. Regras completas em `AGENTS.md`
   § "Regras de Ciclo de Vida de Tarefas".
+- **Idioma:** documentação nova e arquivos de tarefa novos (a partir da
+  `task_0019`) são escritos em **inglês**; o que já existe em pt-BR continua em
+  pt-BR (decisão de 2026-11-01).
 - **Nunca commite diretamente em `main`.** Trabalhe em
   `feat/` / `fix/` / `bug/<snake_case>` e integre via pull request.

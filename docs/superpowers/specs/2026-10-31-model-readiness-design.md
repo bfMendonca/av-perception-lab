@@ -185,7 +185,7 @@ documented for later (see below).
 - **`infer` stays as it is.** All current adapters declare the existing
   `infer` extra as their packages layer; only *new* models get their own small
   extras (e.g. `model-metric3d`). No split of `infer`, so the lock and the
-  gpu-host/notebook workflows in `CLAUDE.md` do not change and the "uv sync
+  notebook workflows in `CLAUDE.md` do not change and the "uv sync
   removes the GPU stack" risk is not reopened.
 - **The base stack is not installed by the server.** On a fresh clone the
   prerequisite is one documented command (`uv sync --extra infer --extra web`,

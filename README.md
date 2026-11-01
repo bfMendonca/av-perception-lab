@@ -42,7 +42,6 @@
 - [Pesos dos refinadores e do SegFormer](#pesos-dos-refinadores-e-do-segformer)
 - [Saídas](#saídas)
 - [Como a distância é calculada](#como-a-distância-é-calculada)
-- [Sincronização com o servidor GPU](#sincronização-com-o-servidor-gpu)
 - [Melhorias Futuras (TODO)](#melhorias-futuras-todo)
 
 ---
@@ -72,15 +71,15 @@ de uma calibração da câmera (tabuleiro ou ChArUco), e as distâncias podem se
 avaliadas contra medidas de campo (trena laser, marcos, RTK).
 
 O foco é **qualidade da estimativa**, não tempo real: os modelos rodam
-em PyTorch, quadro a quadro. A inferência é feita no servidor GPU `gpu-host`;
-o desenvolvimento e os testes unitários rodam localmente.
+em PyTorch, quadro a quadro. A inferência e o desenvolvimento rodam na máquina local;
+os testes unitários não precisam de GPU.
 
 ---
 
 ## Funcionalidades
 
 - **Detectar** objetos quadro a quadro com RF-DETR (`nano`, `small`, `medium`, `large`, ou checkpoint próprio) e/ou Ultralytics YOLO26 (pesos COCO ou Objects365), com filtro de classes por preset do vocabulário (`driving` para COCO e Objects365) validado contra as classes do modelo.
-- **Segmentar** instâncias com RF-DETR Seg (`seg-nano` … `seg-2xlarge`, COCO) ou YOLO26-seg (`yolo26*-seg.pt` COCO, `yolo26*-objv1-seg.pt`, vocabulário Objects365 esperado e ainda não conferido no servidor GPU): cada instância ganha uma máscara na resolução do quadro.
+- **Segmentar** instâncias com RF-DETR Seg (`seg-nano` … `seg-2xlarge`, COCO) ou YOLO26-seg (`yolo26*-seg.pt` COCO, `yolo26*-objv1-seg.pt`, vocabulário Objects365 esperado e ainda não conferido em GPU): cada instância ganha uma máscara na resolução do quadro.
 - **Combinar** vários detectores no mesmo passo (`aggregation: concat`): todas as caixas são mantidas e marcadas com o modelo de origem (`source`), no CSV e por cor no vídeo.
 - **Harmonizar** rótulos entre vocabulários com mapas por detector (`labels: configs/labels/*.yaml`, ex. COCO `car`/`truck`/`bus` e Objects365 `suv`/`van`/`pickup truck` → `vehicle`), conferidos contra as classes do modelo na carga.
 - **Fundir** as detecções do mesmo objeto (`aggregation: nms` ou `wbf`), entre detectores e também duplicatas de um mesmo detector, preservando os membros de cada instância fundida (detector, rótulo original, score original) e com peso fixo opcional por detector.
@@ -123,7 +122,7 @@ o desenvolvimento e os testes unitários rodam localmente.
 As dependências pesadas ficam no extra `infer`, instalado apenas no host de
 inferência; localmente basta o ambiente leve (numpy, OpenCV, Pillow, PyYAML,
 pytest, ruff). Calibração e avaliação rodam no ambiente leve; só os gráficos
-da avaliação pedem o extra `eval` (`uv sync --extra eval`, matplotlib; no servidor
+da avaliação pedem o extra `eval` (`uv sync --extra eval`, matplotlib; com o ambiente de inferência
 não use `--extra eval` sozinho — removeria a stack GPU —, o `--extra infer` já
 traz o matplotlib). Os frameworks são importados só dentro do `_load` de cada
 adaptador, então `--help`, `--list-models` e a validação da configuração
@@ -176,10 +175,9 @@ det-depth-distance/
 │   └── __main__.py          # python -m det_depth_distance
 ├── tests/                   # pytest sem GPU; run_outputs.py confere pastas de execução
 │   ├── smoke/               # smoke ponta a ponta (marcador smoke): cena sintética, dublês, matriz em pares, calibrar -> rodar -> avaliar
-│   └── gpu/                 # marcador gpu, roda no gpu-host: contratos, regressão da task_0001, smoke com os modelos reais
+│   └── gpu/                 # marcador gpu, roda onde há GPU: contratos, regressão da task_0001, smoke com os modelos reais
 ├── utils/
-│   ├── sync_gpu_host.sh      # rsync push/pull com o servidor GPU
-│   └── gpu_pending.sh       # roda no gpu-host, em ordem, as pendências de GPU das tasks 0002-0009
+│   └── gpu_pending.sh       # roda, em ordem, as pendências de GPU das tasks 0002-0009
 ├── docs/                    # tasks (docs/task_DDDD.md), template e refs/ (diagramas e protocolo de calibração e referências)
 └── _testbed/                # (ignorado pelo git) vídeos, saídas, logs
 ```
@@ -190,11 +188,10 @@ det-depth-distance/
 
 | Requisito | Onde | Observação |
 |---|---|---|
-| Astral uv | laptop e servidor | no `gpu-host` fica em `~/.local/bin/uv` (fora do PATH) |
-| ffmpeg / ffprobe | laptop e servidor | decodificação e codificação por pipe; também usados por parte dos testes |
-| GPU NVIDIA com CUDA 12.8 | servidor | testado na RTX PRO 6000 Blackwell (sm_120) do `gpu-host` |
-| Acesso `ssh gpu-host` | laptop | sincronização por rsync (`utils/sync_gpu_host.sh`) |
-| Weights | servidor e notebook | Everything under the weights root (`weights/`, git-ignored and excluded from the `push`; `DDD_WEIGHTS_ROOT` overrides), fetched by `--prepare`; nothing is downloaded at run time. See [Model weights](#model-weights) |
+| Astral uv | local | gerencia os ambientes e roda os comandos |
+| ffmpeg / ffprobe | local | decodificação e codificação por pipe; também usados por parte dos testes |
+| GPU NVIDIA com CUDA 12.8 | local | testado numa RTX PRO 6000 Blackwell (sm_120) |
+| Weights | local | Everything under the weights root (`weights/`, git-ignored; `DDD_WEIGHTS_ROOT` overrides), fetched by `--prepare`; nothing is downloaded at run time. See [Model weights](#model-weights) |
 
 > **Nota:** nunca instale o extra `infer` no `.venv` do laptop (a stack GPU ocupa ~9 GB e o próximo `uv run pytest` a removeria); para a GPU do notebook use o ambiente isolado de [Execução no notebook](#execução-no-notebook-gpu-de-4-gb).
 
@@ -210,13 +207,12 @@ uv run pytest
 uv run ruff check . && uv run ruff format --check .
 ```
 
-Servidor GPU (inferência e testes de GPU: contrato dos adaptadores e
+Com GPU (inferência e testes de GPU: contrato dos adaptadores e
 regressão contra a `task_0001`):
 
 ```bash
-utils/sync_gpu_host.sh push
-ssh gpu-host 'cd ~/dev/det-depth-distance && ~/.local/bin/uv sync --extra infer'
-ssh gpu-host 'cd ~/dev/det-depth-distance && ~/.local/bin/uv run --extra infer pytest -m gpu -v'
+uv sync --extra infer
+uv run --extra infer pytest -m gpu -v
 ```
 
 O `uv run pytest` local nunca roda os testes de `tests/gpu/`
@@ -232,7 +228,7 @@ Três níveis, todos com `pytest` (tempos medidos no laptop em 2026-10-23):
 |---|---|---|---|---|
 | Unitário | cada módulo isolado (dublês fixos, sem torch) | `uv run pytest -m "not gpu and not smoke"` | laptop | ~10 s |
 | Smoke (`smoke`) | o sistema inteiro pelo ponto de entrada real: CLI, YAML e `--set`, registro, `Pipeline` com todas as etapas, sinks e arquivos de saída, mais o encadeamento calibrar → rodar → avaliar | `uv run pytest -m smoke` | laptop | ~10 s |
-| GPU (`gpu`) | contratos dos adaptadores reais, regressão da `task_0001` e smoke com os modelos reais (5 quadros em 12 exemplos de `configs/`: um por família de adaptador e o exemplo leve, que só roda onde os pesos leves existem) | `uv run --extra infer pytest -m gpu -v` | `gpu-host` | minutos |
+| GPU (`gpu`) | contratos dos adaptadores reais, regressão da `task_0001` e smoke com os modelos reais (5 quadros em 12 exemplos de `configs/`: um por família de adaptador e o exemplo leve, que só roda onde os pesos leves existem) | `uv run --extra infer pytest -m gpu -v` | máquina com GPU | minutos |
 
 O `uv run pytest` padrão roda unitários **e** smoke (~21 s no total); o
 `gpu` fica de fora.
@@ -260,16 +256,14 @@ do `metrics.json`, `ffprobe` do vídeo) e é usado também pelo smoke de GPU.
 
 ### Pendências de GPU
 
-`utils/gpu_pending.sh` roda **no `gpu-host`**, na raiz do repo, todas as
+`utils/gpu_pending.sh` roda na máquina com GPU, na raiz do repo, todas as
 execuções de GPU pendentes das tasks 0002–0009 na ordem de dependência
-(sync, regressão antes de qualquer download, `-m gpu`, execuções de
+(regressão antes de qualquer download, `-m gpu`, execuções de
 validação), com um log por passo e um `summary.tsv` em
 `_testbed/outputs/gpu_pending_<carimbo>/`:
 
 ```bash
-utils/sync_gpu_host.sh push
-ssh -t gpu-host 'cd ~/dev/det-depth-distance && utils/gpu_pending.sh run'   # use tmux: há execuções longas
-utils/sync_gpu_host.sh pull gpu_pending_<carimbo>                            # só os logs
+utils/gpu_pending.sh run   # use tmux: há execuções longas
 ```
 
 | Opção | Efeito |
@@ -303,8 +297,8 @@ Alavancas: `--set camera.estimate.frames=8` ou `--set camera.focal_px=<px>`
 (pula o modelo da focal).
 
 Pré-requisito: ~13 GB livres (extra `infer` ~9 GB + pesos ~3 GB + vídeo). O
-extra `infer` fica num ambiente isolado em `_testbed/` (ignorado e fora do
-`push`), nunca no `.venv`. Com a variável exportada, todo `uv run` leva
+extra `infer` fica num ambiente isolado em `_testbed/` (ignorado pelo
+git), nunca no `.venv`. Com a variável exportada, todo `uv run` leva
 `--extra infer` (sem ele, o sync exato remove a stack também desse
 ambiente); `unset UV_PROJECT_ENVIRONMENT` antes de voltar ao `.venv` leve.
 Nothing is downloaded at run time (DA3 included since task_0021): fetch the
@@ -319,7 +313,7 @@ uv sync --extra infer
 uv run --extra infer python -m det_depth_distance --config configs/yolo_light_da3.yaml --prepare
 mkdir -p weights/_code/TwinLiteNetPlus/pretrained   # small.pth: upstream Google Drive
 curl -fL -o weights/_code/TwinLiteNetPlus/pretrained/small.pth "https://drive.usercontent.google.com/download?id=1N7jNsa8P1dM-UevqPRsx6heUpN4L00FJ&export=download&confirm=t"
-mkdir -p _testbed/data && rsync -av gpu-host:dev/det-depth-distance/_testbed/data/IMG_4021.MOV _testbed/data/
+mkdir -p _testbed/data   # coloque IMG_4021.MOV aqui
 uv run --extra infer pytest -m gpu tests/gpu/test_smoke_gpu.py -k yolo_light -v -rs
 nvidia-smi --query-gpu=timestamp,memory.used --format=csv,noheader -lms 200 > _testbed/outputs/light_vram_IMG_4021.csv &
 uv run --extra infer python -m det_depth_distance --config configs/yolo_light_da3.yaml --set source.max_frames=300 --set output.tag=light
@@ -335,7 +329,7 @@ medição pendente.**
 
 ## Uso da CLI
 
-No servidor GPU (a partir da raiz do repo; vídeos em `_testbed/data/`):
+Com a stack GPU (a partir da raiz do repo; vídeos em `_testbed/data/`):
 
 ```bash
 uv run --extra infer python -m det_depth_distance --config configs/rfdetr_da3.yaml
@@ -384,7 +378,7 @@ Exemplos versionados em `configs/`: `rfdetr_da3.yaml` (comportamento da
 fusão `wbf` e concordância), e os três de segmentação de instâncias com
 `distance.region: both` e `layout: side-by-side`: `rfdetr_seg_da3.yaml`
 (RF-DETR Seg Large), `yolo_seg_da3.yaml` (YOLO26-L-seg COCO) e
-`yolo_o365_seg_da3.yaml` (YOLO26-L-objv1-seg, Objects365 esperado — a conferir no servidor GPU —, com o mapa de
+`yolo_o365_seg_da3.yaml` (YOLO26-L-objv1-seg, Objects365 esperado — a conferir em GPU —, com o mapa de
 rótulos `objects365_driving`). Refinadores e semântica (`task_0005`):
 `rfdetr_sam2_da3.yaml` e `yolo_o365_sam2_da3.yaml` (máscaras SAM 2.1 das
 caixas, `region: both`), `rfdetr_semantic_da3.yaml` (SegFormer `scene`) e
@@ -402,7 +396,7 @@ Movimento (`task_0009`): `rfdetr_da3_motion.yaml` (`rfdetr_da3_track.yaml` +
 mapa de rótulos COCO + seção `motion` com `cv` por classe, `layout: overlay`
 e painel BEV), ver
 [Estimação de movimento e trajetórias](#estimação-de-movimento-e-trajetórias);
-`rfdetr_sam2_lanes_motion_da3.yaml` é a stack completa no servidor GPU
+`rfdetr_sam2_lanes_motion_da3.yaml` é a stack completa
 (`rfdetr_sam2_da3.yaml` + TwinLiteNet+ `lanes` excluindo `lanes.lane` +
 rastreamento/Kalman + `motion` + BEV, `layout: side-by-side`).
 Caminhos aceitam `~` e, quando relativos, são
@@ -688,7 +682,7 @@ IoU.
   quadro a quadro (0,25 px robusto); com `rel_floor` 2 % o NIS médio no
   vídeo em linha reta fica ≈ 2 (o ruído do DA3 em longa distância tem cauda
   pesada), e `nis_gate` 30 reduz os reinícios 3–6× em relação a 13,8. Os
-  `accel_std` são provisórios. Validado no servidor GPU (passo
+  `accel_std` são provisórios. Validado em GPU (passo
   `20-motion`); conferência visual dos vídeos pendente.
 
 | `motion` | Padrão | Efeito |
@@ -775,7 +769,7 @@ modelo fictício em `configs/references/example_references.yaml`):
 uv run det-depth-distance-evaluate --refs refs/IMG_4100.yaml _testbed/outputs/<execução>
 uv run det-depth-distance-evaluate --refs refs/IMG_4100.yaml RUN_A RUN_B --out _testbed/eval_4100
 uv run --extra eval det-depth-distance-evaluate --refs refs/IMG_4100.yaml RUN_A --plot   # laptop
-# gpu-host: ~/.local/bin/uv run --extra infer det-depth-distance-evaluate ... --plot (nunca --extra eval sozinho)
+# com o ambiente de inferência: uv run --extra infer det-depth-distance-evaluate ... --plot (nunca --extra eval sozinho)
 ```
 
 - **Referências**: `frames: [a, b]` ou `t: [a, b]`; `select` por `box`,
@@ -1086,12 +1080,9 @@ packages), Node.js LTS with npm (to build the front-end once; see
 [Interface web: front-end](#interface-web-front-end-e-editor-de-pipeline) for
 an install without sudo), `git` (Prepare clones pinned code) and network
 access to Hugging Face, GitHub and `repo.roboflow.com` while preparing.
-`gpu-host` in this README is the project's GPU server (an NVIDIA RTX PRO 6000
-reached with `ssh gpu-host`); on your own machine run the same commands
-locally.
 
 1. Clone the repository and install the base Python stack **once** (the
-   server never runs this command; on `gpu-host` use `~/.local/bin/uv`):
+   server never runs this command):
 
    ```bash
    uv sync --extra infer --extra web
@@ -1199,7 +1190,7 @@ it are described in `docs/model_environments.md`. After an install, new runs
 use the packages at once (each run starts a fresh worker process); restart
 the web server only if it should use an upgraded package it had already
 imported. `DDD_UV` names the `uv` executable (default: `uv` on the
-`PATH`; on `gpu-host`, `~/.local/bin/uv`).
+`PATH`).
 
 An explicit path in the YAML overrides the default and behaves as before
 (`hf_cache` relative to the working directory; an absolute or `~` YOLO path;
@@ -1297,11 +1288,11 @@ In the editor (task_0023):
 ### Pesos dos refinadores e do SegFormer
 
 Nada é baixado em tempo de execução (`local_files_only=True`); um peso
-ausente gera `ConfigError` com o comando exato. No servidor, dentro do repo
+ausente gera `ConfigError` com o comando exato. Dentro do repo
 (o filtro evita as cópias `.pt`/`.bin` duplicadas):
 
 ```bash
-~/.local/bin/uv run --extra infer python -c "from huggingface_hub import snapshot_download as d; [d(r, cache_dir='weights/hf', allow_patterns=['*.json', 'model.safetensors']) for r in ('facebook/sam2.1-hiera-large', 'yonigozlan/EdgeTAM-hf', 'syscv-community/sam-hq-vit-huge')]; d('nvidia/segformer-b5-finetuned-cityscapes-1024-1024', cache_dir='weights/hf', allow_patterns=['*.json', 'pytorch_model.bin'])"
+uv run --extra infer python -c "from huggingface_hub import snapshot_download as d; [d(r, cache_dir='weights/hf', allow_patterns=['*.json', 'model.safetensors']) for r in ('facebook/sam2.1-hiera-large', 'yonigozlan/EdgeTAM-hf', 'syscv-community/sam-hq-vit-huge')]; d('nvidia/segformer-b5-finetuned-cityscapes-1024-1024', cache_dir='weights/hf', allow_patterns=['*.json', 'pytorch_model.bin'])"
 # opcionais: d('facebook/sam-vit-base', …) / d('facebook/sam3', …) com o mesmo filtro (sam3: HF_TOKEN com acesso aprovado)
 curl -fL -o weights/ultralytics/mobile_sam.pt https://github.com/ultralytics/assets/releases/download/v8.4.0/mobile_sam.pt   # or --prepare
 ```
@@ -1372,18 +1363,6 @@ estime (`camera.estimate`, mediana de `frames` quadros). Os intrínsecos
 usam coordenadas contínuas (centro do pixel `i` em `i + 0,5`); o `cx`/`cy`
 do OpenCV é 0,5 menor e é convertido na leitura da calibração. `distance_type: euclidean`
 converte a profundidade ao longo do eixo óptico em distância em linha reta.
-
----
-
-## Sincronização com o servidor GPU
-
-| Comando | Efeito |
-|---|---|
-| `utils/sync_gpu_host.sh push` | Envia o working tree (incluindo `.git`) para `gpu-host:~/dev/det-depth-distance`, sem tocar `.venv/`, `_testbed/` e `weights/` remotos |
-| `utils/sync_gpu_host.sh pull [RUN]` | Traz `_testbed/outputs[/RUN]` do servidor para o `_testbed/outputs/` local |
-
-Variáveis opcionais: `SYNC_HOST` (padrão `gpu-host`) e `SYNC_DEST` (padrão
-`dev/det-depth-distance`, relativo ao `$HOME` remoto).
 
 ---
 

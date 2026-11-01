@@ -160,7 +160,7 @@
 <text x="674" y="1520.0" class="y" >  mask_erode: 1       # px do mapa de profundidade</text>
 <rect x="1240" y="1430" width="520" height="184" rx="6" fill="#f8fafc" stroke="#94a3b8" stroke-dasharray="6 4"/>
 <text x="1500.0" y="1506.0" class="ph" text-anchor="middle">Sem exemplo real ainda:</text>
-<text x="1500.0" y="1523.0" class="ph" text-anchor="middle">pesos -seg não estão no gpu-host</text>
+<text x="1500.0" y="1523.0" class="ph" text-anchor="middle">pesos -seg não estão na máquina</text>
 <text x="1500.0" y="1540.0" class="ph" text-anchor="middle">(download na task_0004, com confirmação).</text>
 <text x="1240" y="1630" class="cap" >Não ilustrado para não inventar resultado.</text>
 <line x1="56" y1="1650" x2="56" y2="1666" stroke="#334155" stroke-width="2" marker-end="url(#a)"/>
@@ -403,5 +403,5 @@
 <text x="1396" y="3580" text-anchor="middle" class="badge">0007</text>
 <text x="1428" y="3580" class="s" >calibração</text>
 <text x="30" y="3610" class="s" >Invariante: com tudo novo desligado (padrões), a regressão de 60 quadros da task_0001 segue bit-idêntica. Etapas 4 e 6 só agem com ≥ 2 detectores / detector -seg; 7, 8, 10 e 13 vêm desligadas.</text>
-<text x="30" y="3630" class="s" >Scripts das imagens: _testbed/scripts/flow_*.py no gpu-host (fora do git). Verificação: mediana da picape = 19,725 m, igual ao detections.csv da execução final.</text>
+<text x="30" y="3630" class="s" >Scripts das imagens: _testbed/scripts/flow_*.py (fora do git). Verificação: mediana da picape = 19,725 m, igual ao detections.csv da execução final.</text>
 </svg>

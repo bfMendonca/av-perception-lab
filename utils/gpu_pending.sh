@@ -1,19 +1,18 @@
 #!/usr/bin/env bash
 # Run, in dependency order, every pending GPU check of tasks 0002-0007 and
-# 0009 (and the task_0008 GPU smoke) ON the GPU host, from the repository root, after
-# `utils/sync_gpu_host.sh push` on the laptop. Each step logs to
+# 0009 (and the task_0008 GPU smoke) on the GPU machine, from the repository
+# root. Each step logs to
 # _testbed/outputs/gpu_pending_<stamp>/NN-<id>.log and one line of
 # summary.tsv (id, task, PASS|FAIL|SKIP|MANUAL, exit code, seconds); pytest
-# temporaries go to the sibling gpu_pending_<stamp>_pytest/, so pulling the
-# logs never pulls run outputs. Exit code 1 when a step failed.
+# temporaries go to the sibling gpu_pending_<stamp>_pytest/, so the logs
+# stay apart from run outputs. Exit code 1 when a step failed.
 # A failing command is logged and its step goes on (FAIL at the end), so
 # one missing piece does not hide the rest; runs needing the task_0004
 # weights are skipped while they are missing (rfdetr would download them).
 # Writes only inside the repository; uv from $UV (default ~/.local/bin/uv),
 # always with --extra infer. Weights are never downloaded without
 # --allow-downloads AND an interactive [s/N] per item; task_0004 downloads
-# (caches outside the repo) are only printed (MANUAL). Fetch the logs with
-# `utils/sync_gpu_host.sh pull gpu_pending_<stamp>`; run outputs stay here.
+# (caches outside the repo) are only printed (MANUAL).
 #
 # Usage:
 #   utils/gpu_pending.sh list
@@ -21,10 +20,6 @@
 #                            [--allow-downloads] [--sam-hq base|huge] [--with-optional]
 # ID is the full step id (05-gpu) or its number (05). Long runs (on by
 # default) are skipped with --skip-long; use tmux for a full run.
-# From the laptop:
-#   utils/sync_gpu_host.sh push
-#   ssh -t gpu-host 'cd ~/dev/det-depth-distance && utils/gpu_pending.sh run'
-#   utils/sync_gpu_host.sh pull gpu_pending_<stamp>
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -483,7 +478,7 @@ run_steps() {
   done
   if [[ $DRY_RUN -eq 0 ]]; then
     column -t -s $'\t' "$LOG/summary.tsv" || cat "$LOG/summary.tsv"
-    echo "On the laptop: utils/sync_gpu_host.sh pull gpu_pending_$stamp   (logs only)"
+    echo "Logs: $LOG"
     grep -q $'\tFAIL\t' "$LOG/summary.tsv" && failed=1
   fi
   return "$failed"

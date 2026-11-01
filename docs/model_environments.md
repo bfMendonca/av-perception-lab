@@ -147,8 +147,7 @@ Everything a model downloads lives under one folder, the **weights root**:
 
 1. `--weights-root DIR` of the web server (`det-depth-distance-web`), else
 2. the environment variable `DDD_WEIGHTS_ROOT`, else
-3. `weights/` of the checkout (git-ignored, excluded from
-   `utils/sync_gpu_host.sh push`).
+3. `weights/` of the checkout (git-ignored).
 
 The CLI (`det-depth-distance`) has no flag: it reads `DDD_WEIGHTS_ROOT`.
 The web server passes its root (from `--weights-root`, else
@@ -212,7 +211,7 @@ Task 0021 moved the defaults: RF-DETR from `~/.roboflow/models` to
 `weights/rfdetr`, DA3 from the runtime download to `weights/hf`, YOLO from
 machine paths in the sample YAMLs (`~/dev/ultralytics/...`) to
 `weights/ultralytics`. On a machine that already had the weights (the
-author's laptop, the `gpu-host` GPU host) run `--prepare` once per sample
+author's laptop) run `--prepare` once per sample
 config, or point the YAML options at the existing files (outside the root
 they are simply not tracked). The GPU tests skip an example config until its
 models are ready under the weights root.
@@ -393,8 +392,7 @@ the server. It is installed once, by hand, in the repository:
 uv sync --extra infer --extra web
 ```
 
-(On `gpu-host`: `~/.local/bin/uv sync --extra infer --extra web`; on the
-notebook, with `UV_PROJECT_ENVIRONMENT=_testbed/venv-infer` exported.)
+(On the notebook, with `UV_PROJECT_ENVIRONMENT=_testbed/venv-infer` exported.)
 Neither the server nor `--prepare` ever runs it: when it is missing, the
 inspector shows this command with a copy button instead of a button, and the
 CLI names `uv sync --extra infer`. `uv sync` is exact by default: it removes
@@ -440,8 +438,8 @@ detected.
   `pyproject.toml` and run `uv lock`) and commit both files. An extra the
   `pyproject.toml` does not declare is `failed` with "extra '<name>' is not
   declared in pyproject.toml".
-- **`DDD_UV`** names the `uv` executable (default `uv` on the `PATH`; on
-  `gpu-host`, where uv is not on the `PATH`, `DDD_UV=~/.local/bin/uv`). The
+- **`DDD_UV`** names the `uv` executable (default `uv` on the `PATH`; set
+  `DDD_UV` when uv is not on the `PATH`). The
   command runs in the repository; when `UV_PROJECT_ENVIRONMENT` is not set
   it targets the environment the server or CLI runs in.
 - **Transient failure vs conflict.** uv not found, a timeout or a cancel is
