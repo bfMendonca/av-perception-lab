@@ -31,6 +31,7 @@ from typing import Any
 
 import yaml
 
+from det_depth_distance.core.requirements import WEIGHTS_ROOT_ENV
 from det_depth_distance.web.paths import JOBS_DIR, VIDEO_ID_ENV, WebPaths
 
 LOG_TAIL_LINES = 30
@@ -91,10 +92,19 @@ class JobQueue:
     """FIFO queue with a single runner."""
 
     def __init__(
-        self, paths: WebPaths, worker_argv: Callable[[Path], list[str]]
+        self,
+        paths: WebPaths,
+        worker_argv: Callable[[Path], list[str]],
+        weights_root: Path | None = None,
     ) -> None:
         self.paths = paths
         self.worker_argv = worker_argv
+        # The server's weights root, exported to every worker as an absolute
+        # resolved DDD_WEIGHTS_ROOT (the worker's CLI gate checks the same
+        # folder the 409 check did, whatever the server's working directory).
+        self.weights_root = (
+            None if weights_root is None else Path(weights_root).expanduser().resolve()
+        )
         self._jobs: dict[str, Job] = {}
         self._waiting: list[Job] = []
         self._wake = asyncio.Event()
@@ -281,6 +291,8 @@ class JobQueue:
             path = tmp / "config.yaml"
             path.write_text(yaml.safe_dump(job.config, sort_keys=False))
             env = {**os.environ, VIDEO_ID_ENV: job.video_id or ""}
+            if self.weights_root is not None:
+                env[WEIGHTS_ROOT_ENV] = str(self.weights_root)
             proc = await asyncio.create_subprocess_exec(
                 *self.worker_argv(path),
                 stdout=asyncio.subprocess.PIPE,

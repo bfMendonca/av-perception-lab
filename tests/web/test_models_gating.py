@@ -2,6 +2,7 @@
 (task_0022)."""
 
 import sys
+import time
 from pathlib import Path
 
 import pytest
@@ -132,3 +133,35 @@ def test_submit_run_409_for_unknown_hf_repo(api, fake_models, tmp_path):  # noqa
     [row] = resp.json()["models_not_ready"]
     assert (row["stage"], row["index"]) == ("semantic", 0)
     assert row["message"] == "unknown source: prepare it from the CLI (--prepare)"
+
+
+def test_run_worker_checks_the_same_weights_root_as_the_409_gate(
+    web_paths,
+    fake_models,  # noqa: F811
+    tmp_path,
+    monkeypatch,
+):
+    """The server's root is not the default (and the server's own env names
+    another): a run that passes the 409 gate sees the same root in the worker
+    (DDD_WEIGHTS_ROOT), so the CLI gate finds the same prepared files."""
+    monkeypatch.setenv("DDD_WEIGHTS_ROOT", str(tmp_path / "stale"))
+    seen = tmp_path / "seen.txt"
+    code = (
+        "import sys; from pathlib import Path; "
+        "from det_depth_distance.core.requirements import weights_root; "
+        "r = weights_root(); "
+        f"Path({str(seen)!r}).write_text(f'{{r}}|{{(r / \"gate/a.bin\").is_file()}}')"
+    )
+    app = create_app(web_paths, lambda p: [sys.executable, "-c", code, str(p)])
+    with TestClient(base_url=LOCAL, app=app) as api:
+        cfg = gate_config(tmp_path, "a")
+        job = api.post("/api/models/prepare", json={"config": cfg, "models": "all"})
+        assert wait_prepare(api, job.json()["id"])["status"] == "done"
+        resp = api.post("/api/runs", json={"config": cfg})
+        assert resp.status_code == 200, resp.text
+        deadline = time.monotonic() + 10
+        while not seen.exists():
+            assert time.monotonic() < deadline, "the worker never ran"
+            time.sleep(0.05)
+    root, ready = seen.read_text().split("|")
+    assert root == str(fake_models.root.resolve()) and ready == "True"

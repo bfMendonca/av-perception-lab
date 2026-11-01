@@ -342,3 +342,29 @@ def test_events_resume_after_an_index(tmp_path):
     assert every == list(range(len(job.events)))
     assert [i for i, _ in later] == every[3:]
     assert [e for _, e in later] == job.events[3:]
+
+
+def test_worker_gets_the_absolute_weights_root(tmp_path, monkeypatch):
+    """The worker's CLI gate checks the folder the server's 409 check did:
+    DDD_WEIGHTS_ROOT is the queue's root, absolute and resolved, whatever the
+    server's own environment says (task_0026)."""
+    monkeypatch.setenv("DDD_WEIGHTS_ROOT", str(tmp_path / "stale"))
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "custom-weights").mkdir()
+    env_file = tmp_path / "env.txt"
+
+    async def scenario():
+        queue = JobQueue(
+            WebPaths(tmp_path / "out", tmp_path / "lib"),
+            argv,
+            weights_root=Path("custom-weights"),  # relative to the server cwd
+        )
+        try:
+            job = queue.submit({"fake": {"name": "e", "env_file": str(env_file)}})
+            await collect(queue, job.id)
+            return job.status
+        finally:
+            await queue.aclose()
+
+    assert asyncio.run(scenario()) == "done"
+    assert env_file.read_text() == str((tmp_path / "custom-weights").resolve())

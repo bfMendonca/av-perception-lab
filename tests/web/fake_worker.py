@@ -2,7 +2,8 @@
 
 Usage: python fake_worker.py [--mode MODE] CONFIG.yaml. The config's `fake`
 mapping picks the behaviour: mode ok | sleep | crash, `mark` (file that
-records start/end), `pid_file`, `name`. Validated configs cannot carry a
+records start/end), `pid_file`, `env_file` (receives DDD_WEIGHTS_ROOT),
+`name`. Validated configs cannot carry a
 `fake` key: API tests pick the mode with `--mode` in their `worker_argv`.
 Like the real worker, web_run.json records the video id of DDD_WEB_VIDEO_ID.
 """
@@ -29,6 +30,8 @@ def main() -> int:
     fake = cfg.get("fake") or ({"mode": mode_arg} if mode_arg else {})
     name = fake.get("name", "job")
     mode = fake.get("mode", "ok")
+    if fake.get("env_file"):  # the weights root the worker's CLI would use
+        Path(fake["env_file"]).write_text(os.environ.get("DDD_WEIGHTS_ROOT", ""))
     if fake.get("pid_file"):
         Path(fake["pid_file"]).write_text(str(os.getpid()))
     if fake.get("mark"):

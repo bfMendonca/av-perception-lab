@@ -241,7 +241,8 @@ def test_install_packages_job_streams_output_and_requires_restart(
     assert job["status"] == "done", job
     model = job["models"][0]
     assert model["installed"] is True
-    assert "restart the server" in model["message"]
+    # Runs use them at once (a fresh worker); no blanket "restart" demand.
+    assert model["message"].startswith("packages installed: new runs use them")
     lines = [e["line"] for e in events_of(api, job["id"]) if e["event"] == "output"]
     assert lines[0].startswith("$ uv --color never sync --locked --inexact")
     assert " + xyzlib==1.0" in lines
@@ -309,3 +310,29 @@ def test_cancel_install_kills_uv_and_frees_the_queue(api, fake_uv, tmp_path):  #
     fake_uv.mode("ok")
     nxt = wait_prepare(api, install(api, pkg_config(tmp_path)).json()["id"])
     assert nxt["status"] == "done"
+
+
+def test_install_job_exception_text_is_scrubbed_and_redacted(
+    api,
+    fake_uv,  # noqa: F811
+    fake_models,  # noqa: F811
+    tmp_path,
+    monkeypatch,
+):
+    root = fake_models.root
+
+    def broken(*args, **kwargs):
+        raise RuntimeError(
+            f"boom at {root}/x with Authorization: Bearer abcdefghijklmnop "
+            "and https://alice:s3cr3t@pypi.example.com/simple"
+        )
+
+    monkeypatch.setattr(models, "install_packages", broken)
+    resp = install(api, pkg_config(tmp_path))
+    assert resp.status_code == 200, resp.text
+    job = wait_prepare(api, resp.json()["id"])
+    message = job["models"][0]["message"]
+    assert job["status"] == "failed" and message.startswith("RuntimeError: boom")
+    assert str(root) not in message and "<weights root>/x" in message
+    for secret in ("abcdefghijklmnop", "alice", "s3cr3t"):
+        assert secret not in message, secret

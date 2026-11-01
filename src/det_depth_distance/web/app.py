@@ -196,7 +196,7 @@ def create_app(
     problem = security.weights_root_problem(root, paths)
     if problem is not None:
         raise ValueError(problem)
-    jobs = JobQueue(paths, worker_argv)
+    jobs = JobQueue(paths, worker_argv, weights_root=root)
     prepares = models.PrepareQueue(root)
     library = Library(paths.library_root, paths.data_roots)
     upload_slots = asyncio.Semaphore(MAX_CONCURRENT_UPLOADS)
@@ -404,7 +404,7 @@ def create_app(
                     meta.path if meta else None,
                 )
             except InvalidVideo as exc:
-                raise HTTPException(422, str(exc)) from None
+                raise HTTPException(422, models.client_text(str(exc), root)) from None
             return record.to_dict()
         finally:
             await run_in_threadpool(shutil.rmtree, stage, True)
@@ -418,7 +418,7 @@ def create_app(
         except FileNotFoundError as exc:
             raise HTTPException(404, str(exc)) from None
         except InvalidVideo as exc:
-            raise HTTPException(422, str(exc)) from None
+            raise HTTPException(422, models.client_text(str(exc), root)) from None
 
     @app.get("/api/videos/{video_id}")
     def get_video(video_id: str) -> dict[str, Any]:
@@ -667,7 +667,7 @@ def create_app(
             except models.UnknownModel as exc:
                 raise HTTPException(422, exc.args[0]) from None
             except ConfigError as exc:
-                raise HTTPException(422, str(exc)) from None
+                raise HTTPException(422, models.client_text(str(exc), root)) from None
             # Checked after the await, right before queueing (one loop thread).
             if jobs.active():
                 raise HTTPException(
@@ -681,9 +681,10 @@ def create_app(
             )
         except models.UnknownModel as exc:
             raise HTTPException(422, exc.args[0]) from None
-        # ConfigError, UnknownSource, NotInstallable, nothing selected
+        # ConfigError, UnknownSource, UserProvidedOnly, NotInstallable,
+        # nothing selected
         except ValueError as exc:
-            raise HTTPException(422, str(exc)) from None
+            raise HTTPException(422, models.client_text(str(exc), root)) from None
         return job.to_dict(prepares.position(job))
 
     @app.get("/api/models/prepare")

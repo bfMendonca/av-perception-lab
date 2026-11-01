@@ -13,8 +13,9 @@
   into the folders clients write (library, run outputs) and, with
   `--asset-root`, must lie inside one or inside the weights root (where
   Prepare writes only what the adapters' code declares).
-- `weights_root_problem`: the weights root may not overlap a folder clients
-  write.
+- `weights_root_problem`: the weights root may not be `/`, the home folder,
+  contain the project or the active environment, or overlap a folder
+  clients write.
 - `file_headers`: served files never run as a page of the app's origin.
 """
 
@@ -28,6 +29,7 @@ from fastapi import HTTPException
 from starlette.responses import JSONResponse
 from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
+from det_depth_distance.core import requirements
 from det_depth_distance.core.requirements import weights_root
 from det_depth_distance.web import schema
 from det_depth_distance.web.paths import WebPaths
@@ -221,9 +223,14 @@ def path_problems(config: dict[str, Any], paths: WebPaths) -> list[dict[str, str
 
 
 def weights_root_problem(root: Path, paths: WebPaths) -> str | None:
-    """Why `root` cannot be the weights root (None when it can): it may not be,
+    """Why `root` cannot be the weights root (None when it can): never `/`,
+    the home folder or a folder containing the project or the active Python
+    environment (`core.requirements.weights_root_problem`); and it may not be,
     contain or lie inside a folder clients write (an upload would then count
     as a prepared checkpoint, or a download land among the uploads)."""
+    problem = requirements.weights_root_problem(root)
+    if problem is not None:
+        return problem
     real = Path(root).expanduser().resolve()
     for folder in client_writable_roots(paths):
         if within(real, [folder]) or within(folder, [real]):

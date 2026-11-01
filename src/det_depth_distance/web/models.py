@@ -26,11 +26,24 @@ A row whose packages are missing carries the packages plan
 dry-run, or the state `conflict` with the resolver's reason. A job submitted
 with `packages=True` installs per-model extras (`install_packages`: fresh
 dry-run, then `uv sync` naming every installed extra) and streams the `uv`
-output as `output` events; afterwards `restart_required` is set (the server
-has to be restarted to use them).
+output as `output` events; afterwards `restart_required` is set. Runs use the
+new packages at once (each run starts a fresh worker process, and the status
+checks re-scan the environment); a server restart is only needed when a
+package the server process itself imported was upgraded.
+
+What the web may prepare: a row is `preparable` when it is missing and a
+Prepare can fix it. It is not when its missing files come from a source the
+adapter does not vouch for (`reason="unknown_source"`: `Asset.known` /
+`CodeRepo.known` False, fail closed), when every missing file can only be
+provided by the user (`reason="user_provided"`: `Asset.downloadable` False,
+the code layer ready; the message carries the manual-download hint) or when
+only packages are missing (`reason="packages_only"`). "Prepare all" leaves
+the first two out and lists them in the job's `skipped`. The queue runs the
+engine with `allow_unknown=False`, so an unknown source is never fetched even
+when its file disappears after the job was queued.
 
 Text sent to clients names the weights root `<weights root>`, never its
-absolute path.
+absolute path, and is scrubbed of credentials.
 """
 
 import asyncio
@@ -53,9 +66,11 @@ from det_depth_distance.core.provision import (
     with_package_plan,
 )
 from det_depth_distance.core.provision import packages as pkgs
+from det_depth_distance.core.provision.engine import UNKNOWN_SOURCE
 from det_depth_distance.core.requirements import (
     CODE_DIR,
     Asset,
+    CodeRepo,
     ModelStatus,
     Requirements,
     check,
@@ -69,7 +84,11 @@ RECENT_FINISHED = 20
 PROGRESS_INTERVAL_S = 0.2  # at most one progress event per item and interval
 TERMINAL = ("done", "failed", "cancelled")
 SHUTDOWN_ERROR = "the server shut down"
-UNKNOWN_SOURCE = "unknown source: prepare it from the CLI (--prepare)"
+INSTALLED_NOTE = (
+    "packages installed: new runs use them (each run starts a fresh worker "
+    "process); restart the server only if it should use an upgraded package "
+    "it had already imported"
+)
 OUTPUT_LIMIT = 2000  # `output` events kept per job
 _INDEXED = re.compile(r"^(?P<stage>.+)\[(?P<index>\d+)\]$")
 
@@ -89,6 +108,11 @@ class UnknownSource(ValueError):
     """A model whose missing files come from a source its adapter does not
     vouch for (`Asset.known` False, e.g. a Hugging Face repo typed in the
     config): the web server never downloads it."""
+
+
+class UserProvidedOnly(ValueError):
+    """A model whose only missing files are ones the user must provide
+    (`Asset.downloadable` False): a Prepare cannot fetch them."""
 
 
 @dataclass(frozen=True)
@@ -147,20 +171,40 @@ def redact(text: str | None, root: Path) -> str | None:
     return redact_root(text, root, ROOT_LABEL)
 
 
-def unknown_sources(req: Requirements, root: Path) -> list[Asset]:
-    """Assets of `req` that are not ready and whose source the adapter does
-    not vouch for (`known` False)."""
-    out = []
-    for asset in req.assets:
-        if asset.known:
-            continue
-        try:
-            ready = asset.present(root).state == "ready"
-        except (OSError, RuntimeError, ValueError):
-            ready = False
-        if not ready:
-            out.append(asset)
-    return out
+def client_text(text: str, root: Path) -> str:
+    """Text for a client: credentials scrubbed, the weights root as
+    `<weights root>`, the project folder as `.` and the home as `~`."""
+    project = pkgs.default_pyproject().parent
+    return pkgs.relative(redact(text, root) or "", project)
+
+
+def _ready(item: Asset | CodeRepo, root: Path) -> bool:
+    try:
+        return item.present(root).state == "ready"
+    except (OSError, RuntimeError, ValueError):
+        return False
+
+
+def unknown_sources(req: Requirements, root: Path) -> list[Asset | CodeRepo]:
+    """Downloadable assets and code repos of `req` that are not ready and
+    whose source the adapter does not vouch for (`known` False). A kind that
+    is never downloaded (`UserProvided`) is not a source: see
+    `user_provided_only`."""
+    items: list[Asset | CodeRepo] = [
+        a for a in req.assets if type(a).downloadable and not a.known
+    ]
+    items += [c for c in req.code if not c.known]
+    return [item for item in items if not _ready(item, root)]
+
+
+def user_provided_only(req: Requirements, status: ModelStatus, root: Path) -> bool:
+    """True when what a Prepare could fetch is all there (code layer ready,
+    every asset that is not ready is non-downloadable) and at least one
+    user-provided file is missing: only the user can make the model ready."""
+    if status.layers.get("code", "ready") != "ready":
+        return False
+    pending = [a for a in req.assets if not _ready(a, root)]
+    return bool(pending) and not any(type(a).downloadable for a in pending)
 
 
 def status_view(status: ModelStatus, root: Path) -> dict[str, Any]:
@@ -201,12 +245,17 @@ def declaration_view(req: Requirements | None, root: Path) -> dict[str, Any]:
     }
 
 
-def with_action(row: dict[str, Any], unknown: bool) -> dict[str, Any]:
+def with_action(
+    row: dict[str, Any], unknown: bool, manual: bool = False
+) -> dict[str, Any]:
     """Add `reason` (why the web cannot prepare it: "unknown_source",
-    "packages_only", or None) and `preparable` (a web Prepare can fix it)."""
+    "user_provided", "packages_only", or None) and `preparable` (a web
+    Prepare can fix it)."""
     missing = row.get("missing") or []
     if unknown:
         reason = "unknown_source"
+    elif manual:
+        reason = "user_provided"
     elif missing and all(m.startswith(PACKAGE_PREFIX) for m in missing):
         reason = "packages_only"
     else:
@@ -262,6 +311,11 @@ def status_row(
     unknown = view["state"] != "failed" and bool(unknown_sources(row.req, root))
     if unknown:
         view["state"], view["message"] = "missing", UNKNOWN_SOURCE
+    manual = (
+        not unknown
+        and view["state"] == "missing"
+        and user_provided_only(row.req, status, root)
+    )
     return with_action(
         {
             **row.head(),
@@ -270,6 +324,7 @@ def status_row(
             "packages": plan_view(plan, root),
         },
         unknown,
+        manual,
     )
 
 
@@ -311,6 +366,8 @@ class ModelProgress:
     size_bytes: int | None = None
     message: str | None = None
     installed: bool = False  # a packages job ran `uv sync` to completion
+    # a weights job fetched everything it could; only user files are missing
+    manual: bool = False
     # packages job: the plan shown to the user (computed by the server) and
     # the config-wide import names it was computed with
     expected: pkgs.PackagePlan | None = field(default=None, repr=False)
@@ -348,7 +405,7 @@ class PrepareJob:
     changed: asyncio.Event = field(default_factory=asyncio.Event, repr=False)
     current: ModelProgress | None = field(default=None, repr=False)
     # models of a `models: "all"` request left out: {stage, index, type,
-    # name, message} (an unknown source)
+    # name, message} (an unknown source, or only user-provided files missing)
     skipped: list[dict[str, Any]] = field(default_factory=list)
     output_lines: int = 0
 
@@ -394,15 +451,19 @@ class PrepareQueue:
         those models (`install_plans`, called from a thread first), each must
         be "install"; the job's fresh dry-run must give the same plan.
 
-        A model with an unknown source (`unknown_sources`) is never queued:
-        named explicitly it raises `UnknownSource`; with "all" it is left out
-        and listed in the job's `skipped`.
+        A model with an unknown source (`unknown_sources`), or whose only
+        missing files are user-provided (`user_provided_only`), is never
+        queued: named explicitly it raises `UnknownSource` /
+        `UserProvidedOnly`; with "all" it is left out and listed in the job's
+        `skipped` with its message (the manual-download hint).
 
         Raises:
             ConfigError: the configuration is invalid.
             UnknownModel: a key is not one of the config's models.
             UnknownSource: a named model (or, with "all", every model that
                 is not ready) has an unknown source.
+            UserProvidedOnly: a named model (or, with "all", every model
+                that is not ready) only misses user-provided files.
             NotInstallable: `packages` for a model without a per-model extra
                 (the base stack is never installed by the server).
             ValueError: no model selected, or `packages` with "all".
@@ -412,15 +473,19 @@ class PrepareQueue:
         if packages and models == "all":
             raise ValueError("Install packages names its models (not 'all')")
         if models == "all":
-            chosen = []
+            chosen, errors = [], []
             for row in rows:
-                if row.req is not None and unknown_sources(row.req, self.root):
-                    skipped.append({**row.head(), "message": UNKNOWN_SOURCE})
+                why = self._not_preparable(row)
+                if why is not None:
+                    errors.append(why[0])
+                    skipped.append({**row.head(), "message": why[1]})
                 else:
                     chosen.append(row)
             if skipped and not chosen:
-                names = ", ".join(f"{_where_of(s)} {s['name']}" for s in skipped)
-                raise UnknownSource(f"{names}: {UNKNOWN_SOURCE}")
+                names = "; ".join(
+                    f"{_where_of(s)} {s['name']}: {s['message']}" for s in skipped
+                )
+                raise errors[0](names)
         else:
             by_key = {row.key: row for row in rows}
             chosen, seen = [], set()
@@ -433,8 +498,8 @@ class PrepareQueue:
                 row = by_key[key]
                 if packages:
                     _check_installable(row, (plans or {}).get(key))
-                elif row.req is not None and unknown_sources(row.req, self.root):
-                    raise UnknownSource(f"{_where(row)} {row.name}: {UNKNOWN_SOURCE}")
+                elif (why := self._not_preparable(row)) is not None:
+                    raise why[0](f"{_where(row)} {row.name}: {why[1]}")
                 if key not in seen:
                     seen.add(key)
                     chosen.append(row)
@@ -456,6 +521,20 @@ class PrepareQueue:
         self._wake.set()
         self._forget_old()
         return job
+
+    def _not_preparable(self, row: ModelRow) -> tuple[type[ValueError], str] | None:
+        """(error class, message) when a weights Prepare must not take `row`:
+        an unknown source, or only user-provided files missing (the message
+        is the row's, with the manual-download hint)."""
+        if row.req is None:
+            return None
+        if unknown_sources(row.req, self.root):
+            return UnknownSource, UNKNOWN_SOURCE
+        status = check(row.req, self.root)
+        if status.state == "missing" and user_provided_only(row.req, status, self.root):
+            hint = redact(status.message, self.root) or "provide the missing file"
+            return UserProvidedOnly, hint
+        return None
 
     def install_plans(
         self, models: list[Key], data: dict[str, Any]
@@ -615,7 +694,7 @@ class PrepareQueue:
             except asyncio.CancelledError:
                 raise
             except Exception as exc:  # noqa: BLE001 - a bug must not stall the queue
-                job.error = redact(f"{type(exc).__name__}: {exc}", self.root)
+                job.error = client_text(f"{type(exc).__name__}: {exc}", self.root)
                 self._finish(job)
 
     async def _execute(self, job: PrepareJob) -> None:
@@ -637,13 +716,22 @@ class PrepareQueue:
                 await self._install(job, model, loop)
             else:
                 progress = self._progress(job, model, loop)
-                try:
-                    status = await asyncio.to_thread(
-                        prepare, model.row.req, self.root, progress, job.cancel_event
+                req, root, cancel = model.row.req, self.root, job.cancel_event
+
+                def run(req=req, root=root, cancel=cancel, progress=progress):
+                    # The web never fetches a source the adapter does not
+                    # vouch for, even if it went missing after queueing.
+                    status = prepare(req, root, progress, cancel, allow_unknown=False)
+                    manual = status.state == "missing" and user_provided_only(
+                        req, status, root
                     )
+                    return status, manual
+
+                try:
+                    status, model.manual = await asyncio.to_thread(run)
                 except Exception as exc:  # noqa: BLE001 - reported, never a crash
                     model.state = "failed"
-                    model.message = redact(f"{type(exc).__name__}: {exc}", self.root)
+                    model.message = client_text(f"{type(exc).__name__}: {exc}", root)
                 else:
                     view = status_view(status, self.root)
                     model.state = view["state"]
@@ -698,7 +786,7 @@ class PrepareQueue:
             )
         except Exception as exc:  # noqa: BLE001 - reported, never a crash
             model.state = "failed"
-            model.message = redact(f"{type(exc).__name__}: {exc}", self.root)
+            model.message = client_text(f"{type(exc).__name__}: {exc}", self.root)
             return
         view = status_view(outcome.status, self.root)
         model.state = view["state"]
@@ -707,7 +795,7 @@ class PrepareQueue:
         model.installed = outcome.installed
         if outcome.installed:
             self.restart_required = True
-            model.message = "packages installed: restart the server to use them"
+            model.message = INSTALLED_NOTE
 
     def _progress(self, job: PrepareJob, model: ModelProgress, loop):
         """Engine progress callback (any thread): throttled, then handed to
@@ -772,11 +860,13 @@ def _check_installable(row: ModelRow, plan: pkgs.PackagePlan | None) -> None:
 
 
 def _succeeded(job: PrepareJob, model: ModelProgress) -> bool:
-    """A Prepare succeeds when the model is ready; Install packages when its
-    packages layer is (its weights may still be missing)."""
+    """A Prepare succeeds when the model is ready, or when everything it
+    could fetch is there and only user-provided files are missing (the row
+    then says which); Install packages when its packages layer is ready (its
+    weights may still be missing)."""
     if job.kind == "packages":
         return model.layers.get("packages") == "ready"
-    return model.state == "ready"
+    return model.state == "ready" or model.manual
 
 
 def _where(row: ModelRow) -> str:

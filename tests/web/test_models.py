@@ -686,3 +686,200 @@ def test_prepare_listing_returns_recent_jobs(api, fake_models, tmp_path):  # noq
     assert rows[("detectors", 0)]["preparable"] is False
     api.delete(f"/api/models/prepare/{job['id']}")
     assert wait_prepare(api, job["id"])["status"] == "cancelled"
+
+
+# --- final wave (task_0026) -------------------------------------------------
+
+
+def test_user_provided_only_model_is_not_preparable_and_skipped_by_all(
+    api,
+    fake_models,  # noqa: F811
+    tmp_path,
+):
+    """A model whose only missing file is a manual download is never offered
+    as Prepare: reason `user_provided`, the row's message carries the hint,
+    Prepare all leaves it out (listed in `skipped`), naming it is a 422."""
+    root = fake_models.root
+    (root / "gate").mkdir(parents=True)
+    (root / "gate/m.bin").write_bytes(b"x" * 8)  # its downloadable file is there
+    cfg = gate_config(tmp_path, "a", {"blob": "m", "manual": "big"})
+    rows = by_key(status_of(api, cfg))
+    manual = rows[("detectors", 1)]
+    assert manual["state"] == "missing" and manual["preparable"] is False
+    assert manual["reason"] == "user_provided"
+    assert "manual download: save big.pth by hand" in manual["message"]
+    assert rows[("detectors", 0)]["preparable"] is True
+    job = api.post("/api/models/prepare", json={"config": cfg, "models": "all"}).json()
+    assert [(s["stage"], s["index"]) for s in job["skipped"]] == [("detectors", 1)]
+    assert "save big.pth by hand" in job["skipped"][0]["message"]
+    chosen = [(m["stage"], m["index"]) for m in job["models"]]
+    assert ("detectors", 0) in chosen and ("detectors", 1) not in chosen
+    assert wait_prepare(api, job["id"])["status"] == "done"
+    named = api.post(
+        "/api/models/prepare",
+        json={"config": cfg, "models": [{"stage": "detectors", "index": 1}]},
+    )
+    assert named.status_code == 422
+    assert "save big.pth by hand" in named.json()["detail"]
+    assert ("gate/big.pth", CODE_URL) not in fake_models.source.calls
+
+
+def test_prepare_that_fetches_all_it_can_ends_done_with_the_manual_hint(
+    api,
+    fake_models,  # noqa: F811
+    tmp_path,
+):
+    cfg = gate_config(tmp_path, {"blob": "m", "manual": "big"})
+    row = by_key(status_of(api, cfg))[("detectors", 0)]
+    assert row["preparable"] is True and row["reason"] is None  # gate/m.bin first
+    job = api.post("/api/models/prepare", json={"config": cfg, "models": "all"}).json()
+    job = wait_prepare(api, job["id"])
+    assert job["status"] == "done", job  # no "Prepare failed" for a manual step
+    (model,) = [m for m in job["models"] if m["stage"] == "detectors"]
+    assert model["state"] == "missing"
+    assert "provide this file: manual download: save big.pth" in model["message"]
+    after = by_key(status_of(api, cfg))[("detectors", 0)]
+    assert after["reason"] == "user_provided" and after["preparable"] is False
+
+
+def test_engine_rechecks_unknown_sources_when_the_job_runs(
+    api,
+    fake_models,  # noqa: F811
+    tmp_path,
+):
+    """Ready (so queued) at submit, missing when the job reaches it: the web
+    engine still never fetches a source the adapter does not vouch for."""
+    root = fake_models.root
+    (root / "gate").mkdir(parents=True)
+    (root / "gate/u.bin").write_bytes(b"x" * 8)
+    cfg = gate_config(tmp_path, ("a", "block"), {"blob": "u", "known": False})
+    job = api.post("/api/models/prepare", json={"config": cfg, "models": "all"}).json()
+    assert job["skipped"] == []
+    assert [m["name"] for m in job["models"][:2]] == ["ga", "gu"]
+    assert fake_models.source.started.wait(5)
+    (root / "gate/u.bin").unlink()
+    fake_models.source.release.set()
+    job = wait_prepare(api, job["id"])
+    assert job["status"] == "failed"
+    unknown = job["models"][1]
+    assert unknown["state"] == "failed" and "unknown source" in unknown["message"]
+    assert [t for t, _ in fake_models.source.calls] == ["gate/a.bin"]
+    assert not (root / "gate/u.bin").exists()
+
+
+def test_web_cannot_prepare_hostile_weights_or_hf_cache_targets(
+    api,
+    fake_models,  # noqa: F811
+    tmp_path,
+    hf_calls,
+    monkeypatch,
+):
+    """A release name or a known repo at a client-chosen place inside the
+    weights root is not vouched for: shown as unknown source, refused, and
+    nothing is written."""
+    from det_depth_distance.core.provision import sources
+
+    def no_network(*args, **kwargs):
+        raise AssertionError("the web downloaded a client-chosen target")
+
+    monkeypatch.setattr(sources, "_open", no_network)
+    root = fake_models.root
+    hostile = {
+        "detectors": [
+            {
+                "type": "yolo",
+                "name": "evil",
+                "weights": str(root / "_code/TwinLiteNetPlus/yolo26n.pt"),
+            }
+        ],
+        "depth": {"type": "da3", "hf_cache": str(root / "_code/cache")},
+        "camera": {"estimate": None},
+    }
+    rows = by_key(status_of(api, hostile))
+    for key in (("detectors", 0), ("depth", None)):
+        assert rows[key]["reason"] == "unknown_source", rows[key]
+        assert rows[key]["preparable"] is False
+        resp = api.post(
+            "/api/models/prepare",
+            json={"config": hostile, "models": [{"stage": key[0], "index": key[1]}]},
+        )
+        assert resp.status_code == 422 and "unknown source" in resp.json()["detail"]
+    resp = api.post("/api/models/prepare", json={"config": hostile, "models": "all"})
+    assert resp.status_code == 422
+    assert hf_calls == []
+    assert not (root / "_code").exists()
+
+
+def test_size_mismatched_file_survives_a_web_prepare(
+    api,
+    fake_models,  # noqa: F811
+    tmp_path,
+    monkeypatch,
+):
+    from det_depth_distance.core.provision import sources
+
+    monkeypatch.setattr(
+        sources, "_open", lambda *a, **k: pytest.fail("downloaded over a user file")
+    )
+    root = fake_models.root
+    mine = root / "ultralytics/yolo26n.pt"
+    mine.parent.mkdir(parents=True)
+    mine.write_bytes(b"my fine-tuned checkpoint")
+    cfg = {
+        "detectors": [{"type": "yolo", "name": "mine", "weights": "yolo26n.pt"}],
+        "depth": {"type": "da3", "hf_cache": str(tmp_path / "elsewhere")},
+        "camera": {"estimate": None},
+    }
+    row = by_key(status_of(api, cfg))[("detectors", 0)]
+    assert row["state"] == "failed" and row["preparable"] is False
+    assert "exists with a different size at ultralytics/yolo26n.pt" in row["message"]
+    job = api.post("/api/models/prepare", json={"config": cfg, "models": "all"}).json()
+    job = wait_prepare(api, job["id"])
+    assert job["status"] == "failed" and "move or delete it" in job["error"]
+    assert mine.read_bytes() == b"my fine-tuned checkpoint"
+
+
+def test_prepare_422_replies_are_redacted(
+    api,
+    fake_models,  # noqa: F811
+    tmp_path,
+    monkeypatch,
+):
+    from det_depth_distance.core.options import ConfigError
+    from det_depth_distance.web import models
+
+    root = fake_models.root
+
+    def leaky(data):
+        raise ConfigError(
+            f"model: x is not in {root}/hf (Authorization: Bearer abcdefghijkl)"
+        )
+
+    monkeypatch.setattr(models, "config_rows", leaky)
+    resp = api.post(
+        "/api/models/prepare",
+        json={"config": gate_config(tmp_path, "a"), "models": "all"},
+    )
+    assert resp.status_code == 422
+    detail = resp.json()["detail"]
+    assert str(root) not in detail and "<weights root>/hf" in detail
+    assert "abcdefghijkl" not in detail
+
+
+@pytest.mark.parametrize("bad", ["/", "home", "repo-parent"])
+def test_server_refuses_an_unsafe_weights_root(monkeypatch, tmp_path, capsys, bad):
+    from det_depth_distance.core import requirements as rq
+    from det_depth_distance.web import server
+
+    root = {"/": Path("/"), "home": Path.home(), "repo-parent": REPO.parent}[bad]
+    monkeypatch.setattr(rq, "_explicit_root", None)
+    ran = []
+    monkeypatch.setattr("uvicorn.run", lambda *a, **k: ran.append(a))
+    argv = ["--out-root", str(tmp_path / "out"), "--library-root", str(tmp_path / "l")]
+    with pytest.raises(SystemExit) as exc:
+        server.main([*argv, "--weights-root", str(root)])
+    assert exc.value.code == 2 and not ran
+    assert "use a dedicated folder" in capsys.readouterr().err
+    monkeypatch.setattr(rq, "_explicit_root", root)
+    with pytest.raises(ValueError, match="dedicated folder"):
+        create_app(WebPaths(tmp_path / "out", tmp_path / "l", ()))
