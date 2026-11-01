@@ -300,7 +300,10 @@ and `--list-models`; `--config run.yaml --prepare` builds the components
 pinned code under the weights root (`DDD_WEIGHTS_ROOT`, default `weights/`;
 also the focal model of `camera.estimate`),
 prints a status table and exits 0 only when every component is ready (1
-otherwise, 2 for configuration errors). A run without `--prepare` checks the
+otherwise, 2 for configuration errors or an unsafe weights root; a file only
+the user can provide is listed as "provide this file: <hint>" with state
+`missing`, not `failed`; an existing file of another size is never
+replaced). A run without `--prepare` checks the
 same requirements after every configuration error and before any model is
 loaded (`cli.require_ready`): a model that is not ready is a ConfigError
 (exit 2) listing each one with what is missing (root-relative) and naming
@@ -436,29 +439,49 @@ once the engine notices between chunks, its model stays not ready). One
 `call_soon_threadsafe`); nothing is persisted (the 20 latest finished jobs are
 kept in memory). Messages name the weights root `<weights root>`, never its
 absolute path (`core.requirements.redact_root`: absolute and resolved forms
-only, at a path boundary, one pass). Known sources only (fix round 1):
-`Asset.known` (default True) is set by the adapter's code; `hf_asset` sets it
-to `repo in HF_FACTS`, so a Hugging Face repo typed in `depth.model`,
-`refiners[i].model` or `semantic[i].model` that is not in the table is
-`known=False`. From the web such a model reads `missing` with the message
-"unknown source: prepare it from the CLI (--prepare)"; naming it in
-`/api/models/prepare` is a 422; `models: "all"` prepares the other models and
-lists it in the job's `skipped` (`[{stage, index, type, name, message}]`; 422
-only when every model is skipped). The CLI `--prepare` downloads any repo. `POST /api/runs` and rerun answer 409 `{models_not_ready:
+only, at a path boundary — backtick, `<`, `>`, `{`, `}` included — one pass;
+422 replies and job exception texts are also scrubbed of credentials,
+`web.models.client_text`). Known sources only (fix round 1, fail closed since
+task_0026): `Asset.known` and `CodeRepo.known` default to False and the
+adapter's code sets them only for the canonical target — `ultralytics/<release
+name>`, the `hf` cache for repos in `HF_FACTS`, the RF-DETR table, the pinned
+TwinLiteNet+ clone — so a Hugging Face repo typed in `depth.model`,
+`refiners[i].model` or `semantic[i].model` that is not in the table, a release
+file name at a client-chosen `weights` path, or a known repo in another
+`hf_cache` folder is `known=False`. From the web such a model reads `missing`
+with the message "unknown source: prepare it from the CLI (--prepare)"; naming
+it in `/api/models/prepare` is a 422; `models: "all"` prepares the other
+models and lists it in the job's `skipped` (`[{stage, index, type, name,
+message}]`; 422 only when every model is skipped). The queue runs
+`engine.prepare(..., allow_unknown=False)`, which re-checks `known` when the
+job runs (the CLI passes `allow_unknown=True` and downloads any repo). A row
+whose only missing files are user-provided (`Asset.downloadable` False, code
+layer ready) has `reason: "user_provided"`, is not preparable and is skipped
+by "all" the same way (its message is the manual-download hint); the engine
+reports such a file as "provide this file: ..." without failing the model,
+and a weights job that fetched everything else ends `done`. An existing file
+whose size or sha256 differs from the declaration is `failed` ("exists with a
+different size at <target>; move or delete it, or point the config at
+another file") and is never downloaded over. URL downloads stop when the
+body exceeds the expected size and check free disk space first. `POST /api/runs` and rerun answer 409 `{models_not_ready:
 [status rows]}` when a model is not `ready` (after the 422 checks).
 `--weights-root` (else `DDD_WEIGHTS_ROOT`, else `weights/`) is set with
-`set_weights_root`; it may not be, contain or lie inside the library or
-`--out-root` (start-up error; `create_app` raises ValueError). With
+`set_weights_root` and exported to every run worker as an absolute, resolved
+`DDD_WEIGHTS_ROOT`; it may not be `/` or the home folder, contain the project,
+the active Python environment, or be, contain or lie inside the library or
+`--out-root` (start-up error; `create_app` raises ValueError;
+`core.requirements.weights_root_problem`, also checked by the CLI with the
+config's `output.out_root`). With
 `--asset-root`, the weights root is an implicit asset root, and a `Path`
 option with `core.options.PATH_RESOLVER` field metadata (YOLO / Ultralytics
 SAM `weights` -> `resolve_weights`) is checked as its adapter resolves it.
 
 Status rows also carry (task_0023 review): `source` (each asset kind's
 `Asset.describe_source()`, default the kind name; HF "Hugging Face · <repo>",
-URL host, "git · <url>" for code, the user-provided hint), `license`, `target`
-(weights-root-relative), all "; "-joined and redacted, plus `reason`
-(`unknown_source` | `packages_only` | null) and `preparable` (state `missing`
-and no reason). `GET /api/models/prepare` lists the queue's jobs (newest
+URL host, "git · <host>/<path>" for code, the user-provided hint), `license`,
+`target` (weights-root-relative), all "; "-joined and redacted, plus `reason`
+(`unknown_source` | `user_provided` | `packages_only` | null) and
+`preparable` (state `missing` and no reason). `GET /api/models/prepare` lists the queue's jobs (newest
 first, `PrepareQueue.recent()`), so a reloaded page re-attaches.
 
 Packages in the web (task_0024): rows carry `packages` (null when present,
@@ -480,7 +503,9 @@ The server never installs the base stack: a `base` row shows
 `uv sync --extra infer --extra web` with a copy button. UI: **Install
 packages** (only for a clean dry-run) opens a Dialog stating the command and
 that nothing is removed; the inspector shows the `uv` output while it runs and
-"Restart the server to use them" (section note and banner) afterwards.
+afterwards (section note and banner) that new runs use the packages (each run
+starts a fresh worker; a server restart is only for an upgraded package the
+server had already imported).
 
 Readiness in the UI (task_0023, `web/src/models/`): `useModelStatus(config,
 {api})` posts the edited pipeline to `/api/models/status` (debounced like the
@@ -505,14 +530,16 @@ outline + alert badge `role="img"` at the top-right); `preparing`/`queued` ->
 -> red dashed + badge. Rows map to slots by `{stage, index}`; a single-slot
 stage also shows rows of its sub-paths (`camera.estimate` in the general
 `camera` tab). `ReadinessBanner` ("N models need preparing · X to download", N and X
-counting only the models Prepare all would fetch; licences in the sub line; Prepare all = `models:
-"all"`; model list; overall progress + Cancel; "Check again" when
+counting only the models Prepare all would fetch; licences in the sub line; Prepare all opens
+a confirmation Dialog listing only the downloads — name, source, size,
+licence — with the total and, apart, the files the user must provide; only
+Download sends `models: "all"`; model list; overall progress + Cancel; "Check again" when
 unavailable). Inspector "Weights & requirements" (`ModelRequirements`):
 layers, missing items, message, size, source/licence/target when a row
 carries them (else locations parsed from `<weights root>/...` in the
 message), **Prepare model** / **Retry** for preparable rows, the copyable
 `det-depth-distance --config <file> --prepare` for an unknown source (message
-prefix `unknown source`), the packages plan (task_0024: base command, Install
+prefix `unknown source`), a "provide it by hand" note for `user_provided`, the packages plan (task_0024: base command, Install
 packages, conflict reason) or, from older servers, a note when only
 `package:` items are missing, a conflict note, and the module's unset path options as the location override.
 Process is disabled with "N models are not ready — Prepare them first." while

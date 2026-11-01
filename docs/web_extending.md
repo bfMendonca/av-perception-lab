@@ -107,9 +107,13 @@ states and Prepare:
    `UserProvided`), `code` (`CodeRepo` pinned to a 7–64 hex commit),
    `packages` (import names) and `extra` (the `pyproject.toml` extra that
    provides them). It reads only the validated options, never `load()`, and
-   imports no framework. Set `known=True` only for sources from a table in the
-   adapter's code: the web server prepares only those (any other source reads
-   "unknown source: prepare it from the CLI (--prepare)").
+   imports no framework. `known` is `False` by default (on `CodeRepo` too);
+   set `known=True` only when the source comes from a table in the adapter's
+   code **and** the target is its canonical location under the weights root:
+   the web server prepares only those (any other source reads "unknown
+   source: prepare it from the CLI (--prepare)"). A file only the user can
+   supply is `UserProvided`: the web shows its hint (`reason:
+   "user_provided"`) and never offers Prepare for it.
 2. In `_load`, check the files before importing the framework and raise
    `adapters._weights.not_prepared(...)` (a `ConfigError` naming `--prepare`)
    when a default file is missing: nothing is downloaded at run time.

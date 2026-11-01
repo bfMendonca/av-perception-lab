@@ -4,6 +4,57 @@ Todas as mudancas relevantes do det-depth-distance serao documentadas neste arqu
 
 ---
 
+## [2026-11-01] Model readiness: final fixes
+
+The whole model-readiness branch was reviewed; this wave fixes what the
+reviews found before merge (task_0026).
+
+### Fixed
+
+- A model whose only missing file is a manual download (TwinLiteNet+
+  `pretrained/<variant>.pth`, a custom YOLO `.pt`) is no longer offered as
+  Prepare: the row has `reason: "user_provided"`, its message carries the
+  hint, Prepare all lists it under `skipped`, and a Prepare that fetched the
+  rest ends `done` instead of `failed`. `--prepare` reports "provide this
+  file: <hint>" with state `missing` (exit 1 only because it is not ready).
+- An existing file whose size or sha256 differs from the declaration (a
+  fine-tuned checkpoint saved under a release name) is never downloaded over,
+  in the CLI either: "exists with a different size at <target>; move or
+  delete it, or point the config at another file".
+- `Asset.known` / `CodeRepo.known` fail closed (default False); the adapters
+  vouch only for the canonical target (`ultralytics/<release name>`, the `hf`
+  cache for the shipped repos, the RF-DETR table, the pinned clone). The web
+  queue runs the engine with `allow_unknown=False`, re-checked when the job
+  runs; the CLI passes `allow_unknown=True`.
+- The run worker gets the server's weights root as an absolute
+  `DDD_WEIGHTS_ROOT`, so a run that passes the 409 check passes the CLI gate
+  with any `--weights-root`.
+- URL downloads stop when the body exceeds the expected size and check free
+  disk space first.
+- Redaction and scrubbing: path boundaries include backtick, `<`, `>`, `{`,
+  `}`; 422 replies and job exception texts are redacted and scrubbed; plan
+  messages go through `relative()`; the scrub no longer rewrites prose such as
+  "basic requirements" and knows `Authorization:` headers and `github_pat_`
+  tokens; the code source shows host and path only.
+- The weights root may not be `/`, the home folder, or contain the project,
+  the active environment or the run outputs (CLI exit 2, web start-up error).
+- `is_repo_id` checks the `org/name` shape before any file-system probe.
+- A transient dry-run failure during an install names its reason.
+- The dry-run timeout test no longer flakes (3 s instead of 1 s).
+
+### Changed
+
+- Prepare all asks for confirmation: a dialog lists the downloads (name,
+  source, size, licence) and the total, and separately the files you must
+  provide; only Download starts it.
+- After a packages install the note says new runs use the packages (each run
+  starts a fresh worker); a server restart is only for an upgraded package the
+  server had already imported.
+- README "From a fresh clone": prerequisites, what `gpu-host` is, start with
+  `rfdetr_da3.yaml`, and the manual TwinLiteNet+ download.
+
+---
+
 ## [2026-10-31] Model readiness documentation
 
 How a model declares what it needs, how a fresh clone prepares it and how a
@@ -29,7 +80,7 @@ dependency conflict can be resolved, in English (task_0025).
 - README: "From a fresh clone" steps in "Model weights" (base stack, build,
   open a sample, Prepare all; the CLI equivalent; weights root; gated
   models; TwinLiteNet+), TODO entries for task_0024, task_0025 and the open
-  resolution paths 2–5.
+  resolution paths 2-5.
 - `docs/web_extending.md`: requirements of a new model need no web edits.
 
 ---

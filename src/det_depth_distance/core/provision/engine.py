@@ -147,7 +147,10 @@ def prepare(
         if state.state == "ready":
             continue
         if state.state == "invalid":
-            failures.append(f"{label}: {state.detail}")
+            # Asset details already start with the key ("weights: exists...").
+            detail = state.detail or state.state
+            labelled = detail.startswith(f"{label}: ")
+            failures.append(detail if labelled else f"{label}: {detail}")
             continue
         downloadable = getattr(type(item), "downloadable", True)
         if downloadable and not allow_unknown and not getattr(item, "known", False):

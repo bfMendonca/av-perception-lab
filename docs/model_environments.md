@@ -61,7 +61,11 @@ only *new* models get their own small extras (section 6).
 
 Asset kinds are registered classes (`@register_asset_kind(name)`), each with
 its own `present(root) -> AssetState` (`ready`, `missing`, `partial`,
-`invalid`). Fields common to every asset (keyword-only):
+`invalid`). `partial` is the tool's own unfinished work (a `.part`, an
+`.incomplete` blob, a clone being made); `invalid` is an unsafe path or an
+existing file that is not the declared one (see "exists with a different
+size" below), which nothing ever replaces. Fields common to every asset
+(keyword-only):
 
 | Field | Meaning |
 |---|---|
@@ -70,15 +74,15 @@ its own `present(root) -> AssetState` (`ready`, `missing`, `partial`,
 | `size_bytes` | expected size (shown before Prepare; integrity check for URLs; a lower bound for Hugging Face) |
 | `license` | shown in the UI next to the size |
 | `gated` | the source requires accepting a licence (see 5.3) |
-| `known` | the adapter vouches for the source (a table in its code); `False` when it was derived from a free user option. The web prepares only known sources; the CLI prepares both |
+| `known` | **fails closed: `False` by default.** The adapter's code sets `known=True` only when both the source (a table in its code) and the target (the canonical location under the weights root) are its own: `ultralytics/<release name>`, the `hf` cache for repos in `HF_FACTS`, the RF-DETR table. A release file name at a `weights` path of the YAML's choosing, a known repo in another `hf_cache` folder or a repo typed in the YAML stays `False`. The web prepares only known sources (`engine.prepare(..., allow_unknown=False)`, re-checked when the job runs); the CLI prepares both (`allow_unknown=True`). `CodeRepo.known` follows the same rule (the pinned TwinLiteNet+ clone is known). `known` does not apply to kinds that are never downloaded (`UserProvided`) |
 
 Built-in kinds:
 
 | Kind (registered name) | Class | Use | Rules |
 |---|---|---|---|
 | Hugging Face (`huggingface`) | `HuggingFaceAsset(repo, files, patterns, revision)` | a model repo on the Hub | `target` is a **cache folder** (e.g. `hf`), read in the Hub's own layout `models--org--name/snapshots/<rev>/…`, so an existing `weights/hf` cache counts as ready unchanged. `files` are exact names, `patterns` fnmatch globs (both empty = the whole snapshot). `revision` is a branch, tag or commit name **without `/`**: a pull-request ref such as `refs/pr/1` is refused; use the commit hash of that PR instead. A `.incomplete` blob is never ready. |
-| URL (`url`) | `UrlAsset(url, sha256)` | one file over http(s) | **declare `size_bytes` or `sha256`** (project rule). The download goes to `<target>.part` and is renamed only when the declared size or sha256 matches, or the server's full length was received; otherwise it fails with "cannot verify download integrity: declare size_bytes or sha256 for this asset". A `.part` is resumed (`Range` + `If-Range`) only when size or sha256 is declared and the server answers 206 at the right offset; anything else restarts. Redirects go only to http(s), never from https down to http. |
-| User-provided (`user`) | `UserProvided(option, hint)` | a file only the user can supply (a custom `.pt`, a manual download) | never downloaded: Prepare reports "provide this file: <hint> (expected at …, or set the option '<option>')". |
+| URL (`url`) | `UrlAsset(url, sha256)` | one file over http(s) | **declare `size_bytes` or `sha256`** (project rule). The download goes to `<target>.part` and is renamed only when the declared size or sha256 matches, or the server's full length was received; otherwise it fails with "cannot verify download integrity: declare size_bytes or sha256 for this asset". A `.part` is resumed (`Range` + `If-Range`) only when size or sha256 is declared and the server answers 206 at the right offset; anything else restarts. Redirects go only to http(s), never from https down to http. The body is bounded by the expected size (the smaller of the server's length and the declared size): more bytes fail and remove the `.part`; free disk space is checked before the first byte is written. **An existing file at the target whose size or sha256 differs** (for example a fine-tuned checkpoint saved under a release name) is never downloaded over, in the CLI either: the model is `failed` with "exists with a different size at <target>; move or delete it, or point the config at another file". |
+| User-provided (`user`) | `UserProvided(option, hint)` | a file only the user can supply (a custom `.pt`, a manual download) | never downloaded: Prepare reports "provide this file: <hint> (expected at …, or set the option '<option>')" and the model stays `missing` (not `failed`; `--prepare` exits 1 only because the model is not ready). When such files are all that is missing (the code layer ready), the web row has `reason: "user_provided"`, no Prepare button, and Prepare all skips it. |
 | Code repo (layer `code`) | `CodeRepo(name, url, commit)` | an upstream repository used as code | `name` is one plain folder name; `commit` must be **7–64 hexadecimal characters** (a branch or tag is refused: they move). Prepare runs `git clone --no-checkout` into `_code/<name>.part`, `git switch --detach` to the pin, then renames. An existing clone at another commit is fetched and switched, never deleted; a folder that is not a clone is left alone (error: move it away). Each git command times out after 900 s. |
 
 Google Drive is **not** a source in v1. TwinLiteNet+ pretrained weights are
@@ -125,8 +129,13 @@ class GoogleDriveSource:
 
 An asset whose kind has no registered source fails with "no source
 registered for asset kind '<name>' (add one with register_source)". A kind
-that must never be fetched sets the class attribute `downloadable = False`
-(as `UserProvided` does) and its source raises with the hint.
+that must never be fetched needs **both**: the class attribute
+`downloadable = False` (as `UserProvided` does: the engine then reports its
+source's reason as a note, not a failure, and the web marks the row
+`user_provided`) **and** a registered source whose `prepare` raises
+`ProvisionError("provide this file: <hint>")`. With `downloadable = False`
+alone the user sees "no source registered for asset kind … (add one with
+register_source)" instead of the hint.
 
 ---
 
@@ -142,12 +151,16 @@ Everything a model downloads lives under one folder, the **weights root**:
    `utils/sync_gpu_host.sh push`).
 
 The CLI (`det-depth-distance`) has no flag: it reads `DDD_WEIGHTS_ROOT`.
-To use one non-default root everywhere (CLI, web server and the web worker
-subprocess, which inherits the server's environment), export
-`DDD_WEIGHTS_ROOT` rather than passing `--weights-root` alone. The web
-server refuses a weights root that overlaps `--library-root` or
-`--out-root`; messages sent to the browser show `<weights root>` instead of
-its absolute path.
+The web server passes its root (from `--weights-root`, else
+`DDD_WEIGHTS_ROOT`) to every run worker subprocess as an absolute, resolved
+`DDD_WEIGHTS_ROOT`, so `--weights-root` alone is enough for the web; export
+`DDD_WEIGHTS_ROOT` only for CLI runs outside the server. The weights root
+must be a dedicated folder: `/`, the home folder, and folders that contain
+the project, the active Python environment or the run outputs are refused
+(CLI: exit 2; web: start-up error), and the web server also refuses one that
+overlaps `--library-root` or `--out-root`. Messages sent to the browser show
+`<weights root>` instead of its absolute path (and are scrubbed of
+credentials).
 
 ### 2.2 Default locations
 
@@ -280,7 +293,8 @@ the pipeline changes. The body has `models` (one row per model the config would
 load: `stage`, `index`, `type`, `name`, `state`, `layers`, `missing`,
 `size_bytes`, `message`, `source`, `license`, `target` relative to the
 weights root, `packages` (the packages plan or null), `reason`
-(`unknown_source`, `packages_only` or null) and `preparable`),
+(`unknown_source`, `user_provided`, `packages_only` or null) and
+`preparable`),
 `total_size_bytes` and `restart_required`. Nothing is loaded and torch is
 not imported.
 
@@ -290,7 +304,10 @@ not imported.
   what is missing, source, size, licence, target folder) queues one model;
   **Retry** after a failure.
 - **Prepare all** (the banner above the lanes: "N models need preparing · X
-  to download", with their licences) queues every preparable model.
+  to download", with their licences) opens a confirmation listing only the
+  downloads (name, source, size, licence) and the total, plus, apart, the
+  files you must provide yourself; **Download** queues every preparable
+  model, **Cancel** (or Escape) does nothing.
 
 Both are `POST /api/models/prepare` with `{config, models}` (`"all"` or a
 list of `{stage, index}`); progress is SSE at
@@ -309,8 +326,27 @@ run with 409 `{models_not_ready: [...]}` (the editor then offers Prepare all).
 (`adapters/_hf_hub.py: HF_FACTS`) reads "unknown source: prepare it from the
 CLI (--prepare)": naming it in a Prepare is a 422, `models: "all"` prepares
 the rest and lists it under `skipped`, and the inspector shows the command
-`det-depth-distance --config <file> --prepare` with a copy button. The CLI
-prepares any repo the user typed (local trust).
+`det-depth-distance --config <file> --prepare` with a copy button. The same
+holds for a known file or repo at a location of the YAML's choosing (a
+release file name in a `weights` path outside `<root>/ultralytics/`, an
+`hf_cache` other than `<root>/hf`): `known` is tied to the canonical target.
+The queue runs the engine with `allow_unknown=False`, so this is re-checked
+when the job runs (a file deleted after the job was queued is not fetched).
+The CLI prepares any repo the user typed (local trust).
+
+**User-provided files** (`reason: "user_provided"`). When everything a
+Prepare can fetch is there and only files the user must provide are missing
+(TwinLiteNet+ `pretrained/<variant>.pth`, a custom YOLO `.pt`), the row is not
+preparable: its message is the manual-download hint, Prepare all lists it
+under `skipped`, naming it is a 422, and Process stays locked until the file
+exists. A Prepare that fetched the rest (for example the TwinLiteNet+ clone)
+ends `done`, not `failed`, and the row then shows the hint.
+
+**Existing files of another size.** A file at a target whose size or sha256
+differs from the declaration is the user's (a fine-tuned checkpoint saved
+under a release name): the row is `failed`, not preparable, with "exists with
+a different size at <target>; move or delete it, or point the config at
+another file", and no Prepare (web or CLI) replaces or deletes it.
 
 ### 5.3 Gated models
 
@@ -417,9 +453,11 @@ detected.
   running, Install packages answers 409 (a running worker must not see a
   half-installed package); while an install is queued or running,
   `POST /api/runs` answers 409 (`packages_installing`).
-- **Restart after an install.** The status body then has
-  `restart_required: true` and the editor asks you to restart the server to
-  use the new packages.
+- **After an install.** The status body then has `restart_required: true`
+  and the editor notes that new runs use the packages at once: each run
+  starts a fresh worker process, and the status checks re-scan the
+  environment. A server restart (no web worker restart is ever needed) is
+  only for an upgraded package the server process had already imported.
 - uv output shown to clients is scrubbed of credentials and shows the
   project folder as `.`.
 
@@ -480,6 +518,7 @@ METRIC3D_REPO = CodeRepo(
     name="Metric3D",
     url="https://github.com/YvanYin/Metric3D",
     commit="0123456789abcdef0123456789abcdef01234567",  # PLACEHOLDER: 7-64 hex
+    known=True,  # fixed here, cloned to its fixed folder: the web may prepare it
 )
 
 
@@ -517,7 +556,9 @@ class Metric3DDepth(DepthEstimator):
     @classmethod
     def requirements(cls, options: Options) -> Requirements:
         name, url, size, licence = METRIC3D_CHECKPOINTS[options.variant]
-        if options.weights is None:  # the default: a source the adapter vouches for
+        # The default: the table's file at its canonical target, so known=True
+        # (known fails closed: anything the YAML chose stays False).
+        if options.weights is None:
             assets = (UrlAsset(key="weights",
                                target=f"{METRIC3D_DIR}/{options.variant}/{name}",
                                url=url, size_bytes=size,  # or sha256=...
@@ -547,8 +588,8 @@ class Metric3DDepth(DepthEstimator):
             if under_root(weights) is not None:
                 raise not_prepared("weights", "checkpoint", weights)
             raise ConfigError(f"weights: file not found: {weights}")
-        import torch  # framework imports only here (and in methods called after)
-
+        # Framework imports (torch, the clone's modules) go only here and in the
+        # methods called after `_load`, never at module level.
         ...  # put the clone on sys.path, build the network, load `weights`,
         # set self._geometry (frame -> map geometry)
 
@@ -718,7 +759,9 @@ the profile's interpreter.
 cannot be fixed by pinning, but a whole pipeline can run in one environment
 built for it (e.g. a model that needs a different torch).
 
-**Cost.** Disk and time per profile: a full GPU stack is ~9 GB (uv hardlinks
+**Cost.** Disk and time per profile: a full GPU stack is about 9 GB (the
+`infer` + `web` environment `_testbed/venv-infer` measured 9.0 GB with
+`du -sh` on 2026-11-01; uv hardlinks
 from its cache when the cache and the environment are on the same file
 system, which reduces it); each profile is one `uv sync` to build and to keep
 in step with the lock. A config can only mix models of one profile.

@@ -425,6 +425,7 @@ def test_size_mismatched_release_file_survives_prepare(root, monkeypatch):
     assert "exists with a different size at ultralytics/yolo26l.pt" in status.message
     after = prepare(req, root, lambda *a: None, threading.Event(), allow_unknown=True)
     assert after.state == "failed" and "move or delete it" in after.message
+    assert "weights: weights:" not in after.message  # the key is not doubled
     assert called == []
     assert target.read_bytes() == b"my fine-tuned weights"
     # The RF-DETR default name too.

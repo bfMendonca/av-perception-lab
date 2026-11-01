@@ -1081,6 +1081,15 @@ dependency conflicts) is [`docs/model_environments.md`](docs/model_environments.
 
 #### From a fresh clone
 
+Prerequisites: [uv](https://docs.astral.sh/uv/) (installs Python and the
+packages), Node.js LTS with npm (to build the front-end once; see
+[Interface web: front-end](#interface-web-front-end-e-editor-de-pipeline) for
+an install without sudo), `git` (Prepare clones pinned code) and network
+access to Hugging Face, GitHub and `repo.roboflow.com` while preparing.
+`gpu-host` in this README is the project's GPU server (an NVIDIA RTX PRO 6000
+reached with `ssh gpu-host`); on your own machine run the same commands
+locally.
+
 1. Clone the repository and install the base Python stack **once** (the
    server never runs this command; on `gpu-host` use `~/.local/bin/uv`):
 
@@ -1096,11 +1105,18 @@ dependency conflicts) is [`docs/model_environments.md`](docs/model_environments.
    uv run --extra infer --extra web det-depth-distance-web --weights-root weights
    ```
 
-3. Open a sample YAML from `configs/` in the editor (**Open YAML**). Models
+3. Open a sample YAML from `configs/` in the editor (**Open YAML**); start
+   with `configs/rfdetr_da3.yaml`, whose models are all downloadable. Models
    that are not ready get a yellow dashed outline with an alert icon.
 4. Click **Prepare all** in the banner (or **Prepare model** in a model's
-   inspector) and wait for the progress bars; **Process** unlocks when every
-   model is ready.
+   inspector), check the list of downloads, sizes and licences in the
+   confirmation, click **Download** and wait for the progress bars;
+   **Process** unlocks when every model is ready. Configs that contain
+   TwinLiteNet+ (for example `yolo_light_da3.yaml`,
+   `rfdetr_sam2_lanes_motion_da3.yaml`, `rfdetr_lanes_scene_da3.yaml`) need one
+   **manual download** (its `.pth` is on Google Drive, see below): Prepare
+   fetches everything else, the TwinLiteNet+ row then shows "provide this
+   file" with the command, and Process stays locked until the file is there.
 
 Without the web interface, the same from the command line:
 
@@ -1109,9 +1125,17 @@ uv run --extra infer det-depth-distance --config configs/rfdetr_da3.yaml --prepa
 uv run --extra infer det-depth-distance --config configs/rfdetr_da3.yaml VIDEO.MOV
 ```
 
-- **Weights root:** `--weights-root DIR` sets it for the web server;
-  `DDD_WEIGHTS_ROOT=DIR` sets it for the CLI (and, exported before starting
-  the server, for the server and its run worker as well).
+- **Weights root:** `--weights-root DIR` sets it for the web server, which
+  passes it (absolute) to every run worker as `DDD_WEIGHTS_ROOT`, so nothing
+  else needs exporting; `DDD_WEIGHTS_ROOT=DIR` sets it for the CLI (and for
+  the server when `--weights-root` is absent). It must be a dedicated folder:
+  `/`, the home folder and folders that contain the project, the active
+  Python environment, the run outputs or the video library are refused.
+- **Your own checkpoint under a release name:** a file at a default location
+  whose size differs from the published one (for example a fine-tuned
+  `weights/ultralytics/yolo26l.pt`) is never downloaded over: the model shows
+  "exists with a different size at …; move or delete it, or point the config
+  at another file".
 - **Gated models** (today `facebook/sam3`, used by `sam3_tracker`): accept the
   licence on the model's Hugging Face page and make the credentials visible
   to the process that downloads (`HF_TOKEN` exported before starting the
@@ -1130,8 +1154,10 @@ uv run --extra infer det-depth-distance --config configs/rfdetr_da3.yaml VIDEO.M
   ```
 
   For the other variants the message links the upstream Drive folder.
-- **Unknown Hugging Face repos** typed in a YAML are prepared by the CLI
-  (`--prepare`), not by the web server.
+- **Unknown sources** are prepared by the CLI (`--prepare`), not by the web
+  server: a Hugging Face repo typed in a YAML, and a known file or repo at a
+  location of the YAML's choosing (a `weights` path outside
+  `weights/ultralytics/`, an `hf_cache` other than `weights/hf`).
 - **Machines with older weights** (the defaults moved in task_0021: RF-DETR
   from `~/.roboflow`, DA3 and YOLO from machine paths): run `--prepare` once
   per sample config, or point the YAML options at the existing files.
@@ -1169,8 +1195,10 @@ explicit confirmation (`--prepare --install-packages`, or **Install
 packages** in the web inspector). A dry-run that fails, or that would remove
 or replace an installed package, leaves the environment untouched and puts
 the model in state `conflict` with the resolver's reason; the ways to resolve
-it are described in `docs/model_environments.md`. After an install, restart
-the web server. `DDD_UV` names the `uv` executable (default: `uv` on the
+it are described in `docs/model_environments.md`. After an install, new runs
+use the packages at once (each run starts a fresh worker process); restart
+the web server only if it should use an upgraded package it had already
+imported. `DDD_UV` names the `uv` executable (default: `uv` on the
 `PATH`; on `gpu-host`, `~/.local/bin/uv`).
 
 An explicit path in the YAML overrides the default and behaves as before
@@ -1258,8 +1286,9 @@ In the editor (task_0023):
   `uv sync --extra infer --extra web` with a copy button (no install button);
   a model's own extra with a clean dry-run gets **Install packages**, which
   opens a confirmation dialog stating the exact command; while it runs the
-  inspector shows the `uv` output, and afterwards a note asks you to restart
-  the server. A conflict shows the resolver's reason and points to
+  inspector shows the `uv` output, and afterwards a note says new runs use
+  the packages (a server restart is only for an upgraded package the server
+  had already imported). A conflict shows the resolver's reason and points to
   `docs/model_environments.md`.
 - **Process** stays disabled ("N models are not ready — Prepare them first.")
   until every model is ready; if the server still refuses the run (409, e.g.
