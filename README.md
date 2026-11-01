@@ -1075,7 +1075,66 @@ fresh clone runs a sample YAML after one
 `det-depth-distance --config configs/<x>.yaml --prepare`. Everything lives
 under the **weights root** (`weights/` in the repo, git-ignored; override with
 `DDD_WEIGHTS_ROOT`); nothing is downloaded at run time, and a missing default
-file is an error naming `--prepare`.
+file is an error naming `--prepare`. The full reference (layers, asset kinds,
+locations, states, the packages layer, how to add a model and how to resolve
+dependency conflicts) is [`docs/model_environments.md`](docs/model_environments.md).
+
+#### From a fresh clone
+
+1. Clone the repository and install the base Python stack **once** (the
+   server never runs this command; on `gpu-host` use `~/.local/bin/uv`):
+
+   ```bash
+   uv sync --extra infer --extra web
+   ```
+
+2. Build the front-end once (Node, `cd web && npm ci && npm run build`; see
+   [Interface web: front-end](#interface-web-front-end-e-editor-de-pipeline))
+   and start the server:
+
+   ```bash
+   uv run --extra infer --extra web det-depth-distance-web --weights-root weights
+   ```
+
+3. Open a sample YAML from `configs/` in the editor (**Open YAML**). Models
+   that are not ready get a yellow dashed outline with an alert icon.
+4. Click **Prepare all** in the banner (or **Prepare model** in a model's
+   inspector) and wait for the progress bars; **Process** unlocks when every
+   model is ready.
+
+Without the web interface, the same from the command line:
+
+```bash
+uv run --extra infer det-depth-distance --config configs/rfdetr_da3.yaml --prepare   # exit 0 = all ready
+uv run --extra infer det-depth-distance --config configs/rfdetr_da3.yaml VIDEO.MOV
+```
+
+- **Weights root:** `--weights-root DIR` sets it for the web server;
+  `DDD_WEIGHTS_ROOT=DIR` sets it for the CLI (and, exported before starting
+  the server, for the server and its run worker as well).
+- **Gated models** (today `facebook/sam3`, used by `sam3_tracker`): accept the
+  licence on the model's Hugging Face page and make the credentials visible
+  to the process that downloads (`HF_TOKEN` exported before starting the
+  server or the CLI, or `hf auth login`); there is no token field in the UI.
+  Without them Prepare fails with "gated - accept the licence at … and set
+  HF_TOKEN".
+- **Manual step, TwinLiteNet+** (`semantic` type `twinlitenet`): Prepare
+  clones the pinned repository, but `pretrained/<variant>.pth` is on the
+  upstream Google Drive (not a source in v1). After the first Prepare, save it
+  in the clone; for `variant: small` the status message carries the exact
+  command:
+
+  ```bash
+  mkdir -p weights/_code/TwinLiteNetPlus/pretrained
+  curl -fL -o weights/_code/TwinLiteNetPlus/pretrained/small.pth "https://drive.usercontent.google.com/download?id=1N7jNsa8P1dM-UevqPRsx6heUpN4L00FJ&export=download&confirm=t"
+  ```
+
+  For the other variants the message links the upstream Drive folder.
+- **Unknown Hugging Face repos** typed in a YAML are prepared by the CLI
+  (`--prepare`), not by the web server.
+- **Machines with older weights** (the defaults moved in task_0021: RF-DETR
+  from `~/.roboflow`, DA3 and YOLO from machine paths): run `--prepare` once
+  per sample config, or point the YAML options at the existing files.
 
 | Model | Default location | Source (`--prepare`) |
 |---|---|---|
@@ -1315,5 +1374,8 @@ Variáveis opcionais: `SYNC_HOST` (padrão `gpu-host`) e `SYNC_DEST` (padrão
 - [x] **Provisioning engine and `--prepare`** (`task_0020`) — `core/provision/` obtains a model's declared weights and code with registered sources (Hugging Face, URL with resume and sha256, pinned git clone; a new source kind is one class + `register_source`; Google Drive not yet), atomically, cancellably and idempotently; `det-depth-distance --config X.yaml --prepare` prepares every model of a YAML. Adapters declare their requirements in `task_0021`.
 - [x] **Web API for model status and Prepare** (`task_0022`) — `POST /api/models/status`, a prepare queue with SSE progress and cancel (independent from the GPU queue), 409 for runs with models not ready, `--weights-root`.
 - [x] **Model readiness in the editor** (`task_0023`) — card states (not ready: yellow dashed + alert icon; preparing: progress bar; failed: red dashed), "N models need preparing · X GB" banner with Prepare all, inspector "Weights & requirements" with Prepare model / Retry, Process gated until every model is ready, 409 dialog. Real download through the UI on a networked host pending.
+- [x] **Packages layer** (`task_0024`) — per-model extras detected without imports, `uv sync --dry-run --locked --inexact` before any install, state `conflict` with the resolver's reason, `--prepare --install-packages` and **Install packages** in the inspector; the base stack (`uv sync --extra infer --extra web`) is never installed by the server.
+- [x] **Model readiness documentation** (`task_0025`) — [`docs/model_environments.md`](docs/model_environments.md): the model recipe with a worked example, layers and asset kinds, locations and overrides, states, CLI and web flows, packages layer and the five ways to resolve a dependency conflict.
+- [ ] **Dependency-conflict resolution beyond detection** (future; v1 only detects conflicts) — paths 2–5 of [`docs/model_environments.md`](docs/model_environments.md#8-dependency-conflicts-the-five-resolution-paths): (2) mutually exclusive per-model extras via `[tool.uv] conflicts` with a confirmed switch; (3) one environment per profile, used by the web worker subprocess; (4) the conflicting model served as its own process behind a thin adapter; (5) manual pinning (constraints/overrides) or forking the upstream.
 - [ ] **Ego-motion pelo vídeo** (`task_0011`, futura) — odometria visual RGB-D com a profundidade do DA3 no fundo estático (ou só o *yaw* pela homografia do fundo distante) como provedor `ego_motion`.
 - [x] **Configuração leve** (`task_0010`) — `yolo_light_da3.yaml` para GPU de 4 GB (YOLO26s-seg, DA3METRIC-L, rastreamento, TwinLiteNet+ small, SegFormer-B0). Medição de VRAM no notebook pendente.

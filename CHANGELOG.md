@@ -4,6 +4,36 @@ Todas as mudancas relevantes do det-depth-distance serao documentadas neste arqu
 
 ---
 
+## [2026-10-31] Model readiness documentation
+
+How a model declares what it needs, how a fresh clone prepares it and how a
+dependency conflict can be resolved, in English (task_0025).
+
+### Added
+
+- `docs/model_environments.md`: the model recipe (`requirements(options)`,
+  the assets/code/packages layers, the Hugging Face, URL, user-provided and
+  code-repo kinds and how to register a new source kind), the weights root
+  (`--weights-root`, `DDD_WEIGHTS_ROOT`), default locations and YAML
+  overrides (the bare-name rule for YOLO-style `weights` and the `./name.pt`
+  edge), the states and how the editor draws them, the CLI (`--prepare`,
+  `--install-packages`, the not-ready gate with exit code 2) and web flows
+  (status, Prepare model, Prepare all, unknown sources, gated models and
+  `HF_TOKEN`, the manual TwinLiteNet+ download), the packages layer
+  (one-time base stack, detect, dry-run, install, `uv.lock`, `DDD_UV`,
+  transient failure vs conflict, installs vs runs, restart), a worked example
+  of adding a Metric3D depth model, and the five dependency-conflict
+  resolution paths (only detection is implemented; mutually exclusive
+  extras, one environment per profile, a model in its own process and
+  manual pinning/forking are documented options).
+- README: "From a fresh clone" steps in "Model weights" (base stack, build,
+  open a sample, Prepare all; the CLI equivalent; weights root; gated
+  models; TwinLiteNet+), TODO entries for task_0024, task_0025 and the open
+  resolution paths 2–5.
+- `docs/web_extending.md`: requirements of a new model need no web edits.
+
+---
+
 ## [2026-10-31] Packages layer: detect, dry-run, install
 
 Missing Python packages are no longer just reported: the installed extras

@@ -95,6 +95,38 @@ desfaz. Os indicadores do resumo e da comparação vêm de
 o front-end renderiza a lista como vier (cartão, delta com sinal e cor de
 melhora/piora).
 
+## (e) Requirements of a new model (weights, code, packages)
+
+A model's readiness is also derived from the registry, so a new model needs
+no edit under `web/` or `src/det_depth_distance/web/` to get status, card
+states and Prepare:
+
+1. Override the classmethod `requirements(options) -> Requirements`
+   (`core/requirements.py`) on the adapter: `assets` (registered kinds:
+   `HuggingFaceAsset`, `UrlAsset` with `size_bytes` or `sha256`,
+   `UserProvided`), `code` (`CodeRepo` pinned to a 7–64 hex commit),
+   `packages` (import names) and `extra` (the `pyproject.toml` extra that
+   provides them). It reads only the validated options, never `load()`, and
+   imports no framework. Set `known=True` only for sources from a table in the
+   adapter's code: the web server prepares only those (any other source reads
+   "unknown source: prepare it from the CLI (--prepare)").
+2. In `_load`, check the files before importing the framework and raise
+   `adapters._weights.not_prepared(...)` (a `ConfigError` naming `--prepare`)
+   when a default file is missing: nothing is downloaded at run time.
+
+That is all: `POST /api/models/status` lists the model with its layers,
+source (each asset kind's `describe_source()`), size, licence and target;
+the card turns yellow dashed with the alert icon until it is ready;
+**Prepare model** / **Prepare all** obtain it through the registered sources;
+a per-model extra gets **Install packages** after a clean dry-run (or the
+state `conflict`); runs are refused with 409 while it is not ready. A new
+source kind is one `Asset` subclass (`register_asset_kind`) plus one source
+class (`core.provision.register_source`), again without web edits. Worked
+example (a hypothetical Metric3D depth model), locations, states and the
+dependency-conflict paths: `docs/model_environments.md`. Tests:
+`tests/web/test_models.py` (status rows of fake adapters registered with
+`monkeypatch.setitem(registry._REGISTRY[...])`).
+
 ## Versão do catálogo
 
 `catalog_version` sobe só em mudança incompatível; adicionar campos ou

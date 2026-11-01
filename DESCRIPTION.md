@@ -109,7 +109,7 @@ det-depth-distance/
 │   └── __main__.py          # python -m det_depth_distance
 ├── tests/                   # pytest without GPU; tests/smoke/ (auto-marked "smoke", end-to-end); tests/gpu/ (auto-marked "gpu") runs on gpu-host
 ├── utils/sync_gpu_host.sh    # rsync push code / pull outputs with the GPU host
-├── docs/                    # task files (docs/task_DDDD.md) + template; refs/ (diagrams, calibration and field-reference protocol)
+├── docs/                    # task files (docs/task_DDDD.md) + template; refs/ (diagrams, calibration and field-reference protocol); web_extending.md (adding models/stages/views, incl. model requirements); model_environments.md (model recipe, weights root and locations, readiness states, Prepare in CLI/web, packages layer, the five dependency-conflict resolution paths: only detection is implemented)
 └── _testbed/                # git-ignored: test videos, outputs, regression reference, ultralytics settings
 ```
 
@@ -648,6 +648,7 @@ gated `facebook/sam3` checkpoint additionally needs approved access and
 
 - Code, docstrings, comments in English; AGENTS.md, CLAUDE.md, README in pt-BR
   (existing); new docs and task files in English; CHANGELOG pt-BR ASCII for old entries.
+- Model requirements: each adapter declares `requirements(options)` (assets, pinned code, packages + extra); defaults under the weights root, YAML paths override; a new source kind is a registered `Asset` subclass + `register_source` (no web edits). Reference and conflict paths: `docs/model_environments.md`.
 - Ruff defaults; snake_case functions/modules, PascalCase classes.
 - Conventional Commits with an English subject (pt-BR in older commits); scopes: core, adapters, io, distance, camera, render, cli, eval, configs, tests, utils, deps, docs.
 - Never commit to `main`; work on `feat/`/`fix/` branches.
