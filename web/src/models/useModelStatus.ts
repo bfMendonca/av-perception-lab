@@ -8,8 +8,8 @@
 // model becomes ready; a model that just became ready stays ready until the
 // next status answer). An Install packages job (`kind: "packages"`) is
 // followed the same way; its `uv` output lines are kept per model and, once
-// it installed something, the page asks for a server restart (also told by
-// the status answer's `restart_required`).
+// it installed something, the page says so (new runs use the packages; also
+// told by the status answer's `restart_required`).
 //
 // Every overlay carries the identity (type + name) of the model it is about
 // and applies to a row only when the row has that identity, and a row applies
@@ -343,8 +343,9 @@ export function useModelStatus(config: ConfigDict | null, options: UseModelStatu
         const job = await api.prepare(models === "all" ? "all" : models.map((m) => ({ stage: m.stage, index: m.index })), cfg, options);
         follow({ ...job, models: job.models.map((m) => ({ ...m, state: m.state === "preparing" ? m.state : "queued" })) });
         if (job.skipped.length) {
-          const names = job.skipped.map((s) => `${where(s)} ${s.name}`).join(", ");
-          notify.current?.({ tone: "warn", text: `Not prepared from the web (${plural(job.skipped.length, "model")}): ${names}. Unknown source: prepare it from the CLI (--prepare).` });
+          // The server says why each one was left out (unknown source, a file to provide by hand).
+          const names = job.skipped.map((s) => `${where(s)} ${s.name}${s.message ? ` (${s.message})` : ""}`).join("; ");
+          notify.current?.({ tone: "warn", text: `Not prepared from the web (${plural(job.skipped.length, "model")}): ${names}.` });
         }
       } catch (exc) {
         const what = options?.packages ? "Install packages" : "Prepare";
@@ -430,7 +431,7 @@ export function useModelStatus(config: ConfigDict | null, options: UseModelStatu
       rowsFor: (stageKey: string, index: number | null) => rowsForSlot(views, stageKey, index),
       prepare,
       installPackages,
-      /** Packages were installed on the server: it must be restarted to use them. */
+      /** Packages were installed on the server since it started (new runs use them). */
       restartRequired,
       cancel,
       refresh,

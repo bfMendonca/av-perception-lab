@@ -23,6 +23,12 @@ async function renderEditor(rows: ModelStatus[], config = sampleConfig.config) {
 
 const cardOf = (lane: HTMLElement, name: RegExp) => within(lane).getByRole("button", { name });
 
+/** Prepare all, confirmed with Download in its dialog. */
+async function prepareAll(banner: HTMLElement) {
+  await userEvent.click(within(banner).getByRole("button", { name: "Prepare all" }));
+  await userEvent.click(within(await screen.findByRole("dialog", { name: "Prepare all" })).getByRole("button", { name: "Download" }));
+}
+
 describe("model readiness on the cards", () => {
   it("missing card renders dashed warning style and an alert icon", async () => {
     const { lane } = await renderEditor([modelRow()]);
@@ -73,7 +79,7 @@ describe("model readiness on the cards", () => {
   it("preparing card shows progress from SSE events", async () => {
     const { lane, models } = await renderEditor([modelRow()]);
     const banner = await screen.findByRole("region", { name: "Model readiness" });
-    await userEvent.click(within(banner).getByRole("button", { name: "Prepare all" }));
+    await prepareAll(banner);
     await waitFor(() => expect(models.prepared).toHaveLength(1));
     const card = cardOf(lane, /alpha/i);
     await waitFor(() => expect(card).toHaveClass("card--preparing"));
@@ -107,7 +113,7 @@ describe("model readiness on the cards", () => {
 
   it("a failed prepare stays red dashed with its reason and offers Retry", async () => {
     const { lane, models } = await renderEditor([modelRow()]);
-    await userEvent.click(within(await screen.findByRole("region", { name: "Model readiness" })).getByRole("button", { name: "Prepare all" }));
+    await prepareAll(await screen.findByRole("region", { name: "Model readiness" }));
     await waitFor(() => expect(models.prepared).toHaveLength(1));
     act(() => {
       models.emit("prep1", { event: "model", ...modelRow({ state: "failed", message: "offline or unreachable: example.invalid" }), item: null, done: 0, total: null });
@@ -138,7 +144,7 @@ describe("readiness banner", () => {
     const list = within(banner).getByRole("list", { name: "Models that are not ready" });
     expect(within(list).getAllByRole("listitem")).toHaveLength(2);
     expect(list).toHaveTextContent("camera.estimate");
-    await userEvent.click(within(banner).getByRole("button", { name: "Prepare all" }));
+    await prepareAll(banner);
     await waitFor(() => expect(models.prepared).toHaveLength(1));
     expect(models.prepared[0].models).toBe("all");
     expect(models.prepared[0].config.detectors).toEqual(sampleConfig.config.detectors);
@@ -265,7 +271,7 @@ const progress = (index: number, done: number, total = 8 * MB) => ({ event: "pro
 describe("prepare lifecycle (fix round)", () => {
   it("a model that finished stays ready while the rest of the job runs", async () => {
     const { lane, models } = await renderEditor([rowOf(0, "first", "alpha"), rowOf(1, "second", "beta"), rowOf(2, "third", "alpha")], trio);
-    await userEvent.click(within(await screen.findByRole("region", { name: "Model readiness" })).getByRole("button", { name: "Prepare all" }));
+    await prepareAll(await screen.findByRole("region", { name: "Model readiness" }));
     await waitFor(() => expect(models.prepared).toHaveLength(1));
     act(() => {
       models.emit("prep1", event(0, "first", "alpha", "preparing"));
@@ -327,7 +333,7 @@ describe("prepare lifecycle (fix round)", () => {
 
   it("a replayed stream never rewinds progress nor takes a finished model back", async () => {
     const { lane, models } = await renderEditor([rowOf(0, "first", "alpha"), rowOf(1, "second", "beta"), rowOf(2, "third", "alpha")], trio);
-    await userEvent.click(within(await screen.findByRole("region", { name: "Model readiness" })).getByRole("button", { name: "Prepare all" }));
+    await prepareAll(await screen.findByRole("region", { name: "Model readiness" }));
     await waitFor(() => expect(models.prepared).toHaveLength(1));
     act(() => {
       models.emit("prep1", { event: "running" });
@@ -356,7 +362,7 @@ describe("prepare lifecycle (fix round)", () => {
 
   it("removing a module during a job never moves its progress to another card", async () => {
     const { lane, models, store } = await renderEditor([rowOf(0, "first", "alpha"), rowOf(1, "second", "beta"), rowOf(2, "third", "alpha")], trio);
-    await userEvent.click(within(await screen.findByRole("region", { name: "Model readiness" })).getByRole("button", { name: "Prepare all" }));
+    await prepareAll(await screen.findByRole("region", { name: "Model readiness" }));
     await waitFor(() => expect(models.prepared).toHaveLength(1));
     act(() => {
       models.emit("prep1", event(1, "second", "beta", "preparing"));
@@ -383,7 +389,7 @@ describe("prepare lifecycle (fix round)", () => {
   it("reordering modules during a job keeps each state on its own card", async () => {
     const pair = { ...sampleConfig.config, detectors: [{ type: "alpha", name: "first" }, { type: "beta", name: "second" }] };
     const { lane, models, store } = await renderEditor([rowOf(0, "first", "alpha"), rowOf(1, "second", "beta", { state: "ready", missing: [], message: null })], pair);
-    await userEvent.click(within(await screen.findByRole("region", { name: "Model readiness" })).getByRole("button", { name: "Prepare all" }));
+    await prepareAll(await screen.findByRole("region", { name: "Model readiness" }));
     await waitFor(() => expect(models.prepared).toHaveLength(1));
     act(() => {
       models.emit("prep1", event(0, "first", "alpha", "preparing"));
@@ -482,7 +488,7 @@ describe("packages layer (task_0024)", () => {
     let dialog = await screen.findByRole("dialog", { name: "Install packages" });
     expect(dialog).toHaveTextContent(INSTALL);
     expect(dialog).toHaveTextContent("nothing is removed");
-    expect(dialog).toHaveTextContent("Restart the server afterwards");
+    expect(dialog).toHaveTextContent("New runs use them");
     await userEvent.click(within(dialog).getByRole("button", { name: "Cancel" }));
     expect(models.prepared).toHaveLength(0); // cancelled: nothing runs
     await userEvent.click(within(section).getByRole("button", { name: /install packages/i }));
@@ -492,7 +498,7 @@ describe("packages layer (task_0024)", () => {
     expect(models.prepared[0]).toMatchObject({ models: [{ stage: "detectors", index: 0 }], packages: true });
   });
 
-  it("an install job shows uv output, then asks for a server restart", async () => {
+  it("an install job shows uv output, then says new runs use the packages", async () => {
     const { section, models } = await openSection([pkgRow()]);
     await userEvent.click(within(section).getByRole("button", { name: /install packages/i }));
     await userEvent.click(within(await screen.findByRole("dialog", { name: "Install packages" })).getByRole("button", { name: "Install" }));
@@ -509,10 +515,10 @@ describe("packages layer (task_0024)", () => {
     models.rows = [ready()];
     models.restartRequired = true;
     act(() => {
-      models.emit("prep1", { event: "model", ...ready(), installed: true, message: "packages installed: restart the server to use them", item: null, done: 0, total: null });
+      models.emit("prep1", { event: "model", ...ready(), installed: true, message: "packages installed: new runs use them", item: null, done: 0, total: null });
       models.emit("prep1", { event: "end", status: "done", error: null });
     });
-    await waitFor(() => expect(screen.getByRole("status", { name: "Restart required" })).toHaveTextContent("Restart the server to use them"));
+    await waitFor(() => expect(screen.getByRole("status", { name: "Restart required" })).toHaveTextContent("New runs use them"));
   });
 
   it("a missing base stack shows the exact one-time command with a copy button and no action button", async () => {
@@ -545,5 +551,87 @@ describe("packages layer (task_0024)", () => {
     expect(within(section).getAllByText("docs/model_environments.md").length).toBeGreaterThan(0);
     expect(within(section).queryByRole("button", { name: /install packages/i })).not.toBeInTheDocument();
     expect(within(section).queryByRole("button", { name: /prepare model/i })).not.toBeInTheDocument();
+  });
+});
+
+describe("Prepare all confirmation and user-provided files (final wave)", () => {
+  const downloadable = (patch: Partial<ModelStatus> = {}) =>
+    rowOf(0, "first", "alpha", { source: "Hugging Face · org/first", license: "Apache-2.0", size_bytes: 8 * MB, reason: null, preparable: true, ...patch });
+  const manualRow = (patch: Partial<ModelStatus> = {}) =>
+    rowOf(1, "second", "beta", {
+      source: "manual download (Google Drive): get large.pth",
+      license: null,
+      size_bytes: null,
+      reason: "user_provided",
+      preparable: false,
+      message: "weights: manual download (Google Drive): get large.pth and save it as <weights root>/_code/x/pretrained/large.pth",
+      ...patch,
+    });
+
+  it("a model whose only missing file is user-provided has no Prepare button and shows the hint", async () => {
+    const { lane } = await renderEditor([manualRow()], trio);
+    await userEvent.click(cardOf(lane, /second/));
+    const section = await screen.findByRole("region", { name: "Weights & requirements" });
+    expect(within(section).queryByRole("button", { name: /prepare model|retry/i })).not.toBeInTheDocument();
+    expect(section).toHaveTextContent("get large.pth and save it as <weights root>/_code/x/pretrained/large.pth");
+    expect(section).toHaveTextContent("Prepare cannot fetch this file: provide it by hand");
+    const banner = screen.getByRole("region", { name: "Model readiness" });
+    expect(banner).toHaveTextContent("1 model cannot be prepared from here");
+    expect(within(banner).getByRole("button", { name: "Prepare all" })).toBeDisabled();
+  });
+
+  it("Prepare all opens a dialog listing only the downloads, with size, source, licence and total", async () => {
+    const { models } = await renderEditor([downloadable(), manualRow()], trio);
+    const banner = await screen.findByRole("region", { name: "Model readiness" });
+    await userEvent.click(within(banner).getByRole("button", { name: "Prepare all" }));
+    const dialog = await screen.findByRole("dialog", { name: "Prepare all" });
+    const downloads = within(dialog).getByRole("list", { name: "Downloads" });
+    const items = within(downloads).getAllByRole("listitem");
+    expect(items).toHaveLength(1); // the manual row is not a download
+    expect(items[0]).toHaveTextContent("first");
+    expect(items[0]).toHaveTextContent("detectors[0]");
+    expect(items[0]).toHaveTextContent("Hugging Face · org/first");
+    expect(items[0]).toHaveTextContent("8.0 MB");
+    expect(items[0]).toHaveTextContent("licence: Apache-2.0");
+    expect(within(downloads).queryByText(/second/)).not.toBeInTheDocument();
+    expect(dialog).toHaveTextContent("Total: 8.0 MB");
+    const note = within(dialog).getByRole("note", { name: "Files you must provide" });
+    expect(note).toHaveTextContent("second");
+    expect(note).toHaveTextContent("get large.pth");
+    expect(models.prepared).toHaveLength(0); // opening it downloads nothing
+  });
+
+  it("Cancel does nothing; Download calls prepare('all')", async () => {
+    const { models } = await renderEditor([downloadable(), manualRow()], trio);
+    const banner = await screen.findByRole("region", { name: "Model readiness" });
+    await userEvent.click(within(banner).getByRole("button", { name: "Prepare all" }));
+    await userEvent.click(within(await screen.findByRole("dialog", { name: "Prepare all" })).getByRole("button", { name: "Cancel" }));
+    await waitFor(() => expect(screen.queryByRole("dialog", { name: "Prepare all" })).not.toBeInTheDocument());
+    expect(models.prepared).toHaveLength(0);
+    await userEvent.click(within(banner).getByRole("button", { name: "Prepare all" }));
+    await userEvent.click(within(await screen.findByRole("dialog", { name: "Prepare all" })).getByRole("button", { name: "Download" }));
+    await waitFor(() => expect(models.prepared).toHaveLength(1));
+    expect(models.prepared[0].models).toBe("all");
+  });
+
+  it("Escape closes the dialog without preparing", async () => {
+    const { models } = await renderEditor([downloadable()], trio);
+    const banner = await screen.findByRole("region", { name: "Model readiness" });
+    await userEvent.click(within(banner).getByRole("button", { name: "Prepare all" }));
+    const dialog = await screen.findByRole("dialog", { name: "Prepare all" });
+    // What a browser fires on a modal <dialog> when Escape is pressed.
+    act(() => {
+      dialog.dispatchEvent(new Event("cancel", { cancelable: true }));
+    });
+    await waitFor(() => expect(screen.queryByRole("dialog", { name: "Prepare all" })).not.toBeInTheDocument());
+    expect(models.prepared).toHaveLength(0);
+  });
+
+  it("the skipped toast uses the server's message for each model", async () => {
+    const { models } = await renderEditor([downloadable(), manualRow()], trio);
+    const job = models.prepare;
+    models.prepare = async (...args) => ({ ...(await job(...args)), skipped: [{ stage: "detectors", index: 1, type: "beta", name: "second", message: "save large.pth by hand" }] });
+    await prepareAll(await screen.findByRole("region", { name: "Model readiness" }));
+    expect(await screen.findByText(/Not prepared from the web \(1 model\): detectors\[1\] second \(save large\.pth by hand\)/)).toBeInTheDocument();
   });
 });

@@ -54,6 +54,9 @@ const hasReason = (row: { reason?: unknown }): boolean => row.reason !== undefin
 export const isUnknownSource = (row: Pick<ModelStatus, "message" | "reason">): boolean =>
   hasReason(row) ? row.reason === "unknown_source" : typeof row.message === "string" && row.message.startsWith(UNKNOWN_SOURCE_PREFIX);
 
+/** Only files the user must provide are missing (the message says which): Prepare cannot fetch them. */
+export const isUserProvided = (row: Pick<ModelStatus, "reason">): boolean => row.reason === "user_provided";
+
 /** Only Python packages are missing: Prepare (weights and code) cannot fix it. */
 export const onlyPackages = (row: Pick<ModelStatus, "missing" | "reason">): boolean =>
   hasReason(row) ? row.reason === "packages_only" : row.missing.length > 0 && row.missing.every((m) => m.startsWith(PACKAGE_PREFIX));

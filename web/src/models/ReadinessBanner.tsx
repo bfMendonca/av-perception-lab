@@ -1,10 +1,14 @@
 // Banner above the lanes: how many models need preparing and how much to
-// download, with Prepare all; overall progress while preparing; a retry when
-// the status could not be checked. Hidden when every model is ready.
+// download, with Prepare all (confirmed in a dialog that lists what will be
+// downloaded, its size and licences, and the files the user must provide);
+// overall progress while preparing; a retry when the status could not be
+// checked. Hidden when every model is ready.
 import { useState } from "react";
+import { Dialog } from "../ui/Dialog";
 import { Icon } from "../ui/icons";
+import { formatBytes } from "../video/DropZone";
 import "./statusStyles.css";
-import { plural, preparable, splitList, stateLabel, toneOf, where } from "./readiness";
+import { isUserProvided, keyOf, plural, preparable, splitList, stateLabel, toneOf, where } from "./readiness";
 import { useReadiness, type ModelView } from "./useModelStatus";
 
 export interface ReadinessBannerProps {
@@ -15,6 +19,7 @@ export interface ReadinessBannerProps {
 export function ReadinessBanner({ onShow }: ReadinessBannerProps) {
   const readiness = useReadiness();
   const [open, setOpen] = useState(false);
+  const [confirming, setConfirming] = useState(false);
   if (!readiness) return null;
   // Shown above the rest, even when every model is ready.
   const restart = readiness.restartRequired ? (
@@ -22,7 +27,7 @@ export function ReadinessBanner({ onShow }: ReadinessBannerProps) {
       <Icon name="info" size={16} />
       <div className="readiness__text">
         <strong>Packages were installed on the server</strong>
-        <span className="readiness__sub">Restart the server to use them.</span>
+        <span className="readiness__sub">New runs use them (each run starts a fresh worker); restart the server only if it should use an upgraded package it had already imported.</span>
       </div>
     </div>
   ) : null;
@@ -133,12 +138,77 @@ export function ReadinessBanner({ onShow }: ReadinessBannerProps) {
             ? `Download what ${plural(toPrepare.length, "model")} need${toPrepare.length === 1 ? "s" : ""}${sizeText ? ` (${sizeText})` : ""}${licences.length ? `; licences: ${licences.join(", ")}` : ""}`
             : "None of these models can be prepared from the web"
         }
-        onClick={() => void readiness.prepare("all")}
+        onClick={() => setConfirming(true)}
       >
         {readiness.submitting ? <span className="spinner spinner--ink" aria-hidden="true" /> : <Icon name="open" size={14} />}
         Prepare all
       </button>
     </div>
+    <PrepareAllDialog
+      open={confirming}
+      rows={toPrepare}
+      manual={notReady.filter((r) => isUserProvided(r))}
+      total={size.text}
+      onClose={() => setConfirming(false)}
+      onConfirm={() => {
+        setConfirming(false);
+        void readiness.prepare("all");
+      }}
+    />
     </>
+  );
+}
+
+/** Confirmation of Prepare all: what is downloaded (source, size, licence), the total, and the files only the user can provide. */
+function PrepareAllDialog({ open, rows, manual, total, onClose, onConfirm }: { open: boolean; rows: ModelView[]; manual: ModelView[]; total: string; onClose: () => void; onConfirm: () => void }) {
+  return (
+    <Dialog
+      open={open}
+      title="Prepare all"
+      onClose={onClose}
+      actions={
+        <>
+          <button type="button" className="btn" onClick={onClose}>
+            Cancel
+          </button>
+          <button type="button" className="btn btn--warn" onClick={onConfirm}>
+            Download
+          </button>
+        </>
+      }
+    >
+      <p>The server downloads, into its weights root:</p>
+      <ul className="prepare-list" aria-label="Downloads">
+        {rows.map((r) => {
+          const licences = splitList(r.license);
+          return (
+            <li key={keyOf(r)}>
+              <strong>{r.name}</strong> <code>{where(r)}</code>
+              <span className="prepare-list__facts">
+                {r.source ? <span>{r.source}</span> : null}
+                <span>{r.size_bytes ? formatBytes(r.size_bytes) : "size not declared"}</span>
+                <span>{licences.length ? `licence: ${licences.join(", ")}` : "licence not declared"}</span>
+              </span>
+            </li>
+          );
+        })}
+      </ul>
+      <p>
+        Total: <strong>{total}</strong>. By downloading you accept the licences listed.
+      </p>
+      {manual.length ? (
+        <div className="prepare-manual" role="note" aria-label="Files you must provide">
+          <p>You must provide these files yourself (they are not downloaded):</p>
+          <ul>
+            {manual.map((r) => (
+              <li key={keyOf(r)}>
+                <strong>{r.name}</strong> <code>{where(r)}</code>
+                {r.message ? <span className="prepare-manual__hint">{r.message}</span> : null}
+              </li>
+            ))}
+          </ul>
+        </div>
+      ) : null}
+    </Dialog>
   );
 }

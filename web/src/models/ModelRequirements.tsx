@@ -8,7 +8,7 @@ import { formatBytes } from "../video/DropZone";
 import { Dialog } from "../ui/Dialog";
 import { Icon } from "../ui/icons";
 import "./statusStyles.css";
-import { isUnknownSource, locations, MODEL_ENVIRONMENTS_DOC, onlyPackages, packagesPlan, prepareCommand, preparable, ROOT_LABEL, splitList, stateLabel, toneOf, where } from "./readiness";
+import { isUnknownSource, isUserProvided, locations, MODEL_ENVIRONMENTS_DOC, onlyPackages, packagesPlan, prepareCommand, preparable, ROOT_LABEL, splitList, stateLabel, toneOf, where } from "./readiness";
 import { useReadiness, type ModelView } from "./useModelStatus";
 
 export interface ModelRequirementsProps {
@@ -66,6 +66,7 @@ function ModelBlock({ row, single, fileName }: { row: ModelView; single: boolean
   const readiness = useReadiness();
   const tone = toneOf(row.state);
   const unknownSource = isUnknownSource(row);
+  const userProvided = isUserProvided(row);
   const packagesOnly = onlyPackages(row);
   const plan = packagesPlan(row);
   const [confirming, setConfirming] = useState(false);
@@ -228,6 +229,13 @@ function ModelBlock({ row, single, fileName }: { row: ModelView; single: boolean
         </div>
       ) : null}
 
+      {userProvided && tone !== "preparing" ? (
+        <p className="reqs__note">
+          <Icon name="info" size={14} />
+          <span>Prepare cannot fetch this file: provide it by hand as the message above says (or point the option at your own file). Process unlocks once it is there.</span>
+        </p>
+      ) : null}
+
       {plan?.action === "base" && plan.command && tone !== "preparing" ? (
         <div className="reqs__hint">
           <p>The base Python stack is not installed on the server, and the server never installs it. Run this once in the repository on the server, then restart the server:</p>
@@ -279,7 +287,7 @@ function RestartNote() {
   return (
     <p className="reqs__note reqs__note--restart" role="status">
       <Icon name="info" size={14} />
-      <span>Packages were installed on the server. Restart the server to use them.</span>
+      <span>Packages were installed on the server. New runs use them (each run starts a fresh worker); restart the server only if it should use an upgraded package it had already imported.</span>
     </p>
   );
 }
@@ -307,7 +315,7 @@ function InstallDialog({ open, plan, onClose, onConfirm }: { open: boolean; plan
       </p>
       <pre className="reqs__output">{plan.command}</pre>
       <p>Every extra already installed is named, so nothing is removed{plan.message ? `; the dry-run says: ${plan.message}` : ""}. The server runs the dry-run again first and stops if it is no longer clean.</p>
-      <p>Restart the server afterwards to use the new packages.</p>
+      <p>New runs use them (each run starts a fresh worker); restart the server only if it should use an upgraded package it had already imported.</p>
     </Dialog>
   );
 }

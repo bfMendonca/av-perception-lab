@@ -291,6 +291,60 @@
   font-style: italic;
 }
 
+/* ---------- Prepare all confirmation ---------- */
+.prepare-list,
+.prepare-manual ul {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin: 8px 0 12px;
+  padding: 0;
+  list-style: none;
+  max-height: 40vh;
+  overflow-y: auto;
+}
+
+.prepare-list li,
+.prepare-manual li {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 4px 8px;
+  padding: 8px 10px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  background: var(--panel-2);
+  font-size: 12.5px;
+}
+
+.prepare-list code,
+.prepare-manual code {
+  color: var(--muted);
+}
+
+.prepare-list__facts {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 12px;
+  width: 100%;
+  color: var(--text-2);
+  overflow-wrap: anywhere;
+}
+
+.prepare-manual {
+  margin-top: 12px;
+  padding: 10px 12px;
+  border: 1px dashed var(--warn);
+  border-radius: var(--radius-sm);
+  background: var(--warn-soft);
+}
+
+.prepare-manual__hint {
+  width: 100%;
+  color: var(--text-2);
+  overflow-wrap: anywhere;
+}
+
 /* ---------- inspector section ---------- */
 .reqs__model {
   margin-bottom: 10px;

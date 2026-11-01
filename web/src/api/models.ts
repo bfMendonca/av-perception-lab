@@ -8,6 +8,9 @@ import type { ConfigDict, ValidationError } from "./types";
 export type KnownModelState = "ready" | "missing" | "conflict" | "failed" | "preparing";
 export type ModelState = KnownModelState | (string & {});
 
+/** Reasons the server gives today for a row the web cannot prepare; any other string is shown as not preparable. */
+export type ModelReason = "unknown_source" | "user_provided" | "packages_only" | (string & {});
+
 /** Where a model sits in the config: the path `<stage>[1]` is `{stage, index: 1}`; a single slot has index null. */
 export interface ModelKey {
   stage: string;
@@ -48,8 +51,13 @@ export interface ModelStatus extends ModelKey {
   source?: string | null;
   /** Folders/files relative to the weights root ("; "-joined). */
   target?: string | null;
-  /** Why the web cannot prepare it: "unknown_source", "packages_only" (or another server word), null otherwise. */
-  reason?: string | null;
+  /**
+   * Why the web cannot prepare it: "unknown_source" (the adapter does not vouch
+   * for the source: CLI only), "user_provided" (only files the user must
+   * provide are missing: `message` says which and how), "packages_only" (or
+   * another server word), null otherwise.
+   */
+  reason?: ModelReason | null;
   /** A Prepare from the web can make it ready. Absent from older servers (then the UI infers it). */
   preparable?: boolean;
   /** Packages plan, null when the packages are present (absent from older servers). */
@@ -60,7 +68,7 @@ export interface ModelStatus extends ModelKey {
 export interface StatusReport {
   models: ModelStatus[];
   total_size_bytes: number;
-  /** Packages were installed since the server started: it must be restarted to use them. */
+  /** Packages were installed since the server started (new runs use them; the server only needs a restart to use an upgraded package it had already imported). */
   restart_required?: boolean;
 }
 
@@ -89,7 +97,7 @@ export interface PrepareJob {
   created: string;
   cancel_requested: boolean;
   models: PrepareModel[];
-  /** Models of a `models: "all"` request left out (unknown source). */
+  /** Models of a `models: "all"` request left out (unknown source, or only user-provided files missing); `message` says why. */
   skipped: (ModelKey & { type: string; name: string; message: string })[];
 }
 
