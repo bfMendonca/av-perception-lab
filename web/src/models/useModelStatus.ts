@@ -6,18 +6,22 @@
 // model), and the outcome of the last attempt per model (a failed Prepare
 // stays "failed" with its reason after the refresh, until it is retried or the
 // model becomes ready; a model that just became ready stays ready until the
-// next status answer).
+// next status answer). An Install packages job (`kind: "packages"`) is
+// followed the same way; its `uv` output lines are kept per model and, once
+// it installed something, the page asks for a server restart (also told by
+// the status answer's `restart_required`).
 //
 // Every overlay carries the identity (type + name) of the model it is about
 // and applies to a row only when the row has that identity, and a row applies
 // to a card only while the edited config still has that module at that place:
 // removing or reordering modules never moves a state to another card.
 import { createContext, createElement, useCallback, useContext, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
-import { StatusRejected, type ModelKey, type ModelState, type ModelStatus, type ModelsApi, type PrepareEvent, type PrepareJob } from "../api/models";
+import { StatusRejected, type ModelKey, type ModelState, type ModelStatus, type ModelsApi, type PrepareEvent, type PrepareJob, type PrepareOptions } from "../api/models";
 import type { ConfigDict } from "../api/types";
 import { keyOf, plural, preparable, rowsForSlot, sizeOf, where } from "./readiness";
 
 const PREPARING_POLL_MS = 2000;
+const OUTPUT_LINES = 50; // uv output lines kept per model
 const ACTIVE = new Set(["queued", "preparing"]);
 
 export type ReadinessStatus = "idle" | "pending" | "ready" | "invalid" | "unavailable";
@@ -29,6 +33,10 @@ export interface ModelProgress {
   fraction: number | null;
   /** The item being fetched (asset key, `code:<name>`). */
   item: string | null;
+  /** "weights" (Prepare) or "packages" (Install packages). */
+  kind: string;
+  /** Last `uv` output lines of an Install packages job. */
+  output: string[];
 }
 
 /** A status row as the UI shows it: the server's row with this page's Prepare overlaid. */
@@ -58,6 +66,8 @@ interface Local {
   jobId: string;
   ident: string;
   items: Record<string, { done: number; total: number | null }>;
+  kind: string;
+  output: string[];
 }
 
 /** A model a job just made ready: shown ready until a status asked after it. */
@@ -113,7 +123,7 @@ function progressOf(local: Local | undefined): ModelProgress | null {
     else total += p.total;
   }
   const last = items.length ? items[items.length - 1][0] : null;
-  return { done, total: known ? total : null, fraction: known && total > 0 ? Math.min(1, done / total) : null, item: last };
+  return { done, total: known ? total : null, fraction: known && total > 0 ? Math.min(1, done / total) : null, item: last, kind: local.kind, output: local.output };
 }
 
 /**
@@ -148,6 +158,9 @@ export function useModelStatus(config: ConfigDict | null, options: UseModelStatu
   const activeRef = useRef(activeJobs);
   activeRef.current = activeJobs;
   const [submitting, setSubmitting] = useState(false);
+  const [restartRequired, setRestartRequired] = useState(false);
+  // Job kind per id ("packages" for Install packages).
+  const kinds = useRef(new Map<string, string>());
   const [tick, setTick] = useState(0);
   const seq = useRef(0);
   const subscriptions = useRef(new Map<string, () => void>());
@@ -176,6 +189,7 @@ export function useModelStatus(config: ConfigDict | null, options: UseModelStatu
         (report) => {
           if (mine !== seq.current) return;
           setRows(report.models);
+          if (report.restart_required) setRestartRequired(true);
           setStatus("ready");
           setMessage(null);
           // Asked after those models finished: the server now knows.
@@ -197,6 +211,7 @@ export function useModelStatus(config: ConfigDict | null, options: UseModelStatu
       subscriptions.current.get(id)?.();
       subscriptions.current.delete(id);
       ended.current.delete(id);
+      kinds.current.delete(id);
       setActiveJobs((list) => list.filter((j) => j !== id));
       setLocal((map) => Object.fromEntries(Object.entries(map).filter(([, l]) => l.jobId !== id)));
       refresh();
@@ -219,13 +234,14 @@ export function useModelStatus(config: ConfigDict | null, options: UseModelStatu
             const cur = map[k]?.ident === ident ? map[k] : undefined;
             // a replayed "queued" never takes a running model back
             const next = cur?.state === "preparing" && state === "queued" ? "preparing" : state;
-            return { ...map, [k]: { items: cur?.items ?? {}, state: next, jobId, ident } };
+            return { ...map, [k]: { items: cur?.items ?? {}, state: next, jobId, ident, kind: cur?.kind ?? kinds.current.get(jobId) ?? "weights", output: cur?.output ?? [] } };
           });
           return;
         }
         // The model ended: a success shows ready until the next status
         // answer; a failure is remembered; a cancel is forgotten.
         seen.add(k);
+        if (event.installed === true) setRestartRequired(true);
         setLocal((map) => {
           if (!map[k]) return map;
           const next = { ...map };
@@ -253,6 +269,15 @@ export function useModelStatus(config: ConfigDict | null, options: UseModelStatu
           const kept = { done: Math.max(prev?.done ?? 0, done), total: total ?? prev?.total ?? null };
           return { ...map, [k]: { ...cur, state: "preparing", items: { ...cur.items, [item]: kept } } };
         });
+      } else if (event.event === "output" && typeof event.stage === "string" && typeof event.line === "string") {
+        const k = keyOfEvent(event);
+        const line = event.line;
+        if (ended.current.get(jobId)?.has(k)) return; // replayed after the model ended
+        setLocal((map) => {
+          const cur = map[k];
+          if (!cur || cur.jobId !== jobId) return map;
+          return { ...map, [k]: { ...cur, state: "preparing", output: [...cur.output, line].slice(-OUTPUT_LINES) } };
+        });
       } else if (event.event === "end") {
         if (event.status === "failed" && typeof event.error === "string") notify.current?.({ tone: "error", text: `Prepare failed: ${event.error}` });
         finishJob(jobId);
@@ -264,13 +289,15 @@ export function useModelStatus(config: ConfigDict | null, options: UseModelStatu
   const follow = useCallback(
     (job: PrepareJob) => {
       if (subscriptions.current.has(job.id)) return;
+      const kind = job.kind ?? "weights";
+      kinds.current.set(job.id, kind);
       setActiveJobs((list) => (list.includes(job.id) ? list : [...list, job.id]));
       const waiting = job.models.filter((m) => m.state === "queued" || m.state === "preparing");
       setLocal((map) => {
         const next = { ...map };
         for (const m of waiting) {
           const ident = identOf(m);
-          if (!isReady(keyOf(m), ident)) next[keyOf(m)] = { state: m.state, jobId: job.id, ident, items: {} };
+          if (!isReady(keyOf(m), ident)) next[keyOf(m)] = { state: m.state, jobId: job.id, ident, items: {}, kind, output: [] };
         }
         return next;
       });
@@ -308,19 +335,20 @@ export function useModelStatus(config: ConfigDict | null, options: UseModelStatu
   }, [attach]);
 
   const prepare = useCallback(
-    async (models: ModelKey[] | "all") => {
+    async (models: ModelKey[] | "all", options?: PrepareOptions) => {
       const cfg = configRef.current;
       if (!cfg) return;
       setSubmitting(true);
       try {
-        const job = await api.prepare(models === "all" ? "all" : models.map((m) => ({ stage: m.stage, index: m.index })), cfg);
+        const job = await api.prepare(models === "all" ? "all" : models.map((m) => ({ stage: m.stage, index: m.index })), cfg, options);
         follow({ ...job, models: job.models.map((m) => ({ ...m, state: m.state === "preparing" ? m.state : "queued" })) });
         if (job.skipped.length) {
           const names = job.skipped.map((s) => `${where(s)} ${s.name}`).join(", ");
           notify.current?.({ tone: "warn", text: `Not prepared from the web (${plural(job.skipped.length, "model")}): ${names}. Unknown source: prepare it from the CLI (--prepare).` });
         }
       } catch (exc) {
-        notify.current?.({ tone: "error", text: `Could not start Prepare: ${exc instanceof Error ? exc.message : String(exc)}` });
+        const what = options?.packages ? "Install packages" : "Prepare";
+        notify.current?.({ tone: "error", text: `Could not start ${what}: ${exc instanceof Error ? exc.message : String(exc)}` });
         refresh();
       } finally {
         setSubmitting(false);
@@ -328,6 +356,9 @@ export function useModelStatus(config: ConfigDict | null, options: UseModelStatu
     },
     [api, follow, refresh],
   );
+
+  /** Install the per-model extra of one model (the server runs a fresh dry-run first). */
+  const installPackages = useCallback((model: ModelKey) => prepare([model], { packages: true }), [prepare]);
 
   const cancel = useCallback(async () => {
     await Promise.all(activeRef.current.map((id) => api.cancelPrepare(id).catch(() => undefined)));
@@ -398,10 +429,13 @@ export function useModelStatus(config: ConfigDict | null, options: UseModelStatu
       busy: activeJobs.length > 0,
       rowsFor: (stageKey: string, index: number | null) => rowsForSlot(views, stageKey, index),
       prepare,
+      installPackages,
+      /** Packages were installed on the server: it must be restarted to use them. */
+      restartRequired,
       cancel,
       refresh,
     };
-  }, [activeJobs.length, cancel, message, prepare, refresh, status, submitting, views]);
+  }, [activeJobs.length, cancel, installPackages, message, prepare, refresh, restartRequired, status, submitting, views]);
 }
 
 export type Readiness = ReturnType<typeof useModelStatus>;

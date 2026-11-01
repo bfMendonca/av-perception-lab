@@ -110,7 +110,9 @@ export function modelRow(patch: Partial<ModelStatus> = {}): ModelStatus {
 export interface FakeModelsApi extends ModelsApi {
   rows: ModelStatus[];
   statusCalls: ConfigDict[];
-  prepared: { models: ModelKey[] | "all"; config: ConfigDict }[];
+  prepared: { models: ModelKey[] | "all"; config: ConfigDict; packages?: boolean }[];
+  /** `restart_required` of the next status answers. */
+  restartRequired: boolean;
   cancelled: string[];
   /** Make the next status calls fail with this error. */
   failWith: Error | null;
@@ -127,20 +129,22 @@ export function fakeModelsApi(rows: ModelStatus[] = []): FakeModelsApi {
     prepared: [],
     cancelled: [],
     failWith: null,
+    restartRequired: false,
     listed: [],
     emit: (id, event) => listeners.get(id)?.(event),
     status: async (config) => {
       api.statusCalls.push(config);
       if (api.failWith) throw api.failWith;
       const models = structuredClone(api.rows);
-      return { models, total_size_bytes: models.filter((m) => m.state !== "ready").reduce((s, m) => s + (m.size_bytes ?? 0), 0) };
+      return { models, total_size_bytes: models.filter((m) => m.state !== "ready").reduce((s, m) => s + (m.size_bytes ?? 0), 0), restart_required: api.restartRequired };
     },
-    prepare: async (models, config) => {
-      api.prepared.push({ models, config });
+    prepare: async (models, config, options) => {
+      api.prepared.push(options?.packages ? { models, config, packages: true } : { models, config });
       const id = `prep${api.prepared.length}`;
       const chosen = models === "all" ? api.rows : api.rows.filter((r) => models.some((m) => m.stage === r.stage && m.index === r.index));
       return {
         id,
+        kind: options?.packages ? "packages" : "weights",
         status: "queued",
         position: 0,
         error: null,

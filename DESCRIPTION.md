@@ -78,7 +78,7 @@ det-depth-distance/
 │   │   ├── components.py    # LoadContext, Component (+ requirements(options) hook), DetectorOptions, Detector, DepthEstimator, RefinerOptions, MaskRefiner, SemanticSegmenter, TrackerOptions, Tracker (ABCs)
 │   │   ├── registry.py      # @register, build, available, load_adapters (ADAPTER_MODULES)
 │   │   ├── requirements.py  # Requirements (assets, CodeRepo (hex commit pin), packages), registered Asset kinds (HuggingFaceAsset, UrlAsset, UserProvided; present(root)), weights_root, ModelStatus, check() (torch-free)
-│   │   ├── provision/       # provisioning engine (framework-free): engine.py (Source protocol, register_source, ProvisionError/ProvisionCancelled, prepare(req, root, progress, cancel) -> ModelStatus), sources.py (built-in sources: Hugging Face snapshot_download (lazy import), URL via urllib (.part, atomic rename, accepted only when size/sha256/Content-Length verifies it, Range + If-Range resume only with a declared size or sha256, http(s)-only redirects), git clone + pinned checkout (hex commit, timeout, process-group kill on cancel), UserProvided never downloads)
+│   │   ├── provision/       # provisioning engine (framework-free): engine.py (Source protocol, register_source, ProvisionError/ProvisionCancelled, prepare(req, root, progress, cancel) -> ModelStatus), sources.py (built-in sources: Hugging Face snapshot_download (lazy import), URL via urllib (.part, atomic rename, accepted only when size/sha256/Content-Length verifies it, Range + If-Range resume only with a declared size or sha256, http(s)-only redirects), git clone + pinned checkout (hex commit, timeout, process-group kill on cancel), UserProvided never downloads; engine.install_packages / with_package_plan), packages.py (packages layer: declared_extras, detect_extras via importlib.metadata + find_spec, sync_command never bare (--locked --inexact, every detected extra), dry_run -> DryRunResult, install (process group, streamed), plan_packages -> PackagePlan ready|base|install|conflict|invalid; the base extra `infer` is never installed))
 │   │   ├── labels.py        # Vocabulary, COCO / OBJECTS365 presets, identify_vocabulary, resolve_classes, LabelMap, SEMANTIC_NAME_PATTERN, group_semantic_labels
 │   │   ├── boxes.py         # numpy box geometry: iou_matrix, label_groups, greedy_match, nms_clusters, wbf_clusters
 │   │   ├── aggregate.py     # Aggregator (bind_sources hook), Concat, FusionOptions, FusionAggregator, Nms, Wbf
@@ -304,8 +304,21 @@ otherwise, 2 for configuration errors). A run without `--prepare` checks the
 same requirements after every configuration error and before any model is
 loaded (`cli.require_ready`): a model that is not ready is a ConfigError
 (exit 2) listing each one with what is missing (root-relative) and naming
-`--prepare`; files at explicit paths outside the weights root are not
-declared, so not checked. Plus two auxiliary console scripts:
+`--prepare` (or, when only Python packages are missing, the one-time base
+stack command `uv sync --extra infer`, add `--extra web` for the server; for
+a per-model extra, `--prepare --install-packages`); files at explicit paths
+outside the weights root are not declared, so not checked. Packages layer
+(task_0024, `core/provision/packages.py`): `--prepare` reports it (base stack
+missing -> the command, never run; a per-model extra -> a `uv sync --dry-run`
+naming every installed extra plus the new one, with `--locked --inexact`;
+failure -> state `conflict` with the resolver's reason, project-relative, and
+a pointer to `docs/model_environments.md`); `--prepare --install-packages`
+installs a per-model extra after a fresh clean dry-run (same command without
+`--dry-run`, output streamed). Installed extras are detected from
+`pyproject.toml` `[project.optional-dependencies]` with `importlib.metadata`
+plus the components' import names via `find_spec` (nothing imported); a
+dry-run that would remove or replace a package is a conflict; `DDD_UV`
+names the `uv` executable. Plus two auxiliary console scripts:
 `det-depth-distance-calibrate calibrate|board|inspect` and
 `det-depth-distance-evaluate --refs REFS.yaml RUN [RUN ...]`. The YAML schema (sections source, detectors, depth,
 camera, aggregation, refiners, semantic, tracking, smoothing, agreement, distance, render, output, device) is documented in the
@@ -444,6 +457,23 @@ URL host, "git · <url>" for code, the user-provided hint), `license`, `target`
 and no reason). `GET /api/models/prepare` lists the queue's jobs (newest
 first, `PrepareQueue.recent()`), so a reloaded page re-attaches.
 
+Packages in the web (task_0024): rows carry `packages` (null when present,
+else `{action: base|install|conflict|invalid, extra, command, message}` from
+`packages.plan_packages`; the dry-run is cached per extra, detected extras
+and pyproject/lock mtimes); a failed dry-run makes the row `conflict` (not
+preparable; a run is refused with 409). `POST /api/models/prepare` with
+`packages: true` and named models (not "all"; 422 for the base stack or a
+model without a per-model extra) queues a job of `kind: "packages"` in the
+same PrepareQueue: `engine.install_packages` runs a fresh dry-run, then `uv
+sync` in its own process group (cancel kills the group), streaming `output`
+events `{stage, index, line}` (redacted, at most 2000 per job); the model view
+gains `installed`; afterwards the status body's `restart_required` is true.
+The server never installs the base stack: a `base` row shows
+`uv sync --extra infer --extra web` with a copy button. UI: **Install
+packages** (only for a clean dry-run) opens a Dialog stating the command and
+that nothing is removed; the inspector shows the `uv` output while it runs and
+"Restart the server to use them" (section note and banner) afterwards.
+
 Readiness in the UI (task_0023, `web/src/models/`): `useModelStatus(config,
 {api})` posts the edited pipeline to `/api/models/status` (debounced like the
 validation; a sequence bumped when a request is scheduled drops stale
@@ -474,8 +504,9 @@ layers, missing items, message, size, source/licence/target when a row
 carries them (else locations parsed from `<weights root>/...` in the
 message), **Prepare model** / **Retry** for preparable rows, the copyable
 `det-depth-distance --config <file> --prepare` for an unknown source (message
-prefix `unknown source`), a note when only `package:` items are missing, a
-conflict note, and the module's unset path options as the location override.
+prefix `unknown source`), the packages plan (task_0024: base command, Install
+packages, conflict reason) or, from older servers, a note when only
+`package:` items are missing, a conflict note, and the module's unset path options as the location override.
 Process is disabled with "N models are not ready — Prepare them first." while
 the last status has a row not `ready`; `submitRun` throws `ModelsNotReady` on
 a 409 and `useProcess` shows a "Models not ready" dialog listing them (with

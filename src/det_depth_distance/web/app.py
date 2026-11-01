@@ -6,8 +6,9 @@ capped, and served files are never sniffed nor run as pages of the app.
 
 Model readiness (`web.models`): `/api/models/status` checks the models of a
 config on disk, `/api/models/prepare` queues their download (one at a time,
-independent from the GPU job queue), and a run whose models are not all ready
-is refused with 409 before it is queued.
+independent from the GPU job queue; with `packages: true` it installs a
+model's per-model extra after a clean dry-run, never the base stack), and a
+run whose models are not all ready is refused with 409 before it is queued.
 """
 
 import asyncio
@@ -93,6 +94,9 @@ class PrepareBody(BaseModel):
     model_config = ConfigDict(extra="forbid")
     config: dict[str, Any]
     models: list[ModelKey] | Literal["all"]
+    # Install the named models' per-model extras instead of their weights
+    # (after a fresh, clean dry-run; never the base stack).
+    packages: bool = False
 
 
 VIDEO_FILES = ("file", "preview", "thumb")
@@ -280,8 +284,9 @@ def create_app(
         """Status rows of a valid config (disk checks in the thread pool); the
         model a Prepare is working on reads `preparing`."""
         rows = models.config_rows(cfg)
+        imports = models.config_imports(rows)
         statuses = await run_in_threadpool(
-            lambda: [models.status_row(row, root) for row in rows]
+            lambda: [models.status_row(row, root, imports) for row in rows]
         )
         busy = prepares.preparing()
         for row, status in zip(rows, statuses, strict=True):
@@ -622,7 +627,9 @@ def create_app(
         if errors:
             return JSONResponse({"errors": errors}, status_code=422)
         try:
-            return models.report(await model_statuses(body.config))
+            return models.report(
+                await model_statuses(body.config), prepares.restart_required
+            )
         except ConfigError as exc:
             return JSONResponse({"errors": [schema.split_error(exc)]}, 422)
 
@@ -638,10 +645,11 @@ def create_app(
             "all" if body.models == "all" else [(k.stage, k.index) for k in body.models]
         )
         try:
-            job = prepares.submit(keys, body.config)
+            job = prepares.submit(keys, body.config, packages=body.packages)
         except models.UnknownModel as exc:
             raise HTTPException(422, exc.args[0]) from None
-        except ValueError as exc:  # ConfigError, UnknownSource, nothing selected
+        # ConfigError, UnknownSource, NotInstallable, nothing selected
+        except ValueError as exc:
             raise HTTPException(422, str(exc)) from None
         return job.to_dict(prepares.position(job))
 

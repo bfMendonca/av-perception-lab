@@ -20,6 +20,15 @@ has returned (sources check the event between chunks), so two Prepares never
 write the same files. Nothing is persisted: finished jobs are kept in memory
 (the latest `RECENT_FINISHED`) and results are logged.
 
+A row whose packages are missing carries the packages plan
+(`core.provision.packages.plan_packages`): the base stack's one-time command
+(never run by the server), a per-model extra installable after a clean
+dry-run, or the state `conflict` with the resolver's reason. A job submitted
+with `packages=True` installs per-model extras (`install_packages`: fresh
+dry-run, then `uv sync` naming every installed extra) and streams the `uv`
+output as `output` events; afterwards `restart_required` is set (the server
+has to be restarted to use them).
+
 Text sent to clients names the weights root `<weights root>`, never its
 absolute path.
 """
@@ -38,7 +47,12 @@ from pathlib import Path
 from typing import Any, Literal
 
 from det_depth_distance import cli, config
-from det_depth_distance.core.provision import prepare
+from det_depth_distance.core.provision import (
+    install_packages,
+    prepare,
+    with_package_plan,
+)
+from det_depth_distance.core.provision import packages as pkgs
 from det_depth_distance.core.requirements import (
     CODE_DIR,
     Asset,
@@ -56,6 +70,7 @@ PROGRESS_INTERVAL_S = 0.2  # at most one progress event per item and interval
 TERMINAL = ("done", "failed", "cancelled")
 SHUTDOWN_ERROR = "the server shut down"
 UNKNOWN_SOURCE = "unknown source: prepare it from the CLI (--prepare)"
+OUTPUT_LIMIT = 2000  # `output` events kept per job
 _INDEXED = re.compile(r"^(?P<stage>.+)\[(?P<index>\d+)\]$")
 
 Key = tuple[str, int | None]
@@ -63,6 +78,11 @@ Key = tuple[str, int | None]
 
 class UnknownModel(KeyError):
     """A model key that is not one of the config's models."""
+
+
+class NotInstallable(ValueError):
+    """A packages job for a model the server must not install packages for
+    (the base stack, no per-model extra)."""
 
 
 class UnknownSource(ValueError):
@@ -196,11 +216,29 @@ def with_action(row: dict[str, Any], unknown: bool) -> dict[str, Any]:
     return row
 
 
-def status_row(row: ModelRow, root: Path) -> dict[str, Any]:
+def plan_view(plan: pkgs.PackagePlan | None, root: Path) -> dict[str, Any] | None:
+    """`{action, extra, command, message}` of a packages plan (None when the
+    packages are present); redacted."""
+    if plan is None or plan.action == "ready":
+        return None
+    return {
+        "action": plan.action,
+        "extra": plan.extra,
+        "command": plan.command,
+        "message": redact(plan.message, root),
+    }
+
+
+def status_row(
+    row: ModelRow,
+    root: Path,
+    imports: dict[str, tuple[str, ...]] | None = None,
+) -> dict[str, Any]:
     """`{stage, index, type, name, state, layers, missing, size_bytes,
-    message, source, license, target, reason, preparable}` of one model,
-    checked on disk (call from a thread: it walks files and may run
-    `git rev-parse`)."""
+    message, source, license, target, reason, preparable, packages}` of one
+    model, checked on disk (call from a thread: it walks files and may run
+    `git rev-parse` and a cached `uv sync --dry-run`). `imports` are the
+    import names per extra of the whole config (extra detection)."""
     if row.req is None:
         return with_action(
             {
@@ -211,23 +249,47 @@ def status_row(row: ModelRow, root: Path) -> dict[str, Any]:
                 "size_bytes": None,
                 "message": redact(row.error, root),
                 **declaration_view(None, root),
+                "packages": None,
             },
             False,
         )
-    view = status_view(check(row.req, root), root)
+    status = check(row.req, root)
+    plan = None
+    if status.layers.get("packages", "ready") != "ready":
+        plan = pkgs.plan_packages(row.req, imports=imports)
+        status = with_package_plan(status, plan)
+    view = status_view(status, root)
     unknown = view["state"] != "failed" and bool(unknown_sources(row.req, root))
     if unknown:
         view["state"], view["message"] = "missing", UNKNOWN_SOURCE
     return with_action(
-        {**row.head(), **view, **declaration_view(row.req, root)}, unknown
+        {
+            **row.head(),
+            **view,
+            **declaration_view(row.req, root),
+            "packages": plan_view(plan, root),
+        },
+        unknown,
     )
 
 
-def report(statuses: list[dict[str, Any]]) -> dict[str, Any]:
-    """The `POST /api/models/status` body: the rows and the bytes still to
-    download (models that are not ready and declare a size)."""
+def config_imports(rows: Iterable[ModelRow]) -> dict[str, tuple[str, ...]]:
+    """Import names per extra declared by the models of a config."""
+    return pkgs.imports_of(r.req for r in rows if r.req is not None)
+
+
+def report(
+    statuses: list[dict[str, Any]], restart_required: bool = False
+) -> dict[str, Any]:
+    """The `POST /api/models/status` body: the rows, the bytes still to
+    download (models that are not ready and declare a size) and whether
+    packages were installed since the server started."""
     total = sum(s["size_bytes"] or 0 for s in statuses if s["state"] != "ready")
-    return {"models": statuses, "total_size_bytes": total}
+    return {
+        "models": statuses,
+        "total_size_bytes": total,
+        "restart_required": restart_required,
+    }
 
 
 def not_ready(statuses: Iterable[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -248,10 +310,12 @@ class ModelProgress:
     missing: list[str] = field(default_factory=list)
     size_bytes: int | None = None
     message: str | None = None
+    installed: bool = False  # a packages job ran `uv sync` to completion
 
     def to_dict(self) -> dict[str, Any]:
         return {
             **self.row.head(),
+            "installed": self.installed,
             "state": self.state,
             "item": self.item,
             "done": self.done,
@@ -269,6 +333,7 @@ class PrepareJob:
 
     id: str
     models: list[ModelProgress]
+    kind: str = "weights"  # weights (prepare) | packages (install packages)
     status: str = "queued"  # queued|running|done|failed|cancelled
     error: str | None = None
     created: str = ""
@@ -281,10 +346,12 @@ class PrepareJob:
     # models of a `models: "all"` request left out: {stage, index, type,
     # name, message} (an unknown source)
     skipped: list[dict[str, Any]] = field(default_factory=list)
+    output_lines: int = 0
 
     def to_dict(self, position: int | None = None) -> dict[str, Any]:
         return {
             "id": self.id,
+            "kind": self.kind,
             "status": self.status,
             "position": position,
             "error": self.error,
@@ -304,14 +371,21 @@ class PrepareQueue:
         self._waiting: list[PrepareJob] = []
         self._wake = asyncio.Event()
         self._runner: asyncio.Task[None] | None = None
+        # packages were installed since start: the server must be restarted
+        self.restart_required = False
 
     # -- public API ---------------------------------------------------------
 
     def submit(
-        self, models: list[Key] | Literal["all"], data: dict[str, Any]
+        self,
+        models: list[Key] | Literal["all"],
+        data: dict[str, Any],
+        packages: bool = False,
     ) -> PrepareJob:
         """Queue a Prepare of `models` (keys from the status rows) or of every
-        model of the config (call from the running event loop).
+        model of the config (call from the running event loop). With
+        `packages`, the job installs the named models' per-model extras
+        instead (`install_packages`); the dry-run runs in the job.
 
         A model with an unknown source (`unknown_sources`) is never queued:
         named explicitly it raises `UnknownSource`; with "all" it is left out
@@ -322,10 +396,14 @@ class PrepareQueue:
             UnknownModel: a key is not one of the config's models.
             UnknownSource: a named model (or, with "all", every model that
                 is not ready) has an unknown source.
-            ValueError: no model selected.
+            NotInstallable: `packages` for a model without a per-model extra
+                (the base stack is never installed by the server).
+            ValueError: no model selected, or `packages` with "all".
         """
         rows = config_rows(data)
         skipped: list[dict[str, Any]] = []
+        if packages and models == "all":
+            raise ValueError("Install packages names its models (not 'all')")
         if models == "all":
             chosen = []
             for row in rows:
@@ -346,7 +424,9 @@ class PrepareQueue:
                     where = stage if index is None else f"{stage}[{index}]"
                     raise UnknownModel(f"{where} is not a model of this config")
                 row = by_key[key]
-                if row.req is not None and unknown_sources(row.req, self.root):
+                if packages:
+                    _check_installable(row)
+                elif row.req is not None and unknown_sources(row.req, self.root):
                     raise UnknownSource(f"{_where(row)} {row.name}: {UNKNOWN_SOURCE}")
                 if key not in seen:
                     seen.add(key)
@@ -354,6 +434,7 @@ class PrepareQueue:
         if not chosen:
             raise ValueError("no model to prepare")
         job = PrepareJob(uuid.uuid4().hex[:12], [ModelProgress(r) for r in chosen])
+        job.kind = "packages" if packages else "weights"
         job.skipped = skipped
         job.created = datetime.now().astimezone().isoformat(timespec="seconds")
         self._jobs[job.id] = job
@@ -450,7 +531,7 @@ class PrepareQueue:
             job.status = "cancelled"
             job.error = job.error or "cancelled"
         else:
-            bad = [m for m in job.models if m.state != "ready"]
+            bad = [m for m in job.models if not _succeeded(job, m)]
             job.status = "failed" if bad else "done"
             if bad:
                 job.error = "; ".join(
@@ -508,6 +589,8 @@ class PrepareQueue:
                     "failed",
                     redact(model.row.error, self.root),
                 )
+            elif job.kind == "packages":
+                await self._install(job, model, loop)
             else:
                 progress = self._progress(job, model, loop)
                 try:
@@ -535,6 +618,50 @@ class PrepareQueue:
                 model.state,
             )
         self._finish(job)
+
+    async def _install(self, job: PrepareJob, model: ModelProgress, loop) -> None:
+        """Install the packages of one model (fresh dry-run, then `uv sync`)."""
+        stage, index = model.row.key
+
+        def deliver(line: str) -> None:
+            if job.output_lines >= OUTPUT_LIMIT:
+                return
+            job.output_lines += 1
+            self._append(
+                job,
+                {
+                    "event": "output",
+                    "stage": stage,
+                    "index": index,
+                    "line": redact(line, self.root),
+                },
+            )
+
+        def on_line(line: str) -> None:  # uv reader thread
+            if not loop.is_closed():
+                loop.call_soon_threadsafe(deliver, line)
+
+        assert model.row.req is not None
+        try:
+            outcome = await asyncio.to_thread(
+                install_packages,
+                model.row.req,
+                on_line,
+                job.cancel_event,
+                root=self.root,
+            )
+        except Exception as exc:  # noqa: BLE001 - reported, never a crash
+            model.state = "failed"
+            model.message = redact(f"{type(exc).__name__}: {exc}", self.root)
+            return
+        view = status_view(outcome.status, self.root)
+        model.state = view["state"]
+        model.layers, model.missing = view["layers"], view["missing"]
+        model.size_bytes, model.message = view["size_bytes"], view["message"]
+        model.installed = outcome.installed
+        if outcome.installed:
+            self.restart_required = True
+            model.message = "packages installed: restart the server to use them"
 
     def _progress(self, job: PrepareJob, model: ModelProgress, loop):
         """Engine progress callback (any thread): throttled, then handed to
@@ -568,6 +695,29 @@ class PrepareQueue:
                 loop.call_soon_threadsafe(deliver, label, done, total)
 
         return progress
+
+
+def _check_installable(row: ModelRow) -> None:
+    """Raise `NotInstallable` unless the server may install the packages of
+    `row` (a per-model extra, never the base stack)."""
+    extra = row.req.extra if row.req is not None else None
+    if extra is None:
+        raise NotInstallable(
+            f"{_where(row)} {row.name}: no extra declares its packages"
+        )
+    if extra in pkgs.BASE_EXTRAS:
+        raise NotInstallable(
+            f"{_where(row)} {row.name}: the base Python stack is never installed "
+            f"by the server: run `{pkgs.BASE_COMMAND}` once and restart it"
+        )
+
+
+def _succeeded(job: PrepareJob, model: ModelProgress) -> bool:
+    """A Prepare succeeds when the model is ready; Install packages when its
+    packages layer is (its weights may still be missing)."""
+    if job.kind == "packages":
+        return model.layers.get("packages") == "ready"
+    return model.state == "ready"
 
 
 def _where(row: ModelRow) -> str:

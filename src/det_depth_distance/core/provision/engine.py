@@ -15,14 +15,17 @@ and returns a `ModelStatus` whose state is "failed" with the reasons joined in
 `message`. Cancellation is a `threading.Event` checked by the sources between
 chunks: `prepare` then stops and returns the current status with a message
 starting with "cancelled" (a partial download is never ready, see
-`core.requirements`). The packages layer is reported, not installed.
+`core.requirements`). The packages layer is reported, not installed, by
+`prepare`: `install_packages` handles it (see `packages`): a fresh dry-run,
+then, only when it is clean, the install of the per-model extra; a failed
+dry-run is the state "conflict" (`with_package_plan`).
 """
 
 import threading
 from collections.abc import Callable
-from dataclasses import replace
+from dataclasses import dataclass, replace
 from pathlib import Path
-from typing import Any, Protocol
+from typing import TYPE_CHECKING, Any, Protocol
 
 from det_depth_distance.core.requirements import (
     AssetState,
@@ -32,6 +35,9 @@ from det_depth_distance.core.requirements import (
     check,
     weights_root,
 )
+
+if TYPE_CHECKING:
+    from det_depth_distance.core.provision.packages import PackagePlan
 
 # progress(done, total) of one item, in bytes when known; total None = unknown
 ItemProgress = Callable[[int, int | None], None]
@@ -167,3 +173,71 @@ def prepare(
     if failures:
         return replace(status, state="failed", message="; ".join(failures))
     return status
+
+
+def with_package_plan(status: ModelStatus, plan: "PackagePlan") -> ModelStatus:
+    """`status` with the packages plan applied: a "conflict" plan turns a
+    "missing" model into "conflict" and an "invalid" one into "failed", with
+    the plan's message first."""
+    if plan.action not in ("conflict", "invalid") or status.state not in (
+        "missing",
+        "conflict",
+    ):
+        return status
+    state = "conflict" if plan.action == "conflict" else "failed"
+    parts = [plan.message, status.message]
+    return replace(status, state=state, message="; ".join(p for p in parts if p))
+
+
+@dataclass(frozen=True, slots=True)
+class PackagesOutcome:
+    """Result of `install_packages`: the status afterwards, the plan the
+    fresh dry-run gave and whether `uv sync` ran to completion."""
+
+    status: ModelStatus
+    plan: "PackagePlan"
+    installed: bool
+
+
+def install_packages(
+    req: Requirements,
+    on_line: Callable[[str], None],
+    cancel: threading.Event,
+    *,
+    root: Path | None = None,
+    pyproject: Path | None = None,
+    uv: str | None = None,
+) -> PackagesOutcome:
+    """Install the per-model extra of `req` when its packages are missing:
+    a fresh dry-run first; only a clean one ("install") is followed by the
+    install (output lines to `on_line`). The base stack is never installed
+    (plan "base"); a failed dry-run returns the state "conflict" and changes
+    nothing. Never raises for uv failures: "failed" with the reason; a cancel
+    returns the status with a message starting with "cancelled".
+    """
+    # packages imports this module (its errors): imported here, not on top.
+    from det_depth_distance.core.provision import packages
+
+    root = weights_root() if root is None else Path(root)
+    plan = packages.plan_packages(req, pyproject=pyproject, uv=uv, fresh=True)
+    if plan.action != "install" or plan.extra is None:
+        return PackagesOutcome(with_package_plan(check(req, root), plan), plan, False)
+    on_line(f"$ {plan.command}")
+    try:
+        packages.install(
+            plan.extra,
+            set(plan.extras) - {plan.extra},
+            packages.default_uv() if uv is None else uv,
+            pyproject=pyproject,
+            on_line=on_line,
+            cancel=cancel,
+        )
+    except ProvisionCancelled:
+        status = check(req, root)
+        reason = "cancelled: uv sync was stopped"
+        message = f"{reason}; {status.message}" if status.message else reason
+        return PackagesOutcome(replace(status, message=message), plan, False)
+    except ProvisionError as exc:
+        status = replace(check(req, root), state="failed", message=str(exc))
+        return PackagesOutcome(status, plan, False)
+    return PackagesOutcome(check(req, root), plan, True)

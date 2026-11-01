@@ -4,6 +4,44 @@ Todas as mudancas relevantes do det-depth-distance serao documentadas neste arqu
 
 ---
 
+## [2026-10-31] Packages layer: detect, dry-run, install
+
+Missing Python packages are no longer just reported: the installed extras
+are detected, a `uv sync --dry-run` checks a model's own extra against them,
+and only a clean dry-run can be installed, after an explicit confirmation
+(task_0024).
+
+### Added
+
+- `core/provision/packages.py`: `detect_extras` (`pyproject.toml` extras whose
+  distributions are installed and whose declared import names are found,
+  without importing them), `dry_run` (`uv sync --dry-run --locked --inexact`
+  with `--extra` for every detected extra plus the new one; the resolver's
+  reason, project-relative), `install` (same command without `--dry-run`, own
+  process group, streamed output, cancellable) and `plan_packages`
+  (`ready` / `base` / `install` / `conflict` / `invalid`).
+- `engine.install_packages` and `with_package_plan`: a failed dry-run is the
+  model state `conflict`, pointing to `docs/model_environments.md`.
+- CLI `--install-packages` (with `--prepare`): runs the clean dry-run, then the
+  install.
+- Web: status rows carry `packages`; `POST /api/models/prepare` with
+  `packages: true` runs an Install packages job (`output` SSE events); the
+  status body has `restart_required`. The inspector offers **Install
+  packages** with a confirmation dialog stating the command, shows the `uv`
+  output, and asks for a server restart afterwards.
+
+### Changed
+
+- The CLI gate names `uv sync --extra infer` when only packages are missing
+  (`--prepare` does not install packages); `--prepare` reports the packages
+  plan.
+- A missing base stack (`infer`) shows the one-time command
+  `uv sync --extra infer --extra web` with a copy button; the server never
+  installs it. A dry-run that would remove or replace a package is a
+  conflict.
+
+---
+
 ## [2026-10-31] Model readiness in the web editor
 
 The pipeline editor shows which models are ready, prepares the missing ones

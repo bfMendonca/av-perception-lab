@@ -14,6 +14,20 @@ export interface ModelKey {
   index: number | null;
 }
 
+/**
+ * The packages plan of a row whose Python packages are missing: `base` (the
+ * base stack: `command` is the one-time command the server never runs),
+ * `install` (a per-model extra whose dry-run is clean: `command` is what
+ * Install packages runs), `conflict` (the dry-run failed: `message` is the
+ * resolver's reason), `invalid` (the declaration cannot be acted on).
+ */
+export interface PackagePlan {
+  action: "base" | "install" | "conflict" | "invalid" | (string & {});
+  extra: string | null;
+  command: string | null;
+  message: string | null;
+}
+
 /** One row of `POST /api/models/status`. Optional extra fields are shown when present. */
 export interface ModelStatus extends ModelKey {
   type: string;
@@ -36,12 +50,21 @@ export interface ModelStatus extends ModelKey {
   reason?: string | null;
   /** A Prepare from the web can make it ready. Absent from older servers (then the UI infers it). */
   preparable?: boolean;
+  /** Packages plan, null when the packages are present (absent from older servers). */
+  packages?: PackagePlan | null;
   [key: string]: unknown;
 }
 
 export interface StatusReport {
   models: ModelStatus[];
   total_size_bytes: number;
+  /** Packages were installed since the server started: it must be restarted to use them. */
+  restart_required?: boolean;
+}
+
+export interface PrepareOptions {
+  /** Install the models' per-model extras (after a clean dry-run) instead of their weights. */
+  packages?: boolean;
 }
 
 /** One model inside a Prepare job. */
@@ -56,6 +79,8 @@ export type PrepareStatus = "queued" | "running" | "done" | "failed" | "cancelle
 
 export interface PrepareJob {
   id: string;
+  /** "weights" (Prepare) or "packages" (Install packages); absent from older servers. */
+  kind?: string;
   status: PrepareStatus;
   position: number | null;
   error: string | null;
@@ -82,7 +107,7 @@ export class StatusRejected extends Error {
 
 export interface ModelsApi {
   status(config: ConfigDict): Promise<StatusReport>;
-  prepare(models: ModelKey[] | "all", config: ConfigDict): Promise<PrepareJob>;
+  prepare(models: ModelKey[] | "all", config: ConfigDict, options?: PrepareOptions): Promise<PrepareJob>;
   getPrepare(id: string): Promise<PrepareJob>;
   /** Unfinished and recent Prepare jobs of the server, newest first. */
   listPrepares(): Promise<PrepareJob[]>;
@@ -114,7 +139,7 @@ export function createModelsApi(base = "", fetchImpl: typeof fetch = (...a) => f
 
   return {
     status: (config) => call<StatusReport>("/api/models/status", post({ config })),
-    prepare: (models, config) => call<PrepareJob>("/api/models/prepare", post({ models, config })),
+    prepare: (models, config, options) => call<PrepareJob>("/api/models/prepare", post(options?.packages ? { models, config, packages: true } : { models, config })),
     getPrepare: (id) => call<PrepareJob>(`/api/models/prepare/${enc(id)}`),
     listPrepares: () => call<PrepareJob[]>("/api/models/prepare"),
     cancelPrepare: (id) => call<PrepareJob>(`/api/models/prepare/${enc(id)}`, { method: "DELETE" }),

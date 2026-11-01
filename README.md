@@ -351,7 +351,8 @@ uv run --extra infer python -m det_depth_distance --config configs/rfdetr_da3.ya
 | `VIDEO` (opcional) | Sobrescreve `source.video` |
 | `--set chave=valor` | Repetível; caminho pontilhado com índice de lista (`detectors.0.threshold=0.3`); valor lido como YAML (`null`, `true`, números); um valor-mapa ou lista substitui a seção inteira (`--set 'aggregation={type: concat}'`) |
 | `--list-models` | Lista detectores, modelos de profundidade, agregadores, rastreadores, refinadores de máscara, segmentadores semânticos, modelos de movimento (`motion`) e provedores de ego-motion (`ego_motion`) registrados com suas opções e padrões |
-| `--prepare` | Downloads the weights and pinned code every configured model declares (under `DDD_WEIGHTS_ROOT`, default `weights/`; nothing is loaded and the video is not probed), prints a status table and exits: 0 only when every model is ready, 1 otherwise (the reason is listed: offline, HTTP 404, gated licence + `HF_TOKEN`, sha256 mismatch, "provide this file"). Downloads go to `<file>.part` and are renamed only when verified (declared size or sha256, or the full `Content-Length`); running it again resumes (only with a declared size or sha256) or is a no-op; Ctrl-C exits 130 and keeps the partial file. Python packages are reported, not installed. Also covers the focal model of `camera.estimate` when the focal is estimated |
+| `--prepare` | Downloads the weights and pinned code every configured model declares (under `DDD_WEIGHTS_ROOT`, default `weights/`; nothing is loaded and the video is not probed), prints a status table and exits: 0 only when every model is ready, 1 otherwise (the reason is listed: offline, HTTP 404, gated licence + `HF_TOKEN`, sha256 mismatch, "provide this file"). Downloads go to `<file>.part` and are renamed only when verified (declared size or sha256, or the full `Content-Length`); running it again resumes (only with a declared size or sha256) or is a no-op; Ctrl-C exits 130 and keeps the partial file. Python packages are reported, not installed: a missing base stack prints `uv sync --extra infer`; a model's own extra gets a `uv sync --dry-run` (clean -> the install command; failure -> state `conflict` with the resolver's reason). Also covers the focal model of `camera.estimate` when the focal is estimated |
+| `--install-packages` | With `--prepare`: install a model's own `pyproject.toml` extra once its fresh dry-run is clean (`uv sync --locked --inexact` naming every installed extra plus the new one, so nothing is removed; `uv` output is printed). The base stack (`infer`) is never installed: run `uv sync --extra infer --extra web` once yourself |
 
 Ferramentas auxiliares (ambiente leve, sem GPU; ver
 [Calibração da câmera](#calibração-da-câmera) e
@@ -1085,7 +1086,33 @@ file is an error naming `--prepare`.
 
 A run (without `--prepare`) whose declared models are not all ready stops
 before loading anything, with exit code 2 and a list of what is missing
-(paths relative to the weights root) naming `--prepare`.
+(paths relative to the weights root) naming `--prepare` (or, when only Python
+packages are missing, `uv sync --extra infer`: `--prepare` does not install
+packages).
+
+#### Python packages (task_0024)
+
+The packages a model imports come from a `pyproject.toml` extra. The base
+stack (the `infer` extra, plus `web` for the server) is a one-time,
+documented command that neither the server nor `--prepare` ever runs:
+
+```bash
+uv sync --extra infer --extra web
+```
+
+A future model with its own small extra (e.g. `model-xyz`) is installed in
+three steps: the installed extras are detected (`importlib.metadata` and
+`find_spec`, nothing imported); `uv sync --dry-run --locked --inexact` runs
+with `--extra` for every detected extra plus the new one (never a bare
+`uv sync`, which would remove the extras it does not name); only a clean
+dry-run is followed by the same command without `--dry-run`, after an
+explicit confirmation (`--prepare --install-packages`, or **Install
+packages** in the web inspector). A dry-run that fails, or that would remove
+or replace an installed package, leaves the environment untouched and puts
+the model in state `conflict` with the resolver's reason; the ways to resolve
+it are described in `docs/model_environments.md`. After an install, restart
+the web server. `DDD_UV` names the `uv` executable (default: `uv` on the
+`PATH`; on `gpu-host`, `~/.local/bin/uv`).
 
 An explicit path in the YAML overrides the default and behaves as before
 (`hf_cache` relative to the working directory; an absolute or `~` YOLO path;
@@ -1123,6 +1150,13 @@ uv run --extra infer --extra web det-depth-distance-web --weights-root weights  
   ready (a partial file is never counted).
 - A run whose models are not all ready is refused with 409
   `{models_not_ready: [...]}`.
+- Rows whose Python packages are missing carry `packages` (`action` base,
+  install, conflict or invalid; `extra`; `command`; `message`). A failed
+  dry-run makes the row `conflict`. `POST /api/models/prepare` with
+  `packages: true` and named models installs a per-model extra as a job of
+  `kind: "packages"` (fresh dry-run first; `uv` output as `output` SSE
+  events; cancel kills `uv`); then the status body has
+  `restart_required: true`. The base stack is never installed (422).
 - From the web, Prepare only downloads sources the adapters vouch for: a
   Hugging Face repo typed in `depth.model`, `refiners[].model` or
   `semantic[].model` that the project does not ship reads "unknown source:
@@ -1155,6 +1189,13 @@ In the editor (task_0023):
   web may not download shows the command to run on the server instead,
   `det-depth-distance --config <file> --prepare`, with a copy button. To use
   your own file, set the module's path option (e.g. `weights`) in Options.
+- Python packages (task_0024): a missing base stack shows
+  `uv sync --extra infer --extra web` with a copy button (no install button);
+  a model's own extra with a clean dry-run gets **Install packages**, which
+  opens a confirmation dialog stating the exact command; while it runs the
+  inspector shows the `uv` output, and afterwards a note asks you to restart
+  the server. A conflict shows the resolver's reason and points to
+  `docs/model_environments.md`.
 - **Process** stays disabled ("N models are not ready — Prepare them first.")
   until every model is ready; if the server still refuses the run (409, e.g.
   a file removed meanwhile), a dialog lists the models and offers Prepare all.

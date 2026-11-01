@@ -126,6 +126,7 @@ def test_status_for_fresh_config_lists_missing_models_without_torch(tmp_path):
                 "target",
                 "reason",
                 "preparable",
+                "packages",
             }
             # Absolute paths of the server never reach the client.
             for key in ("message", "source", "license", "target"):

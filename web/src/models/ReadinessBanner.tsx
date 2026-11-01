@@ -16,9 +16,21 @@ export function ReadinessBanner({ onShow }: ReadinessBannerProps) {
   const readiness = useReadiness();
   const [open, setOpen] = useState(false);
   if (!readiness) return null;
+  // Shown above the rest, even when every model is ready.
+  const restart = readiness.restartRequired ? (
+    <div className="readiness readiness--muted" role="status" aria-label="Restart required">
+      <Icon name="info" size={16} />
+      <div className="readiness__text">
+        <strong>Packages were installed on the server</strong>
+        <span className="readiness__sub">Restart the server to use them.</span>
+      </div>
+    </div>
+  ) : null;
 
   if (readiness.status === "unavailable") {
     return (
+      <>
+      {restart}
       <div className="readiness readiness--muted" role="status" aria-label="Model readiness">
         <Icon name="alert" size={16} />
         <div className="readiness__text">
@@ -29,11 +41,12 @@ export function ReadinessBanner({ onShow }: ReadinessBannerProps) {
           Check again
         </button>
       </div>
+      </>
     );
   }
 
   const { notReady, preparing, toPrepare, size } = readiness;
-  if (!notReady.length) return null;
+  if (!notReady.length) return restart;
 
   if (preparing.length) {
     // A model still queued counts with its declared size; one without any size makes the bar indeterminate.
@@ -42,6 +55,8 @@ export function ReadinessBanner({ onShow }: ReadinessBannerProps) {
     const total = totals.reduce<number>((s, t) => s + (t ?? 0), 0);
     const percent = total > 0 && totals.every((t) => t !== null) ? Math.min(100, Math.round((done / total) * 100)) : null;
     return (
+      <>
+      {restart}
       <div className="readiness readiness--preparing" role="status" aria-label="Model readiness">
         <span className="spinner" aria-hidden="true" />
         <div className="readiness__text">
@@ -64,6 +79,7 @@ export function ReadinessBanner({ onShow }: ReadinessBannerProps) {
           </button>
         ) : null}
       </div>
+      </>
     );
   }
 
@@ -73,6 +89,8 @@ export function ReadinessBanner({ onShow }: ReadinessBannerProps) {
   const blocked = notReady.length - toPrepare.length;
   const licences = [...new Set(toPrepare.flatMap((r) => splitList(r.license)))];
   return (
+    <>
+    {restart}
     <div className={`readiness${failed.length ? " readiness--failed" : ""}`} role="region" aria-label="Model readiness">
       <span className="readiness__icon" aria-hidden="true">
         <Icon name="alert" size={16} />
@@ -121,5 +139,6 @@ export function ReadinessBanner({ onShow }: ReadinessBannerProps) {
         Prepare all
       </button>
     </div>
+    </>
   );
 }

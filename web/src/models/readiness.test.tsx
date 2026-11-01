@@ -452,3 +452,89 @@ describe("server display fields (fix round)", () => {
     expect(section).toHaveTextContent("Only Python packages are missing");
   });
 });
+
+describe("packages layer (task_0024)", () => {
+  const INSTALL = "uv --color never sync --locked --inexact --extra infer --extra model-xyz --extra web";
+  const pkgRow = (patch: Partial<ModelStatus> = {}) =>
+    modelRow({
+      layers: { assets: "ready", code: "ready", packages: "missing" },
+      missing: ["package:xyzlib"],
+      size_bytes: null,
+      message: "package xyzlib is not installed (extra 'model-xyz')",
+      reason: "packages_only",
+      preparable: false,
+      packages: { action: "install", extra: "model-xyz", command: INSTALL, message: "would install xyzlib==1.0" },
+      ...patch,
+    });
+
+  async function openSection(rows: ModelStatus[]) {
+    const editor = await renderEditor(rows);
+    await userEvent.click(cardOf(editor.lane, /alpha/i));
+    const section = await screen.findByRole("region", { name: "Weights & requirements" });
+    return { ...editor, section };
+  }
+
+  it("Install packages asks for confirmation stating the command, and only Install starts the job", async () => {
+    const { section, models } = await openSection([pkgRow()]);
+    expect(within(section).queryByRole("button", { name: /prepare model/i })).not.toBeInTheDocument();
+    expect(section).toHaveTextContent("A dry-run against the server's environment is clean (would install xyzlib==1.0)");
+    await userEvent.click(within(section).getByRole("button", { name: /install packages/i }));
+    let dialog = await screen.findByRole("dialog", { name: "Install packages" });
+    expect(dialog).toHaveTextContent(INSTALL);
+    expect(dialog).toHaveTextContent("nothing is removed");
+    expect(dialog).toHaveTextContent("Restart the server afterwards");
+    await userEvent.click(within(dialog).getByRole("button", { name: "Cancel" }));
+    expect(models.prepared).toHaveLength(0); // cancelled: nothing runs
+    await userEvent.click(within(section).getByRole("button", { name: /install packages/i }));
+    dialog = await screen.findByRole("dialog", { name: "Install packages" });
+    await userEvent.click(within(dialog).getByRole("button", { name: "Install" }));
+    await waitFor(() => expect(models.prepared).toHaveLength(1));
+    expect(models.prepared[0]).toMatchObject({ models: [{ stage: "detectors", index: 0 }], packages: true });
+  });
+
+  it("an install job shows uv output, then asks for a server restart", async () => {
+    const { section, models } = await openSection([pkgRow()]);
+    await userEvent.click(within(section).getByRole("button", { name: /install packages/i }));
+    await userEvent.click(within(await screen.findByRole("dialog", { name: "Install packages" })).getByRole("button", { name: "Install" }));
+    await waitFor(() => expect(models.prepared).toHaveLength(1));
+    act(() => {
+      models.emit("prep1", { event: "running" });
+      models.emit("prep1", { event: "model", ...pkgRow({ state: "preparing" }), item: null, done: 0, total: null });
+      models.emit("prep1", { event: "output", stage: "detectors", index: 0, line: `$ ${INSTALL}` });
+      models.emit("prep1", { event: "output", stage: "detectors", index: 0, line: " + xyzlib==1.0" });
+    });
+    const live = screen.getByRole("region", { name: "Weights & requirements" });
+    expect(live).toHaveTextContent("Installing packages…");
+    expect(within(live).getByLabelText("uv output")).toHaveTextContent("+ xyzlib==1.0");
+    models.rows = [ready()];
+    models.restartRequired = true;
+    act(() => {
+      models.emit("prep1", { event: "model", ...ready(), installed: true, message: "packages installed: restart the server to use them", item: null, done: 0, total: null });
+      models.emit("prep1", { event: "end", status: "done", error: null });
+    });
+    await waitFor(() => expect(screen.getByRole("status", { name: "Restart required" })).toHaveTextContent("Restart the server to use them"));
+  });
+
+  it("a missing base stack shows the exact one-time command with a copy button and no action button", async () => {
+    const command = "uv sync --extra infer --extra web";
+    const { section, models } = await openSection([
+      pkgRow({ message: "package torch is not installed (extra 'infer')", missing: ["package:torch"], packages: { action: "base", extra: "infer", command, message: "the base Python stack is not installed" } }),
+    ]);
+    expect(within(section).getByLabelText("Command")).toHaveTextContent(command);
+    expect(within(section).getByRole("button", { name: "Copy command" })).toBeInTheDocument();
+    expect(section).toHaveTextContent("the server never installs it");
+    expect(within(section).queryByRole("button", { name: /install packages/i })).not.toBeInTheDocument();
+    expect(within(section).queryByRole("button", { name: /prepare model/i })).not.toBeInTheDocument();
+    expect(models.prepared).toHaveLength(0);
+  });
+
+  it("a conflict shows the resolver's reason and the docs pointer, with no install action", async () => {
+    const reason = "installing extra 'model-xyz' conflicts with the current environment: × No solution found (see docs/model_environments.md)";
+    const { section, lane } = await openSection([pkgRow({ state: "conflict", message: reason, packages: { action: "conflict", extra: "model-xyz", command: null, message: reason } })]);
+    expect(cardOf(lane, /alpha/i)).toHaveClass("card--notready");
+    expect(section).toHaveTextContent("No solution found");
+    expect(within(section).getAllByText("docs/model_environments.md").length).toBeGreaterThan(0);
+    expect(within(section).queryByRole("button", { name: /install packages/i })).not.toBeInTheDocument();
+    expect(within(section).queryByRole("button", { name: /prepare model/i })).not.toBeInTheDocument();
+  });
+});

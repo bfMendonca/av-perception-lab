@@ -1,7 +1,7 @@
 // Pure rules of the readiness UI: which visual tone a state gets, which rows
 // belong to a card, what a Prepare can fix. Everything is read from the rows
 // the server sends; no model, stage or source name appears here.
-import type { ModelKey, ModelState, ModelStatus } from "../api/models";
+import type { ModelKey, ModelState, ModelStatus, PackagePlan } from "../api/models";
 import { formatBytes } from "../video/DropZone";
 
 /** Visual tone: ready (solid), preparing (bar), failed (red dashed), notready (yellow dashed: missing, conflict, any other state). */
@@ -11,6 +11,8 @@ export type Tone = "ready" | "preparing" | "failed" | "notready";
 export const UNKNOWN_SOURCE_PREFIX = "unknown source";
 /** `missing` entries of the packages layer. */
 export const PACKAGE_PREFIX = "package:";
+/** Where the ways to resolve a packages conflict are documented. */
+export const MODEL_ENVIRONMENTS_DOC = "docs/model_environments.md";
 /** Label the server uses instead of the absolute weights root. */
 export const ROOT_LABEL = "<weights root>";
 
@@ -62,6 +64,9 @@ export function preparable(row: Pick<ModelStatus, "state" | "message" | "missing
   if (typeof row.preparable === "boolean") return row.preparable;
   return !isUnknownSource(row) && !onlyPackages(row);
 }
+
+/** The row's packages plan: null when its packages are present, undefined from older servers. */
+export const packagesPlan = (row: Pick<ModelStatus, "packages">): PackagePlan | null | undefined => row.packages;
 
 /** "; "-joined server lists (`source`, `license`, `target`) as items. */
 export const splitList = (value: string | null | undefined): string[] => (value ? value.split("; ").filter(Boolean) : []);

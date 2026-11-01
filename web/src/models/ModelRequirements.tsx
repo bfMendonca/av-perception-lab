@@ -2,11 +2,13 @@
 // missing, where files go and the action that fixes it. Everything comes from
 // the status rows and the module schema (path fields for the override).
 import { useState } from "react";
+import type { PackagePlan } from "../api/models";
 import type { Field } from "../api/types";
 import { formatBytes } from "../video/DropZone";
+import { Dialog } from "../ui/Dialog";
 import { Icon } from "../ui/icons";
 import "./statusStyles.css";
-import { isUnknownSource, locations, onlyPackages, prepareCommand, preparable, ROOT_LABEL, splitList, stateLabel, toneOf, where } from "./readiness";
+import { isUnknownSource, locations, MODEL_ENVIRONMENTS_DOC, onlyPackages, packagesPlan, prepareCommand, preparable, ROOT_LABEL, splitList, stateLabel, toneOf, where } from "./readiness";
 import { useReadiness, type ModelView } from "./useModelStatus";
 
 export interface ModelRequirementsProps {
@@ -21,6 +23,7 @@ const LAYER_LABEL = (key: string) => key.charAt(0).toUpperCase() + key.slice(1);
 
 /** The section, or nothing when the module has no model status. */
 export function ModelRequirements({ rows, fields = [], fileName = null }: ModelRequirementsProps) {
+  const readiness = useReadiness();
   if (!rows.length) return null;
   // An override is a path option left unset by default (the adapter then picks the
   // location); one named like a missing item (asset key) is the likely one.
@@ -30,6 +33,7 @@ export function ModelRequirements({ rows, fields = [], fileName = null }: ModelR
   return (
     <section className="reqs" aria-label="Weights & requirements">
       <h3 className="insp__section">Weights &amp; requirements</h3>
+      {readiness?.restartRequired ? <RestartNote /> : null}
       {rows.map((row) => (
         <ModelBlock key={`${row.stage}|${row.index ?? ""}`} row={row} single={rows.length === 1} fileName={fileName} />
       ))}
@@ -63,6 +67,9 @@ function ModelBlock({ row, single, fileName }: { row: ModelView; single: boolean
   const tone = toneOf(row.state);
   const unknownSource = isUnknownSource(row);
   const packagesOnly = onlyPackages(row);
+  const plan = packagesPlan(row);
+  const [confirming, setConfirming] = useState(false);
+  const installing = tone === "preparing" && row.progress?.kind === "packages";
   const canPrepare = readiness !== null && preparable(row);
   // The server's weights-root-relative targets; older servers: paths named in the message.
   const places = row.target ? splitList(row.target).map((t) => `${ROOT_LABEL}/${t}`) : locations(row.serverMessage ?? row.message);
@@ -97,7 +104,9 @@ function ModelBlock({ row, single, fileName }: { row: ModelView; single: boolean
             <span>
               {row.state === "queued"
                 ? "Waiting in the prepare queue"
-                : p && p.total !== null
+                : installing
+                  ? "Installing packages…"
+                  : p && p.total !== null
                   ? `${formatBytes(p.done)} of ${formatBytes(p.total)}`
                   : p && p.done > 0
                     ? `${formatBytes(p.done)} downloaded`
@@ -115,6 +124,11 @@ function ModelBlock({ row, single, fileName }: { row: ModelView; single: boolean
               </button>
             ) : null}
           </div>
+          {installing && p?.output.length ? (
+            <pre className="reqs__output" aria-label="uv output">
+              {p.output.slice(-8).join("\n")}
+            </pre>
+          ) : null}
         </div>
       ) : null}
 
@@ -214,7 +228,34 @@ function ModelBlock({ row, single, fileName }: { row: ModelView; single: boolean
         </div>
       ) : null}
 
-      {packagesOnly && !unknownSource && tone !== "preparing" ? (
+      {plan?.action === "base" && plan.command && tone !== "preparing" ? (
+        <div className="reqs__hint">
+          <p>The base Python stack is not installed on the server, and the server never installs it. Run this once in the repository on the server, then restart the server:</p>
+          <CopyCommand command={plan.command} />
+        </div>
+      ) : null}
+
+      {plan?.action === "install" && plan.command && tone !== "preparing" && readiness ? (
+        <div className="reqs__hint">
+          <p>
+            Its Python packages come from the extra <code>{plan.extra}</code>. A dry-run against the server's environment is clean{plan.message ? ` (${plan.message})` : ""}.
+          </p>
+          <button type="button" className="btn btn--warn reqs__action" disabled={readiness.submitting} onClick={() => setConfirming(true)}>
+            <Icon name="open" size={14} /> Install packages
+          </button>
+          <InstallDialog
+            open={confirming}
+            plan={plan}
+            onClose={() => setConfirming(false)}
+            onConfirm={() => {
+              setConfirming(false);
+              void readiness.installPackages({ stage: row.stage, index: row.index });
+            }}
+          />
+        </div>
+      ) : null}
+
+      {packagesOnly && !unknownSource && tone !== "preparing" && plan === undefined ? (
         <p className="reqs__note">
           <Icon name="info" size={14} />
           <span>Only Python packages are missing. Prepare downloads weights and code, not packages: install them on the server and restart it.</span>
@@ -225,11 +266,49 @@ function ModelBlock({ row, single, fileName }: { row: ModelView; single: boolean
         <p className="reqs__note">
           <Icon name="info" size={14} />
           <span>
-            Installing this model's packages conflicts with the current environment, which is left untouched. See <code>docs/model_environments.md</code> for the ways to resolve it.
+            Installing this model's packages conflicts with the current environment, which is left untouched. See <code>{MODEL_ENVIRONMENTS_DOC}</code> for the ways to resolve it.
           </span>
         </p>
       ) : null}
     </div>
+  );
+}
+
+/** Packages were installed on the server since it started. */
+function RestartNote() {
+  return (
+    <p className="reqs__note reqs__note--restart" role="status">
+      <Icon name="info" size={14} />
+      <span>Packages were installed on the server. Restart the server to use them.</span>
+    </p>
+  );
+}
+
+/** Confirmation of Install packages: what runs, where, and what happens after. */
+function InstallDialog({ open, plan, onClose, onConfirm }: { open: boolean; plan: PackagePlan; onClose: () => void; onConfirm: () => void }) {
+  return (
+    <Dialog
+      open={open}
+      title="Install packages"
+      onClose={onClose}
+      actions={
+        <>
+          <button type="button" className="btn" onClick={onClose}>
+            Cancel
+          </button>
+          <button type="button" className="btn btn--warn" onClick={onConfirm}>
+            Install
+          </button>
+        </>
+      }
+    >
+      <p>
+        This installs the extra <code>{plan.extra}</code> into the server's Python environment by running, on the server:
+      </p>
+      <pre className="reqs__output">{plan.command}</pre>
+      <p>Every extra already installed is named, so nothing is removed{plan.message ? `; the dry-run says: ${plan.message}` : ""}. The server runs the dry-run again first and stops if it is no longer clean.</p>
+      <p>Restart the server afterwards to use the new packages.</p>
+    </Dialog>
   );
 }
 

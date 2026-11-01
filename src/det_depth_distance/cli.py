@@ -5,9 +5,11 @@ yet, so configuration errors exit with code 2 in seconds), probes the video,
 composes the camera (calibration, lens check, undistortion: camera.build_camera),
 then runs source -> pipeline -> sinks. `--list-models` prints the registered adapters
 and their options. `--prepare` builds the components, obtains their declared
-requirements (weights, pinned code) under the weights root, prints a status
-table and exits (0 only when every component is ready). torch is imported
-only through runtime.DeviceMonitor.
+requirements (weights, pinned code) under the weights root, reports the
+packages layer (base stack command, clean dry-run or conflict; installs a
+per-model extra only with `--install-packages`), prints a status table and
+exits (0 only when every component is ready). torch is imported only through
+runtime.DeviceMonitor.
 
 Writes <output.out_root>/<timestamp>_<video>_<detectors>_<depth>[_tag]/ with
 video.mp4, detections.csv, metrics.json, trajectories.jsonl (with motion)
@@ -32,7 +34,12 @@ from det_depth_distance.config import RunConfig, load_config
 from det_depth_distance.core import registry
 from det_depth_distance.core.options import ConfigError
 from det_depth_distance.core.pipeline import Pipeline
-from det_depth_distance.core.provision import prepare
+from det_depth_distance.core.provision import (
+    install_packages,
+    prepare,
+    with_package_plan,
+)
+from det_depth_distance.core.provision import packages as pkgs
 from det_depth_distance.core.requirements import (
     ModelStatus,
     Requirements,
@@ -86,7 +93,15 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="download the weights and code every configured model needs "
         "(under DDD_WEIGHTS_ROOT, default weights/), print their status and exit; "
-        "exit code 0 only when all are ready",
+        "exit code 0 only when all are ready; Python packages are reported "
+        "(command, dry-run), not installed",
+    )
+    p.add_argument(
+        "--install-packages",
+        action="store_true",
+        help="with --prepare: install a model's own pyproject extra when its "
+        "uv dry-run is clean (every installed extra is kept; the base stack "
+        f"is never installed: `{pkgs.CLI_BASE_COMMAND}`)",
     )
     return p
 
@@ -290,19 +305,41 @@ def require_ready(cfg: RunConfig, root: Path | None = None) -> None:
     adapter checks them when it loads)."""
     root = weights_root() if root is None else Path(root)
     problems = []
+    files = base = extras = False
     for path, name, type_name, req in config_requirements(cfg):
         if isinstance(req, str):
             problems.append(f"{path} {name} ({type_name}): {req}")
+            files = True
             continue
         status = check(req, root)
         if status.state != "ready":
             why = status.message or ", ".join(status.missing) or status.state
             problems.append(f"{path} {name} ({type_name}): {why}")
+            pkg = [m for m in status.missing if m.startswith("package:")]
+            files = files or len(pkg) < len(status.missing)
+            if pkg and (req.extra is None or req.extra in pkgs.BASE_EXTRAS):
+                base = True
+            elif pkg:
+                extras = True
     if problems:
         details = "\n  ".join(redact_root(p, root) for p in problems)
+        hints = []
+        if files or not (base or extras):
+            hints.append("run `det-depth-distance --config <yaml> --prepare` first")
+        if base:
+            hints.append(
+                "install the base Python stack once: "
+                f"`{pkgs.CLI_BASE_COMMAND}` (add `--extra web` for the web "
+                "server); --prepare does not install packages"
+            )
+        if extras:
+            hints.append(
+                "install the model's packages: `det-depth-distance --config "
+                "<yaml> --prepare --install-packages` (a uv dry-run runs first)"
+            )
         raise ConfigError(
             f"{len(problems)} model(s) not ready under the weights root:\n  "
-            f"{details}\nrun `det-depth-distance --config <yaml> --prepare` first"
+            f"{details}\n" + "\n".join(hints)
         )
 
 
@@ -323,14 +360,38 @@ def _progress_printer(min_interval_s: float = 1.0):
     return show
 
 
-def prepare_command(cfg: RunConfig, root: Path | None = None) -> int:
+def _packages_note(label: str, plan: pkgs.PackagePlan) -> str | None:
+    """What `--prepare` says about a packages layer it did not install."""
+    if plan.action == "base":
+        return (
+            f"{label}: install the base Python stack once: "
+            f"`{pkgs.CLI_BASE_COMMAND}` (add `--extra web` for the web server); "
+            "--prepare never installs it"
+        )
+    if plan.action == "install":
+        return (
+            f"{label}: extra {plan.extra!r} can be installed (uv dry-run clean, "
+            f"{plan.message}): run again with --install-packages to run "
+            f"`{plan.command}`"
+        )
+    return None  # ready, or conflict/invalid: the status message says it
+
+
+def prepare_command(
+    cfg: RunConfig, root: Path | None = None, install: bool = False
+) -> int:
     """`--prepare`: prepare every component of `cfg` and print a status table.
+
+    The packages layer is reported (`packages.plan_packages`); with `install`
+    a per-model extra whose fresh dry-run is clean is installed
+    (`install_packages`); the base stack never is.
 
     Returns 0 when every component is ready, 1 otherwise.
     """
     root = weights_root() if root is None else root
     cancel = threading.Event()
     rows: list[tuple[str, str, ModelStatus | str]] = []
+    package_notes: list[str] = []
     for path, name, type_name, req in config_requirements(cfg):
         label = f"{path} {name}"
         if isinstance(req, str):
@@ -338,6 +399,29 @@ def prepare_command(cfg: RunConfig, root: Path | None = None) -> int:
             continue
         print(f"[prepare] {label} ({type_name})", flush=True)
         status = prepare(req, root, _progress_printer(), cancel)
+        if status.layers.get("packages", "ready") != "ready":
+            plan = pkgs.plan_packages(req)
+            if install and plan.action == "install":
+                print(
+                    f"[packages] {label}: installing extra {plan.extra!r}", flush=True
+                )
+                outcome = install_packages(
+                    req,
+                    lambda line: print(f"  [uv] {line}", flush=True),
+                    cancel,
+                    root=root,
+                )
+                status, plan = outcome.status, outcome.plan
+                note = (
+                    f"{label}: extra {plan.extra!r} installed"
+                    if outcome.installed
+                    else _packages_note(label, plan)
+                )
+            else:
+                status = with_package_plan(status, plan)
+                note = _packages_note(label, plan)
+            if note and note not in package_notes:
+                package_notes.append(note)
         rows.append((label, type_name, status))
     print(f"\nweights root: {root}")
     header = ("component", "type", "state", "assets", "code", "packages")
@@ -364,7 +448,7 @@ def prepare_command(cfg: RunConfig, root: Path | None = None) -> int:
     widths = [max(len(r[i]) for r in table) for i in range(len(header))]
     for row in table:
         print("  ".join(c.ljust(w) for c, w in zip(row, widths, strict=True)).rstrip())
-    for note in notes:
+    for note in notes + package_notes:
         print(f"  - {note}")
     ready = all(not isinstance(s, str) and s.state == "ready" for _, _, s in rows)
     return 0 if ready else 1
@@ -379,11 +463,13 @@ def main(argv: Sequence[str] | None = None) -> int:
         return 0
     if args.config is None:
         parser.error("--config is required (or use --list-models)")
+    if args.install_packages and not args.prepare:
+        parser.error("--install-packages is used with --prepare")
     try:
         cfg = load_config(args.config, args.overrides, args.video)
         if args.prepare:
             try:
-                return prepare_command(cfg)
+                return prepare_command(cfg, install=args.install_packages)
             except KeyboardInterrupt:
                 print(
                     "\ncancelled: partial downloads are kept and resumed by the "

@@ -350,6 +350,10 @@
   overflow-wrap: anywhere;
 }
 
+.reqs__message {
+  white-space: pre-line; /* resolver output keeps its lines */
+}
+
 .reqs__message--failed {
   color: #fca5a5;
   background: rgba(248, 113, 113, 0.08);
@@ -484,6 +488,26 @@
 .reqs__note--quiet {
   color: var(--muted);
   font-size: 11.5px;
+}
+
+/* uv output of Install packages, and the command in its dialog */
+.reqs__output {
+  margin: 8px 0 0;
+  padding: 8px 10px;
+  max-height: 10em;
+  overflow: auto;
+  border-radius: var(--radius-sm);
+  background: var(--bg-input);
+  color: var(--text-2);
+  font-family: var(--mono);
+  font-size: 11px;
+  line-height: 1.45;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.reqs__note--restart .icon {
+  color: var(--warn);
 }
 
 /* ---------- copyable command ---------- */
