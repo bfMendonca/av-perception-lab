@@ -151,6 +151,21 @@ export function createEditorStore(client: ApiClient, options: StoreOptions = {})
       scheduleValidation();
     },
 
+    /**
+     * Apply a preset: its pipeline replaces the current one, but the current
+     * `source` and `output` stay (a preset is a recipe, not an input/output
+     * choice; they are never created when absent). The editor is left clean.
+     */
+    loadPreset(parsed: ParsedConfig) {
+      const config: ConfigDict = { ...(parsed.config ?? {}) };
+      delete config.source;
+      delete config.output;
+      for (const key of ["source", "output"]) {
+        if (key in state.pipeline.config) config[key] = state.pipeline.config[key];
+      }
+      store.loadParsed({ config, extras: parsed.extras ?? {} }, null);
+    },
+
     /** Parse `yaml` on the server (unknown top-level keys become extras). */
     async load(yaml: string, fileName: string | null = null): Promise<void> {
       store.loadParsed(await client.parse(yaml), fileName);

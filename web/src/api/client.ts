@@ -19,7 +19,7 @@ export class ApiError extends Error {
   }
 }
 
-async function readError(response: Response): Promise<ApiError> {
+export async function readError(response: Response): Promise<ApiError> {
   let message = `${response.status} ${response.statusText}`.trim();
   try {
     const body = (await response.json()) as { detail?: unknown };

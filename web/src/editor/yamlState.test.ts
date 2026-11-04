@@ -83,3 +83,40 @@ describe("validation", () => {
     expect(store.getState().errors).toEqual([{ path: "smoothing.accel_std", message: "too large" }]);
   });
 });
+
+describe("loadPreset", () => {
+  const preset = () => ({
+    config: { source: { video: "p.mp4" }, output: { out_root: "p" }, detectors: [{ type: "beta" }] },
+    extras: {},
+  });
+
+  it("keeps the current source and output", () => {
+    const store = loadedStore();
+    store.setOption(["source", "video"], "a.mp4");
+    store.setOption(["output", "out_root"], "o");
+    store.loadPreset(preset());
+    const config = store.toConfig() as Record<string, unknown>;
+    expect(config.source).toMatchObject({ video: "a.mp4" });
+    expect(config.output).toMatchObject({ out_root: "o" });
+    expect(config.detectors).toEqual([{ type: "beta" }]);
+  });
+
+  it("on a fresh editor adds no source or output", () => {
+    const store = createEditorStore(fakeClient(), { debounceMs: 0 });
+    store.setCatalog(makeCatalog());
+    store.startEmpty();
+    store.loadPreset(preset());
+    const config = store.toConfig() as Record<string, unknown>;
+    expect("source" in config).toBe(false);
+    expect("output" in config).toBe(false);
+    expect(config.detectors).toEqual([{ type: "beta" }]);
+  });
+
+  it("leaves the editor clean", () => {
+    const store = loadedStore();
+    store.loadPreset(preset());
+    expect(store.getState().dirty).toBe(false);
+    expect(store.getState().fileName).toBeNull();
+    expect(store.diff()).toEqual([]);
+  });
+});
