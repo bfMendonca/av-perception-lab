@@ -123,9 +123,13 @@ def test_put_existing_409_then_overwrite_200(preset_client):
     assert _put(preset_client, overwrite=True).status_code == 200
 
 
-def test_put_builtin_name_409(preset_client, user_root):
-    assert _put(preset_client, name="Alpha").status_code == 409
-    assert _put(preset_client, name="alpha").status_code == 409
+def test_put_builtin_name_422_not_overwritable(preset_client, user_root):
+    # A reserved name is not "exists": 422, so the dialog never offers Overwrite.
+    for name in ("Alpha", "alpha"):
+        resp = _put(preset_client, name=name)
+        assert resp.status_code == 422
+        assert "built-in" in resp.json()["detail"].lower()
+    assert _put(preset_client, name="Alpha", overwrite=True).status_code == 422
     assert not user_root.exists() or not list(user_root.iterdir())
 
 
@@ -214,3 +218,8 @@ def test_put_unknown_extras_key_is_saved_and_roundtrips(preset_client):
     assert _put(preset_client, extras={"mystery": {"a": 1}}).status_code == 200
     got = preset_client.get("/api/presets/user:mine").json()
     assert got["extras"] == {"mystery": {"a": 1}}
+
+
+def test_put_unknown_body_field_422(preset_client, user_root):
+    resp = _put(preset_client, name="x", extra_field=1)
+    assert resp.status_code == 422

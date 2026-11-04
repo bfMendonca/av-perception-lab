@@ -225,3 +225,24 @@ def test_repo_manifest_lists_every_config_and_every_file_exists():
 def test_slugify_rejects_unicode_line_separators(sep):
     with pytest.raises(PresetInvalid):
         slugify(f"a{sep}b")
+
+
+def test_delete_racing_unlink_raises_not_found(builtin, root, monkeypatch):
+    save_preset(root, builtin, "x", PIPELINE, overwrite=False)
+    from det_depth_distance.web import presets as mod
+
+    real = mod._user_path
+
+    def resolve_then_vanish(user_root, slug):
+        path = real(user_root, slug)
+        path.unlink()  # a concurrent delete wins between resolution and unlink
+        return path
+
+    monkeypatch.setattr(mod, "_user_path", resolve_then_vanish)
+    with pytest.raises(PresetNotFound):
+        delete_preset("user:x", root)
+
+
+def test_slugify_non_ascii_name_message_says_ascii():
+    with pytest.raises(PresetInvalid, match="ASCII letter or digit"):
+        slugify("Пресет")

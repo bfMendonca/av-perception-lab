@@ -86,6 +86,7 @@ class ImportBody(BaseModel):
 # Model bodies refuse unknown fields: a client cannot add a URL or a path to
 # a download (sources and targets come from the adapters' code).
 class SaveBody(BaseModel):
+    model_config = ConfigDict(extra="forbid")
     name: str
     config: dict[str, Any]
     extras: dict[str, Any] = {}
@@ -410,7 +411,9 @@ def create_app(
                 data,
                 body.overwrite,
             )
-        except (presets.PresetExists, presets.PresetReserved) as exc:
+        except (
+            presets.PresetExists
+        ) as exc:  # 409 = overwritable; a built-in name is a 422
             raise HTTPException(409, str(exc)) from None
         except presets.PresetInvalid as exc:
             raise HTTPException(422, str(exc)) from None

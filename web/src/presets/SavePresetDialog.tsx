@@ -1,6 +1,6 @@
-// Asks for a preset name. The server decides: a 409 (name taken) offers
+// Asks for a preset name. The server decides: a 409 (name taken, user preset) offers
 // Overwrite or another name, any other error (the 422 for a name without
-// letters or digits) is shown and the dialog stays open.
+// letters or digits or one of a built-in) is shown and the dialog stays open.
 import { useEffect, useState } from "react";
 import { Dialog } from "../ui/Dialog";
 

@@ -84,7 +84,7 @@ def slugify(name: str) -> str:
         .strip("-")
     )
     if not slug:
-        raise PresetInvalid("The name needs at least one letter or digit.")
+        raise PresetInvalid("The name needs at least one ASCII letter or digit.")
     return slug
 
 
@@ -276,4 +276,8 @@ def delete_preset(preset_id: str, user_root: Path | None) -> None:
     kind, part = _split_id(preset_id)
     if kind == "builtin":
         raise PresetReadOnly("Built-in presets cannot be deleted.")
-    _user_path(user_root, part).unlink()
+    path = _user_path(user_root, part)
+    try:
+        path.unlink()
+    except FileNotFoundError:  # a concurrent delete won the race
+        raise PresetNotFound(f"No preset {preset_id!r}.") from None

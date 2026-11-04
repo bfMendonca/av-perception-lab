@@ -46,4 +46,16 @@ describe("presets api", () => {
     expect(err.status).toBe(409);
     expect(err.message).toBe("exists");
   });
+
+  it("a 422 with a validation list becomes path: message lines", async () => {
+    const f = fakeFetch(422, {
+      detail: [
+        { path: "detectors[0].type", message: "unknown detector" },
+        { path: "render.hud", message: "must be a boolean" },
+      ],
+    });
+    const err = await createPresetsApi("", asFetch(f)).save("x", {}, {}, false).catch((e) => e);
+    expect(err.status).toBe(422);
+    expect(err.message).toBe("detectors[0].type: unknown detector\nrender.hud: must be a boolean");
+  });
 });

@@ -122,6 +122,42 @@ describe("presets menu", () => {
     expect(within(dialog).queryByRole("button", { name: "Overwrite" })).not.toBeInTheDocument();
   });
 
+  it("a built-in name clash (422) shows the message without an Overwrite button and keeps the dialog open", async () => {
+    const presets = fakePresets();
+    presets.save.mockRejectedValueOnce(new ApiError("'Full stack' is the name of a built-in preset; choose another name.", 422));
+    await setup(presets);
+    await userEvent.click(screen.getByRole("button", { name: /save as preset/i }));
+    const dialog = await screen.findByRole("dialog", { name: "Save as preset" });
+    await userEvent.type(within(dialog).getByLabelText("Name"), "Full stack");
+    await userEvent.click(within(dialog).getByRole("button", { name: "Save" }));
+    expect(await within(dialog).findByText(/name of a built-in preset/)).toBeInTheDocument();
+    expect(within(dialog).queryByRole("button", { name: "Overwrite" })).not.toBeInTheDocument();
+    expect(within(dialog).getByRole("button", { name: "Save" })).toBeInTheDocument();
+    expect(screen.getByRole("dialog", { name: "Save as preset" })).toBeInTheDocument();
+  });
+
+  it("opening the menu refreshes the list", async () => {
+    const presets = fakePresets();
+    await setup(presets);
+    await waitFor(() => expect(presets.list).toHaveBeenCalledTimes(1));
+    presets.items = [BUILTIN, { ...MINE, id: "late", name: "Late arrival" }];
+    const menu = await openMenu();
+    expect(await within(menu).findByText("Late arrival")).toBeInTheDocument();
+    expect(presets.list).toHaveBeenCalledTimes(2);
+  });
+
+  it("a failed pick (stale 404) refreshes the list", async () => {
+    const presets = fakePresets();
+    await setup(presets);
+    const menu = await openMenu();
+    await within(menu).findByText("Fast");
+    const before = presets.list.mock.calls.length;
+    presets.get.mockRejectedValueOnce(new ApiError("No preset", 404));
+    await userEvent.click(within(menu).getByRole("button", { name: /^My mix/ }));
+    expect(await screen.findByText(/Could not open preset My mix/)).toBeInTheDocument();
+    await waitFor(() => expect(presets.list.mock.calls.length).toBeGreaterThan(before));
+  });
+
   it("delete asks for confirmation, removes the row, and a 404 (already gone) just refreshes the list", async () => {
     const ghost: PresetInfo = { ...MINE, id: "ghost", name: "Ghost" };
     const presets = fakePresets([BUILTIN, MINE, ghost]);
@@ -155,7 +191,7 @@ describe("presets menu", () => {
 
   it("the list shows an error line with a retry when listing fails", async () => {
     const presets = fakePresets();
-    presets.list.mockRejectedValueOnce(new Error("boom"));
+    presets.list.mockRejectedValueOnce(new Error("boom")).mockRejectedValueOnce(new Error("boom"));
     await setup(presets);
     const menu = await openMenu();
     expect(await within(menu).findByText(/Could not list the presets: boom/)).toBeInTheDocument();

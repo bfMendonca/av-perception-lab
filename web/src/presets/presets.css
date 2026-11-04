@@ -35,6 +35,14 @@
   cursor: pointer;
 }
 
+.presets-menu__row .icon-btn {
+  width: 30px;
+  padding: 0;
+  display: inline-grid;
+  flex: none;
+  align-self: center;
+}
+
 .presets-menu__pick:hover,
 .presets-menu__pick:focus-visible {
   background: var(--panel-3);
@@ -63,6 +71,7 @@
   margin: 8px 0 0;
   color: var(--bad);
   font-size: 12.5px;
+  white-space: pre-line;
 }
 
 .preset-dialog__hint {

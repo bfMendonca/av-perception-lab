@@ -159,9 +159,10 @@ function Studio({ client, video, runs, models, presets: presetsApi, remember, ca
         editor.loadPreset(await presetsApi.get(id));
       } catch (exc) {
         editor.notify({ tone: "error", text: `Could not open preset ${name}: ${exc instanceof Error ? exc.message : String(exc)}` });
+        void presets.refresh(); // a stale entry (404) disappears from the list
       }
     },
-    [editor, presets.presets, presetsApi],
+    [editor, presets, presetsApi],
   );
 
   const deletePreset = useCallback(
@@ -376,7 +377,10 @@ function Studio({ client, video, runs, models, presets: presetsApi, remember, ca
                 <Icon name="upload" size={15} /> Open YAML
               </button>
               <div className="chip-wrap" ref={presetsWrap}>
-                <button type="button" className="btn" disabled={!ready} aria-expanded={presetsOpen} aria-haspopup="dialog" onClick={() => setPresetsOpen((o) => !o)} title="Load a preset pipeline">
+                <button type="button" className="btn" disabled={!ready} aria-expanded={presetsOpen} aria-haspopup="dialog" onClick={() => {
+                    if (!presetsOpen) void presets.refresh();
+                    setPresetsOpen((o) => !o);
+                  }} title="Load a preset pipeline">
                   <Icon name="layers" size={15} /> Presets
                 </button>
                 {presetsOpen ? <PresetsMenu presets={presets.presets} status={presets.status} error={presets.error} onPick={(id) => void openPreset(id)} onDelete={(id) => void deletePreset(id)} onRetry={() => void presets.refresh()} /> : null}
