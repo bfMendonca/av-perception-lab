@@ -4,7 +4,7 @@
 # The exclusion list was chosen for street scenes: in agricultural scenes vegetation and
 # terrain cover the crop, so review it there. SegFormer is item 0 of `semantic`:
 #   --set semantic.0.size=[1024,1792]   (input closer to 16:9)
-# Run: det-depth-distance --config configs/rfdetr_semantic_da3.yaml [VIDEO] [--set key=value]...
+# Run: av-perception-lab --config configs/rfdetr_semantic_da3.yaml [VIDEO] [--set key=value]...
 device: cuda:0
 source: {video: _testbed/data/IMG_4021.MOV, start: 0.0, duration: 0.0, max_frames: 0, stride: 1}
 detectors:

@@ -10,11 +10,11 @@ import numpy as np
 import pytest
 from test_motion_estimator import DEPTH, PRECISE, observe
 
-from det_depth_distance.core.options import ConfigError
-from det_depth_distance.core.registry import build
-from det_depth_distance.motion import MotionConfig, MotionEstimator
-from det_depth_distance.motion.config import CameraMount
-from det_depth_distance.motion.ego import (
+from av_perception_lab.core.options import ConfigError
+from av_perception_lab.core.registry import build
+from av_perception_lab.motion import MotionConfig, MotionEstimator
+from av_perception_lab.motion.config import CameraMount
+from av_perception_lab.motion.ego import (
     CsvEgoMotion,
     EgoMotionProvider,
     EgoPose,
@@ -22,7 +22,7 @@ from det_depth_distance.motion.ego import (
     camera_to_world,
     camera_velocity,
 )
-from det_depth_distance.motion.models import ConstantVelocity
+from av_perception_lab.motion.models import ConstantVelocity
 
 
 def csv_provider(tmp_path, text, **options) -> CsvEgoMotion:

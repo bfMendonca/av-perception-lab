@@ -10,14 +10,14 @@ from typing import ClassVar
 
 import pytest
 
-from det_depth_distance.core.provision import (
+from av_perception_lab.core.provision import (
     ProvisionError,
     engine,
     prepare,
     register_source,
     source_for,
 )
-from det_depth_distance.core.requirements import (
+from av_perception_lab.core.requirements import (
     Asset,
     AssetState,
     CodeRepo,
@@ -182,7 +182,7 @@ def test_packages_are_reported_not_installed(tmp_path, sources):
 
 def test_default_root_is_weights_root(tmp_path, sources, monkeypatch):
     register_source(_BlobAsset)(_BlobSource)
-    monkeypatch.setenv("DDD_WEIGHTS_ROOT", str(tmp_path))
+    monkeypatch.setenv("AVPL_WEIGHTS_ROOT", str(tmp_path))
     req = Requirements(assets=(_BlobAsset(key="blob", target="b/x"),))
     assert prepare(req, None, _none, threading.Event()).state == "ready"
     assert (tmp_path / "b/x").is_file()
@@ -190,7 +190,7 @@ def test_default_root_is_weights_root(tmp_path, sources, monkeypatch):
 
 def test_importing_the_engine_does_not_import_hub_or_torch():
     code = (
-        "import sys; import det_depth_distance.core.provision\n"
+        "import sys; import av_perception_lab.core.provision\n"
         "assert 'torch' not in sys.modules\n"
         "assert 'huggingface_hub' not in sys.modules"
     )

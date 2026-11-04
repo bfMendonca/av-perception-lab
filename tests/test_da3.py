@@ -1,7 +1,7 @@
 import numpy as np
 import pytest
 
-from det_depth_distance.adapters.depth.da3 import (
+from av_perception_lab.adapters.depth.da3 import (
     classify_depth_model,
     da3_map_geometry,
     intrinsics_from_focal,
@@ -9,7 +9,7 @@ from det_depth_distance.adapters.depth.da3 import (
     resolve_depth_model,
     to_metres,
 )
-from det_depth_distance.core.types import CameraIntrinsics
+from av_perception_lab.core.types import CameraIntrinsics
 
 
 @pytest.mark.parametrize(

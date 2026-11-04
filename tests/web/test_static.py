@@ -9,7 +9,7 @@ pytest.importorskip("fastapi")
 from conftest import LOCAL
 from fastapi.testclient import TestClient
 
-from det_depth_distance.web.app import create_app
+from av_perception_lab.web.app import create_app
 
 
 @pytest.fixture
@@ -65,8 +65,8 @@ def test_static_traversal_does_not_escape_dist(web_paths, dist):
 def test_server_static_dir_flag(monkeypatch, tmp_path):
     import uvicorn
 
-    from det_depth_distance.web import app as app_module
-    from det_depth_distance.web import server
+    from av_perception_lab.web import app as app_module
+    from av_perception_lab.web import server
 
     seen = {}
 

@@ -2,7 +2,7 @@ import cv2
 import numpy as np
 import pytest
 
-from det_depth_distance.calibration import (
+from av_perception_lab.calibration import (
     CalibrationOptions,
     TargetSpec,
     View,
@@ -13,8 +13,8 @@ from det_depth_distance.calibration import (
     make_target,
     select_views,
 )
-from det_depth_distance.camera import load_calibration, save_calibration
-from det_depth_distance.core.options import ConfigError
+from av_perception_lab.camera import load_calibration, save_calibration
+from av_perception_lab.core.options import ConfigError
 
 
 def point_views(cam, n, *, noise=0.0, seed=0):

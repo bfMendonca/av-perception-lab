@@ -211,7 +211,7 @@ describe("inspector: weights & requirements", () => {
     const section = await screen.findByRole("region", { name: "Weights & requirements" });
     expect(section).toHaveTextContent("unknown source: prepare it from the CLI (--prepare)");
     expect(within(section).queryByRole("button", { name: /prepare model/i })).not.toBeInTheDocument();
-    expect(within(section).getByLabelText("Command")).toHaveTextContent("det-depth-distance --config pipeline.yaml --prepare");
+    expect(within(section).getByLabelText("Command")).toHaveTextContent("av-perception-lab --config pipeline.yaml --prepare");
     expect(within(section).getByRole("button", { name: "Copy command" })).toBeInTheDocument();
     // and Prepare all has nothing it may do
     expect(within(screen.getByRole("region", { name: "Model readiness" })).getByRole("button", { name: "Prepare all" })).toBeDisabled();
@@ -535,9 +535,9 @@ describe("packages layer (task_0024)", () => {
   });
 
   it("a dry-run that could not run (uv unavailable) is failed with its reason, not a conflict", async () => {
-    const reason = "cannot check extra 'model-xyz': uv is not available (No such file or directory): install uv or set DDD_UV";
+    const reason = "cannot check extra 'model-xyz': uv is not available (No such file or directory): install uv or set AVPL_UV";
     const { section } = await openSection([pkgRow({ state: "failed", message: reason, packages: { action: "error", extra: "model-xyz", command: null, message: reason } })]);
-    expect(section).toHaveTextContent("set DDD_UV");
+    expect(section).toHaveTextContent("set AVPL_UV");
     expect(section).not.toHaveTextContent("conflicts with the current environment");
     expect(within(section).queryByRole("button", { name: /install packages/i })).not.toBeInTheDocument();
     expect(within(section).queryByRole("button", { name: /retry|prepare model/i })).not.toBeInTheDocument();

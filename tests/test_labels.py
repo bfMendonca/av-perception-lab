@@ -4,7 +4,7 @@ from pathlib import Path
 import pytest
 import yaml
 
-from det_depth_distance.core.labels import (
+from av_perception_lab.core.labels import (
     COCO,
     OBJECTS365,
     SEMANTIC_NAME_PATTERN,
@@ -14,7 +14,7 @@ from det_depth_distance.core.labels import (
     identify_vocabulary,
     resolve_classes,
 )
-from det_depth_distance.core.options import ConfigError
+from av_perception_lab.core.options import ConfigError
 
 COCO_LIKE = [*COCO.presets["driving"], "dog", "toothbrush"]
 O365_LIKE = ["sneakers", "chair", *OBJECTS365.presets["driving"]]

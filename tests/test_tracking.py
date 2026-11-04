@@ -6,15 +6,15 @@ from types import SimpleNamespace
 import numpy as np
 import pytest
 
-from det_depth_distance.core import registry
-from det_depth_distance.core.components import LoadContext
-from det_depth_distance.core.options import ConfigError
-from det_depth_distance.core.tracking import (
+from av_perception_lab.core import registry
+from av_perception_lab.core.components import LoadContext
+from av_perception_lab.core.options import ConfigError
+from av_perception_lab.core.tracking import (
     IouTracker,
     TrackSummary,
     association_keys,
 )
-from det_depth_distance.core.types import (
+from av_perception_lab.core.types import (
     CameraIntrinsics,
     DepthResult,
     Frame,
@@ -24,7 +24,7 @@ from det_depth_distance.core.types import (
     Provenance,
     TrackEstimate,
 )
-from det_depth_distance.distance import BoxDepthStats
+from av_perception_lab.distance import BoxDepthStats
 
 FPS = 30.0
 W, H = 1920, 1080

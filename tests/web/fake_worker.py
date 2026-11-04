@@ -1,11 +1,11 @@
-"""Stand-in for det_depth_distance.web.worker in JobQueue tests (no models).
+"""Stand-in for av_perception_lab.web.worker in JobQueue tests (no models).
 
 Usage: python fake_worker.py [--mode MODE] CONFIG.yaml. The config's `fake`
 mapping picks the behaviour: mode ok | sleep | crash, `mark` (file that
-records start/end), `pid_file`, `env_file` (receives DDD_WEIGHTS_ROOT),
+records start/end), `pid_file`, `env_file` (receives AVPL_WEIGHTS_ROOT),
 `name`. Validated configs cannot carry a
 `fake` key: API tests pick the mode with `--mode` in their `worker_argv`.
-Like the real worker, web_run.json records the video id of DDD_WEB_VIDEO_ID.
+Like the real worker, web_run.json records the video id of AVPL_WEB_VIDEO_ID.
 """
 
 import json
@@ -31,7 +31,7 @@ def main() -> int:
     name = fake.get("name", "job")
     mode = fake.get("mode", "ok")
     if fake.get("env_file"):  # the weights root the worker's CLI would use
-        Path(fake["env_file"]).write_text(os.environ.get("DDD_WEIGHTS_ROOT", ""))
+        Path(fake["env_file"]).write_text(os.environ.get("AVPL_WEIGHTS_ROOT", ""))
     if fake.get("pid_file"):
         Path(fake["pid_file"]).write_text(str(os.getpid()))
     if fake.get("mark"):
@@ -45,7 +45,7 @@ def main() -> int:
     out = cfg["output"]
     run_dir = Path(out["out_root"]) / f"20260101_000000_{name}_{out['tag']}"
     run_dir.mkdir(parents=True, exist_ok=True)
-    video_id = os.environ.get("DDD_WEB_VIDEO_ID") or None
+    video_id = os.environ.get("AVPL_WEB_VIDEO_ID") or None
     status = {"video_id": video_id}
     (run_dir / "web_run.json").write_text(json.dumps({"status": "running", **status}))
     emit(

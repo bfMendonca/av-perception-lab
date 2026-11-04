@@ -5,8 +5,8 @@ from pathlib import Path
 import pytest
 import yaml
 
-from det_depth_distance.web import presets
-from det_depth_distance.web.presets import (
+from av_perception_lab.web import presets
+from av_perception_lab.web.presets import (
     PresetExists,
     PresetInvalid,
     PresetNotFound,
@@ -229,7 +229,7 @@ def test_slugify_rejects_unicode_line_separators(sep):
 
 def test_delete_racing_unlink_raises_not_found(builtin, root, monkeypatch):
     save_preset(root, builtin, "x", PIPELINE, overwrite=False)
-    from det_depth_distance.web import presets as mod
+    from av_perception_lab.web import presets as mod
 
     real = mod._user_path
 

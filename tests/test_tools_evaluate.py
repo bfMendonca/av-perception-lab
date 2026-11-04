@@ -4,8 +4,8 @@ import numpy as np
 import pytest
 import yaml
 
-from det_depth_distance.camera import Calibration, Undistorter, save_calibration
-from det_depth_distance.tools.evaluate import build_parser, main
+from av_perception_lab.camera import Calibration, Undistorter, save_calibration
+from av_perception_lab.tools.evaluate import build_parser, main
 
 BOX = [900.0, 500.0, 1020.0, 580.0]
 

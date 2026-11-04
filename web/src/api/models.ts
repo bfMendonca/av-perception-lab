@@ -1,4 +1,4 @@
-// Client of the model readiness routes (src/det_depth_distance/web/models.py):
+// Client of the model readiness routes (src/av_perception_lab/web/models.py):
 // status of a config's models, the Prepare queue and its SSE events. Rows are
 // data: the UI never names a model, a stage or a source.
 import { ApiError } from "./client";

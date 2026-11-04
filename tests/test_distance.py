@@ -4,8 +4,8 @@ import cv2
 import numpy as np
 import pytest
 
-from det_depth_distance.core.types import Instances
-from det_depth_distance.distance import (
+from av_perception_lab.core.types import Instances
+from av_perception_lab.distance import (
     MASK_ROW_FIELDS,
     STATS_ROW_FIELDS,
     CameraIntrinsics,

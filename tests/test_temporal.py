@@ -5,9 +5,9 @@ import sys
 import numpy as np
 import pytest
 
-from det_depth_distance.core.options import ConfigError, from_mapping
-from det_depth_distance.distance import BoxDepthStats
-from det_depth_distance.temporal import (
+from av_perception_lab.core.options import ConfigError, from_mapping
+from av_perception_lab.distance import BoxDepthStats
+from av_perception_lab.temporal import (
     FILTERS,
     EmaFilter,
     KalmanFilter1D,
@@ -184,7 +184,7 @@ def test_numeric_core_imports_no_framework():
     # task_0006 Verification: tracking and smoothing stay numpy-only, like
     # distance.py (task_0004): no GPU stack, no lap/scipy, not even OpenCV/PIL.
     code = (
-        "import sys, det_depth_distance.temporal, det_depth_distance.core.tracking; "
+        "import sys, av_perception_lab.temporal, av_perception_lab.core.tracking; "
         "print(sorted({'torch', 'ultralytics', 'lap', 'scipy', 'cv2', 'PIL'} "
         "& set(sys.modules)))"
     )

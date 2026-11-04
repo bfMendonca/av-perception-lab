@@ -26,7 +26,7 @@ import pytest
 from run_outputs import RunOutputs, check_run_outputs
 from smoke_scene import SCENE, expected_box_distance
 
-from det_depth_distance.evaluation.run_data import REQUIRED_COLUMNS
+from av_perception_lab.evaluation.run_data import REQUIRED_COLUMNS
 
 REPO = Path(__file__).resolve().parents[2]
 LABEL_MAP = str(REPO / "configs" / "labels" / "coco_driving.yaml")
@@ -489,7 +489,7 @@ def test_ego_motion_csv(run_cli, scene_videos, true_calibration, tmp_path):
 
 def test_python_m_entry_point():
     out = subprocess.run(
-        [sys.executable, "-m", "det_depth_distance", "--list-models"],
+        [sys.executable, "-m", "av_perception_lab", "--list-models"],
         cwd=REPO,
         check=False,
         capture_output=True,

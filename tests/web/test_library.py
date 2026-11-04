@@ -13,8 +13,8 @@ import pytest
 
 pytest.importorskip("fastapi")
 
-from det_depth_distance.web import library
-from det_depth_distance.web.library import InvalidVideo, Library, OutsideRoots
+from av_perception_lab.web import library
+from av_perception_lab.web.library import InvalidVideo, Library, OutsideRoots
 
 
 @pytest.fixture

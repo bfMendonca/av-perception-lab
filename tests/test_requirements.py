@@ -9,8 +9,8 @@ from pathlib import Path
 
 import pytest
 
-from det_depth_distance.core import requirements as rq
-from det_depth_distance.core.requirements import (
+from av_perception_lab.core import requirements as rq
+from av_perception_lab.core.requirements import (
     Asset,
     AssetState,
     CodeRepo,
@@ -157,8 +157,8 @@ def test_check_does_not_import_torch(tmp_path):
     code = (
         "import sys\n"
         "from pathlib import Path\n"
-        "from det_depth_distance.core.requirements import *\n"
-        "from det_depth_distance.core.requirements import check, Requirements\n"
+        "from av_perception_lab.core.requirements import *\n"
+        "from av_perception_lab.core.requirements import check, Requirements\n"
         f"check(Requirements(packages=('torch','rfdetr')), Path({str(tmp_path)!r}))\n"
         "assert 'torch' not in sys.modules, 'torch imported'\n"
     )
@@ -246,9 +246,9 @@ def test_huggingface_asset_reads_cache_layout(tmp_path):
 
 def test_weights_root_precedence(tmp_path, monkeypatch):
     monkeypatch.setattr(rq, "_explicit_root", None)
-    monkeypatch.delenv("DDD_WEIGHTS_ROOT", raising=False)
+    monkeypatch.delenv("AVPL_WEIGHTS_ROOT", raising=False)
     assert rq.weights_root().name == "weights"
-    monkeypatch.setenv("DDD_WEIGHTS_ROOT", str(tmp_path / "env"))
+    monkeypatch.setenv("AVPL_WEIGHTS_ROOT", str(tmp_path / "env"))
     assert rq.weights_root() == tmp_path / "env"
     rq.set_weights_root(tmp_path / "set")
     assert rq.weights_root() == tmp_path / "set"
@@ -406,7 +406,7 @@ def test_hf_revision_and_ref_are_confined(tmp_path):
 
 
 def test_describe_source_per_kind():
-    from det_depth_distance.core import requirements as rq
+    from av_perception_lab.core import requirements as rq
 
     assert (
         rq.UrlAsset(

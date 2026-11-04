@@ -9,7 +9,7 @@ missing assets skip the test that needs them (nothing is downloaded; RF-DETR
 checkpoints are looked up under the weights root, `weights/rfdetr/`, task_0021).
 
 Mask refiners and semantic segmenters (task_0005) read the project's HF cache
-($DDD_WEIGHTS_HF, default weights/hf); presence is checked with
+($AVPL_WEIGHTS_HF, default weights/hf); presence is checked with
 huggingface_hub.try_to_load_from_cache, so a missing checkpoint skips with the
 download command. REFINER_CASES lists every registered refiner type: a new
 box-prompted model adds its case here to run the shared contract test.
@@ -31,27 +31,27 @@ from typing import Any
 
 import pytest
 
-from det_depth_distance.config import SourceConfig
-from det_depth_distance.core import registry
-from det_depth_distance.core.components import LoadContext
-from det_depth_distance.core.types import CameraIntrinsics
-from det_depth_distance.io.source import VideoSource
+from av_perception_lab.config import SourceConfig
+from av_perception_lab.core import registry
+from av_perception_lab.core.components import LoadContext
+from av_perception_lab.core.types import CameraIntrinsics
+from av_perception_lab.io.source import VideoSource
 
 GPU_DIR = Path(__file__).parent
 REPO = GPU_DIR.parents[1]
 VIDEO = REPO / "_testbed" / "data" / "IMG_4021.MOV"
 YOLO_WEIGHTS = Path(
-    os.environ.get("DDD_YOLO_WEIGHTS", "~/dev/ultralytics/_testbed/weights")
+    os.environ.get("AVPL_YOLO_WEIGHTS", "~/dev/ultralytics/_testbed/weights")
 ).expanduser()
 HF_CACHE = Path(
-    os.environ.get("DDD_HF_CACHE", "~/dev/depth-anything-3/_testbed/weights/hf")
+    os.environ.get("AVPL_HF_CACHE", "~/dev/depth-anything-3/_testbed/weights/hf")
 ).expanduser()
 WEIGHTS_HF = Path(
-    os.environ.get("DDD_WEIGHTS_HF", str(REPO / "weights" / "hf"))
+    os.environ.get("AVPL_WEIGHTS_HF", str(REPO / "weights" / "hf"))
 ).expanduser()
 ULTRALYTICS_SAM = YOLO_WEIGHTS / "mobile_sam.pt"
 TWINLITENET_REPO = Path(
-    os.environ.get("DDD_TWINLITENET_REPO", "~/dev/TwinLiteNetPlus")
+    os.environ.get("AVPL_TWINLITENET_REPO", "~/dev/TwinLiteNetPlus")
 ).expanduser()
 SEGFORMER_REPO = "nvidia/segformer-b5-finetuned-cityscapes-1024-1024"
 DEVICE = "cuda:0"
@@ -123,7 +123,7 @@ def _missing_weights(spec: dict) -> Path | None:
     if "weights" in spec:
         path = Path(spec["weights"])
     elif spec.get("type") == "rfdetr":
-        from det_depth_distance.adapters.detectors.rfdetr import checkpoint_path
+        from av_perception_lab.adapters.detectors.rfdetr import checkpoint_path
 
         path = checkpoint_path(spec.get("variant", "large"))
     else:
@@ -166,13 +166,13 @@ def segmenter_names():
 
 @pytest.fixture(scope="session")
 def yolo_weights():
-    """Directory of the YOLO26 checkpoints ($DDD_YOLO_WEIGHTS)."""
+    """Directory of the YOLO26 checkpoints ($AVPL_YOLO_WEIGHTS)."""
     return YOLO_WEIGHTS
 
 
 @pytest.fixture(scope="session")
 def hf_cache():
-    """Hugging Face cache holding the DA3 checkpoints ($DDD_HF_CACHE)."""
+    """Hugging Face cache holding the DA3 checkpoints ($AVPL_HF_CACHE)."""
     if not HF_CACHE.is_dir():
         pytest.skip(f"missing HF cache {HF_CACHE}")
     return HF_CACHE
@@ -212,7 +212,7 @@ def _hf_cached(repo: str, filename: str) -> bool:
 
 def _available_spec(type_name: str) -> dict:
     """The first candidate of REFINER_CASES[type_name] on disk, else skip."""
-    from det_depth_distance.adapters._hf_hub import download_command
+    from av_perception_lab.adapters._hf_hub import download_command
 
     hints = []
     for spec in REFINER_CASES[type_name]:
@@ -263,7 +263,7 @@ def refiner(request, frame_ctx):
 
 @pytest.fixture(scope="session")
 def weights_hf():
-    """Project HF cache of the refiners and SegFormer ($DDD_WEIGHTS_HF)."""
+    """Project HF cache of the refiners and SegFormer ($AVPL_WEIGHTS_HF)."""
     return WEIGHTS_HF
 
 
@@ -271,7 +271,7 @@ def weights_hf():
 def segformer():
     """SegFormer b5 Cityscapes (not loaded)."""
     if not _hf_cached(SEGFORMER_REPO, "pytorch_model.bin"):
-        from det_depth_distance.adapters._hf_hub import download_command
+        from av_perception_lab.adapters._hf_hub import download_command
 
         pytest.skip(download_command(SEGFORMER_REPO, WEIGHTS_HF, "pytorch_model.bin"))
     spec = {
@@ -285,7 +285,7 @@ def segformer():
 
 @pytest.fixture
 def twinlitenet():
-    """TwinLiteNet+ large from the local clone ($DDD_TWINLITENET_REPO; not loaded)."""
+    """TwinLiteNet+ large from the local clone ($AVPL_TWINLITENET_REPO; not loaded)."""
     if not (TWINLITENET_REPO / "pretrained" / "large.pth").is_file():
         pytest.skip(f"missing TwinLiteNetPlus clone/weights in {TWINLITENET_REPO}")
     spec = {
@@ -309,7 +309,7 @@ def _run_cli_subprocess(
     )
     code = (
         "import sys\n"
-        "from det_depth_distance.cli import main\n"
+        "from av_perception_lab.cli import main\n"
         f"code = main({list(argv)!r})\n"
         f"{guards}"
         "sys.exit(code)\n"
@@ -342,7 +342,7 @@ def require_assets() -> Callable[[Mapping[str, Any]], None]:
     Usage: require_assets({"detector": spec} | {"refiner": "sam2"} |
     {"hf": (repo, filename)} | {"path": path}).
     """
-    from det_depth_distance.adapters._hf_hub import download_command
+    from av_perception_lab.adapters._hf_hub import download_command
 
     def require(asset: Mapping[str, Any]) -> None:
         if "detector" in asset:
@@ -370,9 +370,9 @@ def require_ready(monkeypatch) -> Callable[[str, Sequence[str]], None]:
     """Factory that skips the test until every model of an example config
     (with `--set` overrides) is ready under the weights root, naming
     `--prepare`: require_ready("configs/x.yaml", ("k=v", ...))."""
-    from det_depth_distance.cli import config_requirements
-    from det_depth_distance.config import load_config
-    from det_depth_distance.core.requirements import check
+    from av_perception_lab.cli import config_requirements
+    from av_perception_lab.config import load_config
+    from av_perception_lab.core.requirements import check
 
     def require(config: str, overrides: Sequence[str] = ()) -> None:
         monkeypatch.chdir(REPO)
@@ -385,7 +385,7 @@ def require_ready(monkeypatch) -> Callable[[str, Sequence[str]], None]:
                 missing.append(f"{path} {name}: {reason}")
         if missing:
             pytest.skip(
-                f"not ready (run det-depth-distance --config {config} --prepare): "
+                f"not ready (run av-perception-lab --config {config} --prepare): "
                 + "; ".join(missing)
             )
 

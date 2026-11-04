@@ -1,4 +1,4 @@
-// Shapes of the det-depth-distance web API (src/det_depth_distance/web/schema.py).
+// Shapes of the av-perception-lab web API (src/av_perception_lab/web/schema.py).
 // Everything here is data: the UI never names a stage, a model or a field.
 
 /** Field types the server emits today; any other string is rendered generically. */

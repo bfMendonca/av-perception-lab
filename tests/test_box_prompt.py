@@ -8,17 +8,17 @@ import numpy as np
 import pytest
 from test_components import box_masks
 
-from det_depth_distance.adapters.refiners.box_prompt import (
+from av_perception_lab.adapters.refiners.box_prompt import (
     BoxPromptOptions,
     BoxPromptRefiner,
     DecodedMasks,
     box_batches,
     select_masks,
 )
-from det_depth_distance.core import registry
-from det_depth_distance.core.components import LoadContext
-from det_depth_distance.core.options import ConfigError
-from det_depth_distance.core.types import ContractError, Frame
+from av_perception_lab.core import registry
+from av_perception_lab.core.components import LoadContext
+from av_perception_lab.core.options import ConfigError
+from av_perception_lab.core.types import ContractError, Frame
 
 CTX = LoadContext("cpu", (100, 50), None)
 FRAME = Frame(0, 0.0, np.zeros((50, 100, 3), np.uint8))

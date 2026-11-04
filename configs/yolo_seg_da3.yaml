@@ -2,7 +2,7 @@
 # instance mask. Weights (not downloaded by the run): yolo26l-seg.pt from
 # https://github.com/ultralytics/assets/releases/download/v8.4.0/yolo26l-seg.pt
 # region: both records the mask and the box distance of every masked instance.
-# Run: det-depth-distance --config configs/yolo_seg_da3.yaml [VIDEO] [--set key=value]...
+# Run: av-perception-lab --config configs/yolo_seg_da3.yaml [VIDEO] [--set key=value]...
 device: cuda:0
 source: {video: _testbed/data/IMG_4021.MOV, start: 0.0, duration: 0.0, max_frames: 0, stride: 1}
 detectors:

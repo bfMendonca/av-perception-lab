@@ -3,10 +3,10 @@ import json
 import numpy as np
 import pytest
 
-from det_depth_distance.camera import Calibration
-from det_depth_distance.core.options import ConfigError
-from det_depth_distance.core.types import CameraIntrinsics
-from det_depth_distance.evaluation.run_data import ESTIMATORS, load_run
+from av_perception_lab.camera import Calibration
+from av_perception_lab.core.options import ConfigError
+from av_perception_lab.core.types import CameraIntrinsics
+from av_perception_lab.evaluation.run_data import ESTIMATORS, load_run
 
 ROWS = [
     {"frame": 3, "t": 0.1, "class_name": "car", "x0": 1, "y0": 2, "x1": 3, "y1": 4,

@@ -1,10 +1,10 @@
 import numpy as np
 import pytest
 
-from det_depth_distance.core import registry
-from det_depth_distance.core.aggregate import Concat, Nms, Wbf
-from det_depth_distance.core.options import ConfigError
-from det_depth_distance.core.types import Provenance
+from av_perception_lab.core import registry
+from av_perception_lab.core.aggregate import Concat, Nms, Wbf
+from av_perception_lab.core.options import ConfigError
+from av_perception_lab.core.types import Provenance
 
 
 def test_concat_preserves_order_and_source(make_instances):

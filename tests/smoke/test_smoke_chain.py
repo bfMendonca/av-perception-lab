@@ -1,8 +1,8 @@
 """Calibration -> run -> evaluation chain on synthetic data.
 
-Rendered boards are calibrated by det-depth-distance-calibrate; the
+Rendered boards are calibrated by av-perception-lab-calibrate; the
 distorted scene video is processed with camera.calibration with and without
-undistortion; det-depth-distance-evaluate compares the runs with references
+undistortion; av-perception-lab-evaluate compares the runs with references
 built from the true geometry (box selectors in original video pixels).
 Errors stay within the calibration error and the implied focal recovers the
 focal the fake DA3 perceives.
@@ -18,9 +18,9 @@ import yaml
 from smoke_scene import SCENE, render_labels, true_box
 from test_smoke_pipeline import SEG
 
-from det_depth_distance.camera import load_calibration
-from det_depth_distance.core.types import CameraIntrinsics
-from det_depth_distance.tools import calibrate, evaluate
+from av_perception_lab.camera import load_calibration
+from av_perception_lab.core.types import CameraIntrinsics
+from av_perception_lab.tools import calibrate, evaluate
 
 UNCERTAINTY_M = 0.05
 

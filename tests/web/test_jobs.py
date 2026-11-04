@@ -10,8 +10,8 @@ import pytest
 
 pytest.importorskip("fastapi")
 
-from det_depth_distance.web.jobs import JobQueue
-from det_depth_distance.web.paths import WebPaths
+from av_perception_lab.web.jobs import JobQueue
+from av_perception_lab.web.paths import WebPaths
 
 FAKE = Path(__file__).with_name("fake_worker.py")
 
@@ -211,7 +211,7 @@ def test_stderr_without_newline_does_not_break_done(tmp_path):
 
 
 def test_failure_before_started_leaves_a_failed_history_entry(tmp_path):
-    from det_depth_distance.web.history import load_run, scan_runs
+    from av_perception_lab.web.history import load_run, scan_runs
 
     async def scenario():
         queue = make_queue(tmp_path)
@@ -231,7 +231,7 @@ def test_failure_before_started_leaves_a_failed_history_entry(tmp_path):
 
 
 def test_cancel_before_started_leaves_a_cancelled_history_entry(tmp_path):
-    from det_depth_distance.web.history import scan_runs
+    from av_perception_lab.web.history import scan_runs
 
     async def scenario():
         queue = make_queue(tmp_path)
@@ -305,7 +305,7 @@ def test_leftover_unfinished_records_are_settled_on_start(tmp_path):
 
 
 def test_recent_lists_unfinished_and_latest_finished(tmp_path, monkeypatch):
-    from det_depth_distance.web import jobs as jobs_module
+    from av_perception_lab.web import jobs as jobs_module
 
     monkeypatch.setattr(jobs_module, "RECENT_FINISHED", 1)
 
@@ -346,9 +346,9 @@ def test_events_resume_after_an_index(tmp_path):
 
 def test_worker_gets_the_absolute_weights_root(tmp_path, monkeypatch):
     """The worker's CLI gate checks the folder the server's 409 check did:
-    DDD_WEIGHTS_ROOT is the queue's root, absolute and resolved, whatever the
+    AVPL_WEIGHTS_ROOT is the queue's root, absolute and resolved, whatever the
     server's own environment says (task_0026)."""
-    monkeypatch.setenv("DDD_WEIGHTS_ROOT", str(tmp_path / "stale"))
+    monkeypatch.setenv("AVPL_WEIGHTS_ROOT", str(tmp_path / "stale"))
     monkeypatch.chdir(tmp_path)
     (tmp_path / "custom-weights").mkdir()
     env_file = tmp_path / "env.txt"

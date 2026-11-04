@@ -1,4 +1,4 @@
-# det-depth-distance — Project Description
+# av-perception-lab — Project Description
 
 Comprehensive project description maintained for external LLMs. Keep this
 file up to date in the same commit as any structural change (see
@@ -6,7 +6,9 @@ file up to date in the same commit as any structural change (see
 
 ## 1. What the Project Is
 
-A research prototype that combines one or more object detectors (Roboflow
+A perception test bed for autonomous driving: pluggable detectors, metric depth, segmentation, tracking and motion prediction, with per-object distance, camera calibration and evaluation against field references. The project began as a smaller "detector + depth -> distance" script and was renamed from `det-depth-distance` in task_0031.
+
+The core pipeline is a research prototype that combines one or more object detectors (Roboflow
 RF-DETR, Ultralytics YOLO26) and a monocular metric depth estimator (ByteDance Depth Anything 3, "DA3") on
 the same video frames. For every detected object, the depth pixels inside
 its instance mask (when the model segments) or its box are aggregated with robust statistics (mean, median,
@@ -50,9 +52,9 @@ still pending.
 | Language | Python 3.11 (`requires-python >=3.11,<3.12`) |
 | Env / deps | Astral uv, `pyproject.toml` + versioned `uv.lock` |
 | Base deps | numpy<2 (required by depth-anything-3), opencv-python (also calibration: `calibrateCameraExtended`, `findChessboardCornersSB`, `cv2.aruco` ChArUco, `FileStorage`, undistortion; no `opencv-contrib`), pillow, pyyaml>=6 (run configuration and field references, read in the light env) |
-| `web` extra (optional) | `fastapi`, `uvicorn`, `python-multipart`, `httpx`, `av` (locked; python-multipart 0.0.32 added by task_0013; `av` (PyAV 18.1) declared by task_0016 for the `.h264` remux, already transitive via `infer`): backend of the web interface (`det_depth_distance.web`), torch-free |
+| `web` extra (optional) | `fastapi`, `uvicorn`, `python-multipart`, `httpx`, `av` (locked; python-multipart 0.0.32 added by task_0013; `av` (PyAV 18.1) declared by task_0016 for the `.h264` remux, already transitive via `infer`): backend of the web interface (`av_perception_lab.web`), torch-free |
 | Web front-end (`web/`, not Python) | React 18.3.1, TypeScript 5.9, Vite 8, `yaml` 2 (raw-YAML field editor); tests with vitest 5 + Testing Library + jsdom; Node 24 LTS installed without sudo (README); `web/node_modules` and `web/dist` are not versioned |
-| `eval` extra (optional) | `matplotlib>=3.8` (locked 3.11.2): plots of `det-depth-distance-evaluate --plot` only; imported lazily |
+| `eval` extra (optional) | `matplotlib>=3.8` (locked 3.11.2): plots of `av-perception-lab-evaluate --plot` only; imported lazily |
 | `infer` extra (GPU machine; the laptop's 4 GB GPU in an isolated env, `UV_PROJECT_ENVIRONMENT=_testbed/venv-infer`) | torch 2.8.0 + torchvision 0.23.0 + xformers 0.0.32.post2 from the PyTorch cu128 index; `rfdetr` @ git 1f2af2ea; `depth-anything-3` @ git 3d835ec; `addict` (imported by depth-anything-3 but not declared by it); `ultralytics==8.4.175` (YOLO26 and the optional `ultralytics_sam` refiner; **AGPL-3.0** — acceptable for this internal research prototype, optional extra); `transformers>=5.1,<6` (locked 5.19.0; previously only transitive via rfdetr; SAM-family refiners and SegFormer); `timm>=1.0.17` (locked 1.0.30; only for EdgeTAM's TimmWrapper backbone) |
 | External code (GPU machine) | TwinLiteNet+ clone @ 90f1b86 (MIT; not a package, imported with a temporary `sys.path` entry), default `weights/_code/TwinLiteNetPlus` (cloned by `--prepare`; `repo:` overrides, e.g. `~/dev/TwinLiteNetPlus`); `pretrained/<variant>.pth` is downloaded by Prepare from the upstream public Google Drive folder (task_0028: file id, size and sha256 pinned per variant; MIT, the repository's licence) |
 | Model licences (task_0005) | Apache-2.0: SAM, SAM 2.1, SAM-HQ, EdgeTAM, MobileSAM, `timm`; "SAM License", gated: SAM 3 (`sam3_tracker`, optional, never a default); `other` (NVIDIA terms, read before non-academic use): SegFormer checkpoints; MIT: TwinLiteNet+; AGPL-3.0: ultralytics |
@@ -64,14 +66,14 @@ still pending.
 ## 3. Project Structure
 
 ```
-det-depth-distance/
+av-perception-lab/
 ├── pyproject.toml           # uv manifest; "infer" extra holds the GPU stack, "eval" extra matplotlib, "web" extra FastAPI; 4 console scripts; pytest "gpu" marker
 ├── uv.lock
 ├── web/                     # front-end (Vite React TS): src/api (types, client, video, models), src/editor (yamlState store, Lanes, ModuleCard, Inspector, fieldControls, DiffView, registry), src/models (useModelStatus hook + ReadinessProvider, ReadinessBanner, ModelRequirements, readiness.ts/cardReadiness.ts rules, statusStyles.css), src/video (VideoDeck, DropZone, Player, SegmentBar, JobPanel, segment.ts, useVideoSession, useJobs, useProcess), src/api/runs.ts, src/runs (RunsView, RunList, RunDetail, CompareView (KpiCards, ConfigDiff), DistanceChart, JsonTree, Artifacts, artifactViews registry, format.ts), src/ui (Shell, route.ts, theme.css); built to web/dist (not versioned)
 ├── configs/                 # example run YAMLs: rfdetr_da3, yolo_o365_da3, multi_detector(_fused), *_seg_da3, rfdetr_sam2_da3, yolo_o365_sam2_da3, rfdetr_semantic_da3, rfdetr_lanes_scene_da3, rfdetr_da3_track, rfdetr_da3_calibrated, yolo_light_da3, rfdetr_da3_motion, rfdetr_sam2_lanes_motion_da3
 │   ├── labels/              # versioned label maps: coco_driving, objects365_driving
 │   └── references/          # example_references.yaml (fictitious field-reference template)
-├── src/det_depth_distance/
+├── src/av_perception_lab/
 │   ├── core/                # contracts + orchestration, no ML framework imports
 │   │   ├── types.py         # Frame, Instances, DepthResult, FrameResult, RefinedMasks, SemanticMap, TrackEstimate, Trajectory, MotionEstimate, MapGeometry, CameraIntrinsics, ContractError
 │   │   ├── options.py       # ConfigError, from_mapping (typed YAML -> dataclass, dotted error paths)
@@ -98,15 +100,15 @@ det-depth-distance/
 │   ├── camera.py            # IntrinsicsProvider: FixedIntrinsics, EstimatedIntrinsics, CalibratedIntrinsics; Calibration, load/save_calibration, Undistorter, check_camera_metadata, CameraSetup, build_camera
 │   ├── calibration.py       # TargetSpec, CalibrationTarget (ChessboardTarget, CharucoTarget), detect_views, select_views, coverage, calibrate_views, focal_px_from_35mm
 │   ├── evaluation/          # references.py (ReferenceSet), run_data.py (RunData, load_run), matching.py, stats.py (ErrorStats, summarize), evaluate.py, report.py
-│   ├── tools/               # calibrate.py (det-depth-distance-calibrate), evaluate.py (det-depth-distance-evaluate)
-│   ├── web/                 # web backend (extra `web`, torch-free): paths.py (WebPaths, safe_join), stages.py (stage list from core.registry), schema.py (options_schema, module_catalog, validate_config), app.py (create_app), jobs.py (JobQueue), worker.py, history.py (scan_runs, load_run, job_data), compare.py (run_summary, distance_series, config_diff, compare_runs, list_artifacts, effective_config), gpu.py (free_memory_mib), library.py (Library, VideoRecord, probe, .h264 remux, background preview), uploads.py (streaming multipart reader, bounded headers/parts/fields), security.py (Host/Origin/body-size middlewares, path policy, weights-root overlap check, served-file headers), models.py (model status rows, PrepareQueue), presets.py (built-in + user config presets), server.py (det-depth-distance-web: --allowed-host, --dev-origin, --asset-root, --weights-root, --presets-root); app.py also serves web/dist at / with an SPA fallback
+│   ├── tools/               # calibrate.py (av-perception-lab-calibrate), evaluate.py (av-perception-lab-evaluate)
+│   ├── web/                 # web backend (extra `web`, torch-free): paths.py (WebPaths, safe_join), stages.py (stage list from core.registry), schema.py (options_schema, module_catalog, validate_config), app.py (create_app), jobs.py (JobQueue), worker.py, history.py (scan_runs, load_run, job_data), compare.py (run_summary, distance_series, config_diff, compare_runs, list_artifacts, effective_config), gpu.py (free_memory_mib), library.py (Library, VideoRecord, probe, .h264 remux, background preview), uploads.py (streaming multipart reader, bounded headers/parts/fields), security.py (Host/Origin/body-size middlewares, path policy, weights-root overlap check, served-file headers), models.py (model status rows, PrepareQueue), presets.py (built-in + user config presets), server.py (av-perception-lab-web: --allowed-host, --dev-origin, --asset-root, --weights-root, --presets-root); app.py also serves web/dist at / with an SPA fallback
 │   ├── config.py            # RunConfig + sections, load_config, config_from_mapping, apply_overrides (--set); registers the built-in pipeline stages
 │   ├── distance.py          # pure numpy: box -> map pixels -> robust stats -> distance
 │   ├── temporal.py          # pure numpy: SmoothingConfig, distance_sigma, white_accel_cov, KalmanFilter1D / EmaFilter / MedianFilter (FILTERS), TrackSmoother
 │   ├── render.py            # PIL boxes/labels/HUD (colour by class or source), predicted trajectories, top-view (BEV) inset, depth panel + legend
 │   ├── runtime.py           # DeviceMonitor (torch, lazy), package versions, git commit
 │   ├── cli.py               # --config/--set/--list-models/--prepare; composition root
-│   └── __main__.py          # python -m det_depth_distance
+│   └── __main__.py          # python -m av_perception_lab
 ├── tests/                   # pytest without GPU; tests/smoke/ (auto-marked "smoke", end-to-end); tests/gpu/ (auto-marked "gpu") runs on a machine with a GPU
 ├── utils/gpu_pending.sh     # pending GPU steps of the tasks, in order, with logs
 ├── utils/run_web.sh         # one command: build the front-end if needed and start the web interface
@@ -294,11 +296,11 @@ None. Local CLI tool; no users, sessions or network services.
 
 ## 7. URL / API Design
 
-The pipeline has no network API; its interface is the CLI `det-depth-distance` /
-`python -m det_depth_distance --config run.yaml [VIDEO] [--set key=value]...`
+The pipeline has no network API; its interface is the CLI `av-perception-lab` /
+`python -m av_perception_lab --config run.yaml [VIDEO] [--set key=value]...`
 and `--list-models`; `--config run.yaml --prepare` builds the components
 (nothing loaded, the video is not probed), downloads their declared weights and
-pinned code under the weights root (`DDD_WEIGHTS_ROOT`, default `weights/`;
+pinned code under the weights root (`AVPL_WEIGHTS_ROOT`, default `weights/`;
 also the focal model of `camera.estimate`),
 prints a status table and exits 0 only when every component is ready (1
 otherwise, 2 for configuration errors or an unsafe weights root; a file only
@@ -323,16 +325,16 @@ installs a per-model extra after a fresh clean dry-run (same command without
 plus the components' import names via `find_spec` (nothing imported); a
 dry-run that would remove or replace a package is a conflict; `uv` missing,
 a timeout or a cancel is plan `error` (state `failed`, never cached, never a
-conflict; the message names `DDD_UV`); `DDD_UV` names the `uv` executable.
+conflict; the message names `AVPL_UV`); `AVPL_UV` names the `uv` executable.
 Dry-runs are single flight per cache key and run in their own process group
 (killed on timeout/cancel); uv output is scrubbed of credentials
 (`packages.scrub`). Plus two auxiliary console scripts:
-`det-depth-distance-calibrate calibrate|board|inspect` and
-`det-depth-distance-evaluate --refs REFS.yaml RUN [RUN ...]`. The YAML schema (sections source, detectors, depth,
+`av-perception-lab-calibrate calibrate|board|inspect` and
+`av-perception-lab-evaluate --refs REFS.yaml RUN [RUN ...]`. The YAML schema (sections source, detectors, depth,
 camera, aggregation, refiners, semantic, tracking, smoothing, agreement, distance, render, output, device) is documented in the
 README; the task_0001 flags were replaced without aliases.
 
-Optional web backend (`det-depth-distance-web`, extra `web`, binds
+Optional web backend (`av-perception-lab-web`, extra `web`, binds
 127.0.0.1 by default, no auth; task_0013 is its first slice):
 `GET /api/catalog` (stages from `core.registry.stages()`, the options schema
 of every registered adapter by family and of every config section, with
@@ -367,7 +369,7 @@ failed|cancelled, position, error, run_id, frames, log_tail), `GET
 error, end), `DELETE /api/jobs/{id}` (cancel), `GET /api/runs`, `GET
 /api/runs/{id}` and `GET /api/runs/{id}/{video|preview|config|detections}`,
 `GET /api/gpu` (`{free_mib}`). One `JobQueue` runner starts one worker
-subprocess (`python -m det_depth_distance.web.worker CONFIG.yaml`, JSON
+subprocess (`python -m av_perception_lab.web.worker CONFIG.yaml`, JSON
 lines on stdout) at a time; the server never imports torch. The worker
 writes `config.yaml`, `web_run.json` (`status`, `video_id`, `started_at`) and
 `preview.jpg` into the run folder; history (`web/history.py`) scans
@@ -482,9 +484,9 @@ different size at <target>; move or delete it, or point the config at
 another file") and is never downloaded over. URL downloads stop when the
 body exceeds the expected size and check free disk space first. `POST /api/runs` and rerun answer 409 `{models_not_ready:
 [status rows]}` when a model is not `ready` (after the 422 checks).
-`--weights-root` (else `DDD_WEIGHTS_ROOT`, else `weights/`) is set with
+`--weights-root` (else `AVPL_WEIGHTS_ROOT`, else `weights/`) is set with
 `set_weights_root` and exported to every run worker as an absolute, resolved
-`DDD_WEIGHTS_ROOT`; it may not be `/` or the home folder, contain the project,
+`AVPL_WEIGHTS_ROOT`; it may not be `/` or the home folder, contain the project,
 the active Python environment, or be, contain or lie inside the library or
 `--out-root` (start-up error; `create_app` raises ValueError;
 `core.requirements.weights_root_problem`, also checked by the CLI with the
@@ -555,7 +557,7 @@ unavailable). Inspector "Weights & requirements" (`ModelRequirements`):
 layers, missing items, message, size, source/licence/target when a row
 carries them (else locations parsed from `<weights root>/...` in the
 message), **Prepare model** / **Retry** for preparable rows, the copyable
-`det-depth-distance --config <file> --prepare` for an unknown source (message
+`av-perception-lab --config <file> --prepare` for an unknown source (message
 prefix `unknown source`), a "provide it by hand" note for `user_provided`, the packages plan (task_0024: base command, Install
 packages, conflict reason) or, from older servers, a note when only
 `package:` items are missing, a conflict note, and the module's unset path options as the location override.
@@ -615,7 +617,7 @@ and the parse `extras`. State lives in a small store (`useEditor()`:
 extras), `dirty`, `diff()` against the last opened/saved YAML); validation is
 debounced 400 ms and errors attach to fields by dotted path (spec-level
 domain errors whose message starts with a field name are attached to that
-field). `det-depth-distance-web --static-dir DIR` overrides the served build
+field). `av-perception-lab-web --static-dir DIR` overrides the served build
 (default `web/dist` of the checkout); missing files under `assets/` or with
 an extension are 404, other paths fall back to `index.html`. Save YAML downloads `/api/config/dump` output and warns once that
 comments/key order are lost. Extension registry: `registerStageView(yamlKey,
@@ -681,7 +683,7 @@ gated `facebook/sam3` checkpoint additionally needs approved access and
 - Three test levels: unit (each module, fixed doubles); smoke (`-m smoke`, `tests/smoke/`, ~8 s): the real CLI entry point in process on a synthetic 320x180 grey-level video of known depth planes, with frame-reading test doubles (detector, box-prompt refiner, semantic segmenter) inserted into the registry by `monkeypatch` and the real `DA3Depth` with a fake network; a pairwise matrix of 9 configurations checks every output and every distance analytically, plus the all-off = task_0002 invariant and a calibrate -> run -> evaluate chain; `tests/run_outputs.py` checks any run folder's structure; gpu (`-m gpu`, on a machine with a GPU).
 - GPU tests (adapter contracts + 60-frame regression against task_0001 + a 5-frame smoke of 10 example configs, one per real adapter family plus the light 4 GB example, which skips where its weights are missing): `uv run --extra infer pytest -m gpu -v`.
 - `utils/gpu_pending.sh` (run on the GPU machine): every pending GPU step of tasks 0002-0008 in dependency order, a log per step and `summary.tsv` in `_testbed/outputs/gpu_pending_<stamp>/`; `list`, `run --dry-run|--from|--only|--skip-long`; downloads only with `--allow-downloads` plus a per-item confirmation (task_0004 downloads only printed).
-- Weights (task_0021): everything under the weights root (`weights/`, git-ignored; `DDD_WEIGHTS_ROOT` / `--weights-root`), fetched by `--prepare`; nothing is downloaded at run time (DA3 included). Layout: `hf/` (Hugging Face cache: DA3, SAM family, SegFormer; an existing cache keeps working), `rfdetr/<library file name>` (Apache-2.0, ~135–405 MB), `ultralytics/<name>.pt` (YOLO26 COCO/Objects365 and SAM/MobileSAM from the `ultralytics/assets` v8.4.0 release; any other `.pt` is user-provided), `_code/TwinLiteNetPlus` (pinned clone; `pretrained/<variant>.pth` from Google Drive, task_0028). Existing `~/.roboflow`, `~/dev/...` files are untouched and usable as explicit YAML paths. Sources, sizes and licences: `docs/task_0021.md`.
+- Weights (task_0021): everything under the weights root (`weights/`, git-ignored; `AVPL_WEIGHTS_ROOT` / `--weights-root`), fetched by `--prepare`; nothing is downloaded at run time (DA3 included). Layout: `hf/` (Hugging Face cache: DA3, SAM family, SegFormer; an existing cache keeps working), `rfdetr/<library file name>` (Apache-2.0, ~135–405 MB), `ultralytics/<name>.pt` (YOLO26 COCO/Objects365 and SAM/MobileSAM from the `ultralytics/assets` v8.4.0 release; any other `.pt` is user-provided), `_code/TwinLiteNetPlus` (pinned clone; `pretrained/<variant>.pth` from Google Drive, task_0028). Existing `~/.roboflow`, `~/dev/...` files are untouched and usable as explicit YAML paths. Sources, sizes and licences: `docs/task_0021.md`.
 - Light example (task_0010, `configs/yolo_light_da3.yaml`, for the laptop's RTX A1000 4 GB): YOLO26s-seg, SegFormer-B0 `nvidia/segformer-b0-finetuned-cityscapes-640-1280`, the DA3 checkpoints and TwinLiteNet+ `small.pth`, all under the weights root. Estimated peak ~2.4 GB allocated (main phase) and ~3 GB in the focal phase, which is not recorded in `metrics.json`; VRAM on the 4 GB GPU still to be measured. GPU tests skip when a weight is missing.
 - GPU machine: `uv sync --extra infer` (in the notebook, with `UV_PROJECT_ENVIRONMENT=_testbed/venv-infer`).
 - No deployment target beyond running the CLI locally.

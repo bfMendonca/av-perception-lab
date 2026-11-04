@@ -5,7 +5,7 @@ from typing import Any, Literal
 
 import pytest
 
-from det_depth_distance.core.options import ConfigError, from_mapping
+from av_perception_lab.core.options import ConfigError, from_mapping
 
 
 @dataclass(frozen=True, slots=True)

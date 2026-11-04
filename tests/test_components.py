@@ -5,8 +5,8 @@ import numpy as np
 import pytest
 import yaml
 
-from det_depth_distance.core import registry
-from det_depth_distance.core.components import (
+from av_perception_lab.core import registry
+from av_perception_lab.core.components import (
     Detector,
     DetectorOptions,
     LoadContext,
@@ -16,9 +16,9 @@ from det_depth_distance.core.components import (
     Tracker,
     TrackerOptions,
 )
-from det_depth_distance.core.labels import COCO
-from det_depth_distance.core.options import ConfigError
-from det_depth_distance.core.types import (
+from av_perception_lab.core.labels import COCO
+from av_perception_lab.core.options import ConfigError
+from av_perception_lab.core.types import (
     ContractError,
     Frame,
     Instances,

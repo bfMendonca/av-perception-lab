@@ -4,7 +4,7 @@ import cv2
 import numpy as np
 import pytest
 
-from det_depth_distance.render import (
+from av_perception_lab.render import (
     CLASS_COLORS,
     PALETTE,
     BevTrack,

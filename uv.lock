@@ -358,7 +358,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "det-depth-distance"
+name = "av-perception-lab"
 version = "0.1.0"
 source = { editable = "." }
 dependencies = [

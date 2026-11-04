@@ -10,9 +10,9 @@ import sys
 import numpy as np
 import pytest
 
-from det_depth_distance.core.options import ConfigError
-from det_depth_distance.core.registry import build
-from det_depth_distance.motion.models import (
+from av_perception_lab.core.options import ConfigError
+from av_perception_lab.core.registry import build
+from av_perception_lab.motion.models import (
     MIN_YAW_RATE,
     ConstantVelocity,
     Ctrv,
@@ -303,8 +303,8 @@ def test_motion_package_imports_no_framework():
     # Like temporal/tracking (test_temporal.py): numpy only, no GPU stack,
     # no scipy, not even OpenCV/PIL.
     code = (
-        "import sys, det_depth_distance.motion, det_depth_distance.motion.models, "
-        "det_depth_distance.motion.ego; "
+        "import sys, av_perception_lab.motion, av_perception_lab.motion.models, "
+        "av_perception_lab.motion.ego; "
         "print(sorted({'torch', 'ultralytics', 'scipy', 'cv2', 'PIL'} "
         "& set(sys.modules)))"
     )

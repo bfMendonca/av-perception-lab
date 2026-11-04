@@ -28,8 +28,8 @@ import cv2
 import numpy as np
 import pytest
 
-from det_depth_distance.core.types import Instances
-from det_depth_distance.io.sinks import CSV_FIELDS
+from av_perception_lab.core.types import Instances
+from av_perception_lab.io.sinks import CSV_FIELDS
 
 
 def _make(

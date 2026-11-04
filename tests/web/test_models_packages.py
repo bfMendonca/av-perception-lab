@@ -20,12 +20,12 @@ from fake_uv import fake_uv, snapshot  # noqa: F401 - fake_uv is a fixture
 from fastapi.testclient import TestClient
 from model_fakes import fake_models, wait_prepare  # noqa: F401
 
-from det_depth_distance.core import registry
-from det_depth_distance.core import requirements as rq
-from det_depth_distance.core.components import Detector, DetectorOptions
-from det_depth_distance.core.requirements import Requirements
-from det_depth_distance.web import models
-from det_depth_distance.web.app import create_app
+from av_perception_lab.core import registry
+from av_perception_lab.core import requirements as rq
+from av_perception_lab.core.components import Detector, DetectorOptions
+from av_perception_lab.core.requirements import Requirements
+from av_perception_lab.web import models
+from av_perception_lab.web.app import create_app
 
 FAKE_WORKER = Path(__file__).with_name("fake_worker.py")
 REAL_PRESENT = rq._top_level_present
@@ -133,12 +133,12 @@ def test_conflict_state_reaches_the_api_and_ui_contract(api, fake_uv, tmp_path):
 
 
 def test_uv_unavailable_row_is_failed_not_conflict(api, fake_uv, tmp_path, monkeypatch):  # noqa: F811
-    monkeypatch.setenv("DDD_UV", str(tmp_path / "no-uv"))
+    monkeypatch.setenv("AVPL_UV", str(tmp_path / "no-uv"))
     row = detector_row(status(api, pkg_config(tmp_path)))
     assert row["state"] == "failed"
     assert row["packages"]["action"] == "error"
-    assert "DDD_UV" in row["message"] and "conflicts" not in row["message"]
-    monkeypatch.setenv("DDD_UV", fake_uv.uv)
+    assert "AVPL_UV" in row["message"] and "conflicts" not in row["message"]
+    monkeypatch.setenv("AVPL_UV", fake_uv.uv)
     assert detector_row(status(api, pkg_config(tmp_path)))["state"] == "missing"
 
 

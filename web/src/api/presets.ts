@@ -1,4 +1,4 @@
-// Client of the preset routes (src/det_depth_distance/web/app.py): built-in and
+// Client of the preset routes (src/av_perception_lab/web/app.py): built-in and
 // user presets are listed, loaded, saved and deleted by id.
 import { ApiError, readError } from "./client";
 import type { ConfigDict, ParsedConfig } from "./types";

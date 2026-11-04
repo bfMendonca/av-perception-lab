@@ -8,8 +8,8 @@ pytest.importorskip("fastapi")
 
 from run_folders import NEW_HEADER, OLD_HEADER, make_run, write_csv
 
-from det_depth_distance.web import compare
-from det_depth_distance.web.compare import (
+from av_perception_lab.web import compare
+from av_perception_lab.web.compare import (
     NoRunFiles,
     config_diff,
     distance_series,

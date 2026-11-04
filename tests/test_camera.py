@@ -5,9 +5,9 @@ import cv2
 import numpy as np
 import pytest
 
-from det_depth_distance import camera
-from det_depth_distance.calibration import TargetSpec, make_target
-from det_depth_distance.camera import (
+from av_perception_lab import camera
+from av_perception_lab.calibration import TargetSpec, make_target
+from av_perception_lab.camera import (
     CalibratedIntrinsics,
     Calibration,
     EstimatedIntrinsics,
@@ -19,10 +19,10 @@ from det_depth_distance.camera import (
     load_calibration,
     save_calibration,
 )
-from det_depth_distance.config import CalibrationConfig, CameraConfig, EstimateConfig
-from det_depth_distance.core.options import ConfigError
-from det_depth_distance.core.types import CameraIntrinsics
-from det_depth_distance.io.source import FrameSource
+from av_perception_lab.config import CalibrationConfig, CameraConfig, EstimateConfig
+from av_perception_lab.core.options import ConfigError
+from av_perception_lab.core.types import CameraIntrinsics
+from av_perception_lab.io.source import FrameSource
 
 
 class StillSource(FrameSource):

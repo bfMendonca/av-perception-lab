@@ -3,11 +3,11 @@ import shutil
 import numpy as np
 import pytest
 
-from det_depth_distance.config import SourceConfig
-from det_depth_distance.core.options import ConfigError
-from det_depth_distance.core.types import ContractError, Frame
-from det_depth_distance.io.source import FrameTransform, VideoSource
-from det_depth_distance.io.video import VideoWriter
+from av_perception_lab.config import SourceConfig
+from av_perception_lab.core.options import ConfigError
+from av_perception_lab.core.types import ContractError, Frame
+from av_perception_lab.io.source import FrameTransform, VideoSource
+from av_perception_lab.io.video import VideoWriter
 
 
 def test_missing_video_is_a_config_error(tmp_path):

@@ -1,7 +1,7 @@
 # RF-DETR large (boxes only) + SAM 2.1 masks from the boxes + DA3METRIC-LARGE: distance
 # over each SAM mask. SAM 2.1 weights live in the HF cache weights/hf (download command
 # in README, "Pesos dos refinadores e do SegFormer"); nothing is downloaded at run time.
-# Run: det-depth-distance --config configs/rfdetr_sam2_da3.yaml [VIDEO] [--set key=value]...
+# Run: av-perception-lab --config configs/rfdetr_sam2_da3.yaml [VIDEO] [--set key=value]...
 # Other refiners (same options; see README "Refinadores de máscara"): edgetam,
 # sam_hq, sam, sam3_tracker (gated) and ultralytics_sam (needs weights:). Switch with
 #   --set 'refiners=[{type: edgetam}]'

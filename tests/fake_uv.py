@@ -32,7 +32,7 @@ from pathlib import Path
 
 import pytest
 
-from det_depth_distance.core.provision import packages
+from av_perception_lab.core.provision import packages
 
 SCRIPT = r"""
 import json, os, subprocess, sys, time
@@ -184,7 +184,7 @@ def fake_uv(tmp_path, monkeypatch) -> FakeUv:
     monkeypatch.setenv("FAKE_UV_PIDS", str(pids))
     monkeypatch.setenv("FAKE_UV_MODE", "ok")
     monkeypatch.setenv("UV_PROJECT_ENVIRONMENT", str(envdir))
-    monkeypatch.setenv("DDD_UV", str(script))
+    monkeypatch.setenv("AVPL_UV", str(script))
     monkeypatch.setattr(packages, "default_pyproject", lambda: pyproject)
     packages.clear_cache()
     yield FakeUv(str(script), log, project, pyproject, site, envdir, pids, monkeypatch)

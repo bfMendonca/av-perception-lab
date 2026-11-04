@@ -1,6 +1,6 @@
 """Every adapter's `requirements(options)` (task_0021), without torch or network.
 
-The weights root is a temporary folder (`DDD_WEIGHTS_ROOT`); framework modules
+The weights root is a temporary folder (`AVPL_WEIGHTS_ROOT`); framework modules
 are replaced by stand-ins in `sys.modules` where a `_load` is exercised, and
 the provisioning sources are made to fail on any network access.
 """
@@ -13,22 +13,22 @@ from pathlib import Path
 import pytest
 import yaml
 
-from det_depth_distance import cli
-from det_depth_distance.adapters._hf_hub import HF_FACTS
-from det_depth_distance.adapters._ultralytics import ULTRALYTICS_ASSETS
-from det_depth_distance.adapters.depth import da3
-from det_depth_distance.adapters.detectors import rfdetr as rfdetr_adapter
-from det_depth_distance.adapters.semantic.twinlitenet import (
+from av_perception_lab import cli
+from av_perception_lab.adapters._hf_hub import HF_FACTS
+from av_perception_lab.adapters._ultralytics import ULTRALYTICS_ASSETS
+from av_perception_lab.adapters.depth import da3
+from av_perception_lab.adapters.detectors import rfdetr as rfdetr_adapter
+from av_perception_lab.adapters.semantic.twinlitenet import (
     DRIVE_FOLDER,
     TWINLITENET_REPO,
     TWINLITENET_WEIGHTS,
 )
-from det_depth_distance.config import load_config
-from det_depth_distance.core import registry
-from det_depth_distance.core.components import Component, LoadContext
-from det_depth_distance.core.options import ConfigError
-from det_depth_distance.core.provision import prepare, sources
-from det_depth_distance.core.requirements import (
+from av_perception_lab.config import load_config
+from av_perception_lab.core import registry
+from av_perception_lab.core.components import Component, LoadContext
+from av_perception_lab.core.options import ConfigError
+from av_perception_lab.core.provision import prepare, sources
+from av_perception_lab.core.requirements import (
     CodeRepo,
     GoogleDriveAsset,
     HuggingFaceAsset,
@@ -60,7 +60,7 @@ def root(tmp_path, monkeypatch):
     """A fresh weights root, no network, adapters registered."""
     weights = tmp_path / "weights"
     set_weights_root(None)
-    monkeypatch.setenv("DDD_WEIGHTS_ROOT", str(weights))
+    monkeypatch.setenv("AVPL_WEIGHTS_ROOT", str(weights))
 
     def no_network(*args, **kwargs):
         raise AssertionError("network access in a unit test")
@@ -294,7 +294,7 @@ def test_existing_explicit_paths_in_yaml_still_override_defaults(
         assert rows[path].packages
     yolo = registry.build("detector", load_config(config).detectors[0], path="d")
     assert yolo.options.weights == home / "w" / "yolo26l.pt"
-    from det_depth_distance.adapters._ultralytics import resolve_weights
+    from av_perception_lab.adapters._ultralytics import resolve_weights
 
     assert resolve_weights(yolo.options.weights) == home / "w" / "yolo26l.pt"
 
@@ -317,7 +317,7 @@ def test_existing_explicit_paths_in_yaml_still_override_defaults(
 def test_ultralytics_weights_bare_name_under_root_other_paths_unchanged(
     root, tmp_path, monkeypatch, kind, type_name, name
 ):
-    from det_depth_distance.adapters._ultralytics import resolve_weights
+    from av_perception_lab.adapters._ultralytics import resolve_weights
 
     work = tmp_path / "work"
     (work / "_testbed" / "weights").mkdir(parents=True)
@@ -469,7 +469,7 @@ def test_size_mismatched_release_file_survives_prepare(root, monkeypatch):
 
 
 def test_repo_id_shape_is_checked_before_any_file_system_probe(monkeypatch):
-    from det_depth_distance.adapters import _hf_hub
+    from av_perception_lab.adapters import _hf_hub
 
     probed = []
     real = Path.exists

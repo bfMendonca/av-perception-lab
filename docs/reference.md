@@ -1,7 +1,7 @@
 > **Detailed reference.** This is the project's original long README, kept for its configuration, calibration, evaluation, output and distance-method details. It is still in Portuguese and has not been audited since the web interface and Prepare were added; for installing and running, use the [README](../README.md).
 
 <p align="center">
-  <h1 align="center">det-depth-distance</h1>
+  <h1 align="center">av-perception-lab</h1>
   <p align="center">
     Distância por objeto combinando detectores plugáveis (RF-DETR, YOLO26) e profundidade métrica Depth Anything 3
     <br />
@@ -91,8 +91,8 @@ os testes unitários não precisam de GPU.
 - **Rastrear** objetos entre quadros (`tracking: {type: iou}`): associação gulosa por IoU com predição da caixa por velocidade constante (em px/s, tolera `stride` até 5 a 30 fps), agnóstica de classe por padrão (detectores alternam `car`/`truck` no mesmo objeto) e por detector com `concat`; `track_id` no CSV e `#id` no rótulo do vídeo; numpy puro, sem dependência nova.
 - **Suavizar** a distância de cada trilha (`smoothing`): Kalman 1D com velocidade (padrão; estima também a velocidade relativa em m/s e as incertezas), média móvel exponencial ou mediana causal, com parâmetros em segundos; a distância bruta continua no CSV.
 - **Estimar o movimento** de cada trilha no plano (`motion`): posição lateral e longitudinal (m) pelo ponto de referência da caixa, velocidade relativa (vetor e módulo), rumo e taxa de giro com incertezas, modelo de movimento escolhido pela classe canônica (velocidade constante `cv`; `ctrv` com giro, para uso com ego-motion), **previsão da trajetória** com covariância num horizonte em segundos e ego-motion opcional por arquivo CSV; numpy puro.
-- **Calibrar** a câmera com tabuleiro ou ChArUco (`det-depth-distance-calibrate`): vídeo decodificado como nas execuções (ou imagens), rejeição de vistas atípicas, cobertura do quadro, arquivo OpenCV (`FileStorage` YAML/JSON) com K, distorção, desvios e os metadados QuickTime da gravação (lente, 35 mm-eq.); na execução (`camera.calibration`), K reescalada para o vídeo, conferência da lente contra o vídeo, correção de distorção opcional dos quadros e comparação opcional com a focal estimada.
-- **Avaliar** as distâncias contra referências de campo (`det-depth-distance-evaluate`): referências por caixa, ponto ou `track_id` num intervalo de quadros/tempo, distância constante ou série (RTK), conversão alcance ↔ z, erros absolutos e relativos (média, mediana, p90, RMSE, viés, `within_2u`) por execução, detector, estimador, faixa de distância, classe, região e produtor da máscara, cobertura, trocas de ID e focal implícita; `eval.json`, `eval.md` e gráficos opcionais.
+- **Calibrar** a câmera com tabuleiro ou ChArUco (`av-perception-lab-calibrate`): vídeo decodificado como nas execuções (ou imagens), rejeição de vistas atípicas, cobertura do quadro, arquivo OpenCV (`FileStorage` YAML/JSON) com K, distorção, desvios e os metadados QuickTime da gravação (lente, 35 mm-eq.); na execução (`camera.calibration`), K reescalada para o vídeo, conferência da lente contra o vídeo, correção de distorção opcional dos quadros e comparação opcional com a focal estimada.
+- **Avaliar** as distâncias contra referências de campo (`av-perception-lab-evaluate`): referências por caixa, ponto ou `track_id` num intervalo de quadros/tempo, distância constante ou série (RTK), conversão alcance ↔ z, erros absolutos e relativos (média, mediana, p90, RMSE, viés, `within_2u`) por execução, detector, estimador, faixa de distância, classe, região e produtor da máscara, cobertura, trocas de ID e focal implícita; `eval.json`, `eval.md` e gráficos opcionais.
 - **Estimar** profundidade métrica com Depth Anything 3 (`da3metric-large` com focal informada ou estimada; modelos NESTED já em metros).
 - **Calcular** a distância de cada objeto com estatísticas robustas sobre a **máscara** da instância (quando o modelo a fornece; reamostrada para o mapa e erodida) ou sobre a caixa: encolhimento da caixa, exclusão de céu, rejeição de outliers (`iqr`, `mad`, `sigma`) e estatística configurável (`median`, `mean`, `trimmed`, `mode`, `pXX`), em profundidade `z` ou distância euclidiana; `distance.region: both` registra as duas distâncias para comparação.
 - **Renderizar** vídeo anotado (rótulo `[#id] classe conf · D m ± σ [· ±v m/s] [· v V m/s]`, camadas semânticas e máscara translúcida por instância, trajetória prevista com elipses de incerteza no chão, HUD com tempos), opcionalmente o mapa de profundidade lado a lado com legenda em metros e um painel de vista superior (BEV) das trilhas.
@@ -135,14 +135,14 @@ rodam sem torch.
 ## Estrutura do Projeto
 
 ```
-det-depth-distance/
+av-perception-lab/
 ├── pyproject.toml           # manifesto uv; extra "infer" com a stack GPU, extra "eval" (matplotlib), extra "web" (FastAPI)
 ├── web/                     # front-end da interface web (React + TypeScript + Vite; `node_modules/` e `dist/` não versionados)
 ├── uv.lock                  # lock versionado
 ├── configs/                 # exemplos de YAML: rfdetr_da3, yolo_o365_da3, multi_detector(_fused), rfdetr_seg_da3, yolo_seg_da3, yolo_o365_seg_da3, rfdetr_sam2_da3, yolo_o365_sam2_da3, rfdetr_semantic_da3, rfdetr_lanes_scene_da3, rfdetr_da3_track, rfdetr_da3_calibrated, yolo_light_da3, rfdetr_da3_motion, rfdetr_sam2_lanes_motion_da3
 │   ├── labels/              # mapas de rótulos por vocabulário: coco_driving, objects365_driving
 │   └── references/          # example_references.yaml (modelo fictício do formato de referências de campo)
-├── src/det_depth_distance/
+├── src/av_perception_lab/
 │   ├── core/                # contratos e orquestração, sem frameworks
 │   │   ├── types.py         # Frame, Instances, DepthResult, FrameResult, RefinedMasks, SemanticMap, TrackEstimate, MotionEstimate, Trajectory, MapGeometry, CameraIntrinsics
 │   │   ├── options.py       # ConfigError, from_mapping (YAML -> dataclass com caminho nos erros)
@@ -174,7 +174,7 @@ det-depth-distance/
 │   ├── render.py            # caixas, máscaras, rótulos, HUD, painel de profundidade + legenda
 │   ├── runtime.py           # memória da GPU, versões, commit
 │   ├── cli.py               # --config/--set/--list-models; raiz de composição
-│   └── __main__.py          # python -m det_depth_distance
+│   └── __main__.py          # python -m av_perception_lab
 ├── tests/                   # pytest sem GPU; run_outputs.py confere pastas de execução
 │   ├── smoke/               # smoke ponta a ponta (marcador smoke): cena sintética, dublês, matriz em pares, calibrar -> rodar -> avaliar
 │   └── gpu/                 # marcador gpu, roda onde há GPU: contratos, regressão da task_0001, smoke com os modelos reais
@@ -193,7 +193,7 @@ det-depth-distance/
 | Astral uv | local | gerencia os ambientes e roda os comandos |
 | ffmpeg / ffprobe | local | decodificação e codificação por pipe; também usados por parte dos testes |
 | GPU NVIDIA com CUDA 12.8 | local | testado numa RTX PRO 6000 Blackwell (sm_120) |
-| Weights | local | Everything under the weights root (`weights/`, git-ignored; `DDD_WEIGHTS_ROOT` overrides), fetched by `--prepare`; nothing is downloaded at run time. See [Model weights](#model-weights) |
+| Weights | local | Everything under the weights root (`weights/`, git-ignored; `AVPL_WEIGHTS_ROOT` overrides), fetched by `--prepare`; nothing is downloaded at run time. See [Model weights](#model-weights) |
 
 > **Nota:** nunca instale o extra `infer` no `.venv` do laptop (a stack GPU ocupa ~9 GB e o próximo `uv run pytest` a removeria); para a GPU do notebook use o ambiente isolado de [Execução no notebook](#execução-no-notebook-gpu-de-4-gb).
 
@@ -312,13 +312,13 @@ df -h ~
 export UV_PROJECT_ENVIRONMENT=_testbed/venv-infer   # o .venv continua leve
 uv sync --extra infer
 # YOLO26s-seg, DA3 (metric + focal), SegFormer-B0 and the TwinLiteNet+ clone under weights/
-uv run --extra infer python -m det_depth_distance --config configs/yolo_light_da3.yaml --prepare
+uv run --extra infer python -m av_perception_lab --config configs/yolo_light_da3.yaml --prepare
 mkdir -p weights/_code/TwinLiteNetPlus/pretrained   # small.pth: upstream Google Drive
 curl -fL -o weights/_code/TwinLiteNetPlus/pretrained/small.pth "https://drive.usercontent.google.com/download?id=1N7jNsa8P1dM-UevqPRsx6heUpN4L00FJ&export=download&confirm=t"
 mkdir -p _testbed/data   # coloque IMG_4021.MOV aqui
 uv run --extra infer pytest -m gpu tests/gpu/test_smoke_gpu.py -k yolo_light -v -rs
 nvidia-smi --query-gpu=timestamp,memory.used --format=csv,noheader -lms 200 > _testbed/outputs/light_vram_IMG_4021.csv &
-uv run --extra infer python -m det_depth_distance --config configs/yolo_light_da3.yaml --set source.max_frames=300 --set output.tag=light
+uv run --extra infer python -m av_perception_lab --config configs/yolo_light_da3.yaml --set source.max_frames=300 --set output.tag=light
 kill %1
 ```
 
@@ -334,11 +334,11 @@ medição pendente.**
 Com a stack GPU (a partir da raiz do repo; vídeos em `_testbed/data/`):
 
 ```bash
-uv run --extra infer python -m det_depth_distance --config configs/rfdetr_da3.yaml
-uv run --extra infer python -m det_depth_distance --config configs/multi_detector.yaml \
+uv run --extra infer python -m av_perception_lab --config configs/rfdetr_da3.yaml
+uv run --extra infer python -m av_perception_lab --config configs/multi_detector.yaml \
     _testbed/data/IMG_4022.MOV --set source.max_frames=300 --set render.show_stats=true
-uv run --extra infer python -m det_depth_distance --list-models
-uv run --extra infer python -m det_depth_distance --config configs/rfdetr_da3.yaml --prepare
+uv run --extra infer python -m av_perception_lab --list-models
+uv run --extra infer python -m av_perception_lab --config configs/rfdetr_da3.yaml --prepare
 ```
 
 | Argumento | Efeito |
@@ -347,7 +347,7 @@ uv run --extra infer python -m det_depth_distance --config configs/rfdetr_da3.ya
 | `VIDEO` (opcional) | Sobrescreve `source.video` |
 | `--set chave=valor` | Repetível; caminho pontilhado com índice de lista (`detectors.0.threshold=0.3`); valor lido como YAML (`null`, `true`, números); um valor-mapa ou lista substitui a seção inteira (`--set 'aggregation={type: concat}'`) |
 | `--list-models` | Lista detectores, modelos de profundidade, agregadores, rastreadores, refinadores de máscara, segmentadores semânticos, modelos de movimento (`motion`) e provedores de ego-motion (`ego_motion`) registrados com suas opções e padrões |
-| `--prepare` | Downloads the weights and pinned code every configured model declares (under `DDD_WEIGHTS_ROOT`, default `weights/`; nothing is loaded and the video is not probed), prints a status table and exits: 0 only when every model is ready, 1 otherwise (the reason is listed: offline, HTTP 404, gated licence + `HF_TOKEN`, sha256 mismatch, "provide this file"). Downloads go to `<file>.part` and are renamed only when verified (declared size or sha256, or the full `Content-Length`); running it again resumes (only with a declared size or sha256) or is a no-op; Ctrl-C exits 130 and keeps the partial file. Python packages are reported, not installed: a missing base stack prints `uv sync --extra infer`; a model's own extra gets a `uv sync --dry-run` (clean -> the install command; failure -> state `conflict` with the resolver's reason). Also covers the focal model of `camera.estimate` when the focal is estimated |
+| `--prepare` | Downloads the weights and pinned code every configured model declares (under `AVPL_WEIGHTS_ROOT`, default `weights/`; nothing is loaded and the video is not probed), prints a status table and exits: 0 only when every model is ready, 1 otherwise (the reason is listed: offline, HTTP 404, gated licence + `HF_TOKEN`, sha256 mismatch, "provide this file"). Downloads go to `<file>.part` and are renamed only when verified (declared size or sha256, or the full `Content-Length`); running it again resumes (only with a declared size or sha256) or is a no-op; Ctrl-C exits 130 and keeps the partial file. Python packages are reported, not installed: a missing base stack prints `uv sync --extra infer`; a model's own extra gets a `uv sync --dry-run` (clean -> the install command; failure -> state `conflict` with the resolver's reason). Also covers the focal model of `camera.estimate` when the focal is estimated |
 | `--install-packages` | With `--prepare`: install a model's own `pyproject.toml` extra once its fresh dry-run is clean (`uv sync --locked --inexact` naming every installed extra plus the new one, so nothing is removed; `uv` output is printed). The base stack (`infer`) is never installed: run `uv sync --extra infer --extra web` once yourself |
 
 Ferramentas auxiliares (ambiente leve, sem GPU; ver
@@ -356,10 +356,10 @@ Ferramentas auxiliares (ambiente leve, sem GPU; ver
 
 | Comando | Efeito |
 |---|---|
-| `det-depth-distance-calibrate calibrate VIDEO\|--images GLOB --out ARQ` | Calibra a câmera e grava o arquivo de calibração |
-| `det-depth-distance-calibrate board --out PNG` | Gera o alvo (tabuleiro ou ChArUco) para impressão |
-| `det-depth-distance-calibrate inspect VIDEO [--calibration ARQ]` | Metadados da câmera do vídeo, focal pelo 35 mm-eq. e conferência com uma calibração (código 1 se a câmera não confere) |
-| `det-depth-distance-evaluate --refs REFS.yaml RUN [RUN ...]` | Relatório de erro de uma ou mais execuções contra as referências |
+| `av-perception-lab-calibrate calibrate VIDEO\|--images GLOB --out ARQ` | Calibra a câmera e grava o arquivo de calibração |
+| `av-perception-lab-calibrate board --out PNG` | Gera o alvo (tabuleiro ou ChArUco) para impressão |
+| `av-perception-lab-calibrate inspect VIDEO [--calibration ARQ]` | Metadados da câmera do vídeo, focal pelo 35 mm-eq. e conferência com uma calibração (código 1 se a câmera não confere) |
+| `av-perception-lab-evaluate --refs REFS.yaml RUN [RUN ...]` | Relatório de erro de uma ou mais execuções contra as referências |
 
 Use `--extra infer` também no `uv sync`: sem ele o sync (exato por padrão)
 remove a stack GPU. Erros de configuração terminam com `error: …` e código 2
@@ -714,10 +714,10 @@ alvo, critérios de aceitação, coleta de referências):
 [`docs/refs/protocolo_calibracao_e_referencias.md`](refs/protocolo_calibracao_e_referencias.md).
 
 ```bash
-uv run det-depth-distance-calibrate board --out _testbed/board.png --dpi 300   # tabuleiro 9×6 cantos, 25 mm
-uv run det-depth-distance-calibrate calibrate _testbed/data/CALIB_01.MOV --square-mm 24.9 \
+uv run av-perception-lab-calibrate board --out _testbed/board.png --dpi 300   # tabuleiro 9×6 cantos, 25 mm
+uv run av-perception-lab-calibrate calibrate _testbed/data/CALIB_01.MOV --square-mm 24.9 \
     --note "estabilizacao padrao" --out configs/calibration/iphone14promax_main_1080p30.yaml
-uv run det-depth-distance-calibrate inspect _testbed/data/IMG_4021.MOV \
+uv run av-perception-lab-calibrate inspect _testbed/data/IMG_4021.MOV \
     --calibration configs/calibration/iphone14promax_main_1080p30.yaml
 ```
 
@@ -763,15 +763,15 @@ e `video.transform: null`).
 
 ### Avaliação contra referências
 
-`det-depth-distance-evaluate` cruza o `detections.csv` e o `metrics.json` de
+`av-perception-lab-evaluate` cruza o `detections.csv` e o `metrics.json` de
 uma ou mais execuções com um arquivo de referências de campo (um por vídeo;
 modelo fictício em `configs/references/example_references.yaml`):
 
 ```bash
-uv run det-depth-distance-evaluate --refs refs/IMG_4100.yaml _testbed/outputs/<execução>
-uv run det-depth-distance-evaluate --refs refs/IMG_4100.yaml RUN_A RUN_B --out _testbed/eval_4100
-uv run --extra eval det-depth-distance-evaluate --refs refs/IMG_4100.yaml RUN_A --plot   # laptop
-# com o ambiente de inferência: uv run --extra infer det-depth-distance-evaluate ... --plot (nunca --extra eval sozinho)
+uv run av-perception-lab-evaluate --refs refs/IMG_4100.yaml _testbed/outputs/<execução>
+uv run av-perception-lab-evaluate --refs refs/IMG_4100.yaml RUN_A RUN_B --out _testbed/eval_4100
+uv run --extra eval av-perception-lab-evaluate --refs refs/IMG_4100.yaml RUN_A --plot   # laptop
+# com o ambiente de inferência: uv run --extra infer av-perception-lab-evaluate ... --plot (nunca --extra eval sozinho)
 ```
 
 - **Referências**: `frames: [a, b]` ou `t: [a, b]`; `select` por `box`,
@@ -810,14 +810,14 @@ uv run --extra eval det-depth-distance-evaluate --refs refs/IMG_4100.yaml RUN_A 
 
 ### Interface web (API de esquema e validação)
 
-A `task_0013` cria o pacote `det_depth_distance.web`, o primeiro passo da
+A `task_0013` cria o pacote `av_perception_lab.web`, o primeiro passo da
 interface web (editor visual de pipeline). Esta entrega é só o backend de
 esquema e validação, sem torch:
 
 ```bash
 export UV_PROJECT_ENVIRONMENT=_testbed/venv-infer
 uv sync --extra infer --extra web
-uv run --extra infer --extra web det-depth-distance-web    # 127.0.0.1:8000
+uv run --extra infer --extra web av-perception-lab-web    # 127.0.0.1:8000
 curl -s localhost:8000/api/catalog | head -c 400
 ```
 
@@ -830,7 +830,7 @@ curl -s localhost:8000/api/catalog | head -c 400
 
 Execuções (`task_0014`): `POST /api/runs` (`{config, video_id?}`) entra numa
 fila de um job por vez; cada job é um subprocesso
-`python -m det_depth_distance.web.worker` (o servidor continua sem torch).
+`python -m av_perception_lab.web.worker` (o servidor continua sem torch).
 `GET /api/jobs/{id}` dá o estado, `GET /api/jobs/{id}/events` o progresso por
 SSE (`started`, `frame`, `done`, `error`, `end`; quem chega tarde recebe tudo
 desde o início) e `DELETE /api/jobs/{id}` cancela (mata o worker e o ffmpeg).
@@ -908,7 +908,7 @@ A `task_0018` endurece o servidor (continua sem autenticação):
 
 A `task_0015` cria o front-end em `web/` (React 18 + TypeScript + Vite,
 interface em inglês, só tema escuro). O build (`web/dist`) não é versionado;
-o `det-depth-distance-web` o serve em `/` quando existe (rotas fora de `/api`
+o `av-perception-lab-web` o serve em `/` quando existe (rotas fora de `/api`
 sem extensão caem no `index.html`; arquivo ausente em `assets/` ou com
 extensão dá 404) e, sem ele, serve só a API.
 
@@ -934,10 +934,10 @@ npm test               # vitest (jsdom)
 npm run build          # tsc -b + vite build -> web/dist
 cd ..
 export UV_PROJECT_ENVIRONMENT=_testbed/venv-infer
-uv run --extra infer --extra web det-depth-distance-web --port 8000   # http://127.0.0.1:8000
+uv run --extra infer --extra web av-perception-lab-web --port 8000   # http://127.0.0.1:8000
 # rede local: --host 0.0.0.0 --allowed-host 192.168.0.7 --asset-root weights ... (ver "segurança" abaixo)
 # outro build: --static-dir DIR
-# desenvolvimento: `cd web && npm run dev` (proxy de /api para DDD_API, padrão http://127.0.0.1:8000;
+# desenvolvimento: `cd web && npm run dev` (proxy de /api para AVPL_API, padrão http://127.0.0.1:8000;
 #   o proxy repassa o Host do navegador; outro front-end: --dev-origin http://localhost:5173)
 ```
 
@@ -1080,9 +1080,9 @@ suavizadas aparecem com `n/a` e uma nota. Rotas: `GET /api/runs/{id}/summary`,
 
 Every model declares what it needs (`requirements(options)`, task_0021), so a
 fresh clone runs a sample YAML after one
-`det-depth-distance --config configs/<x>.yaml --prepare`. Everything lives
+`av-perception-lab --config configs/<x>.yaml --prepare`. Everything lives
 under the **weights root** (`weights/` in the repo, git-ignored; override with
-`DDD_WEIGHTS_ROOT`); nothing is downloaded at run time, and a missing default
+`AVPL_WEIGHTS_ROOT`); nothing is downloaded at run time, and a missing default
 file is an error naming `--prepare`. The full reference (layers, asset kinds,
 locations, states, the packages layer, how to add a model and how to resolve
 dependency conflicts) is [`docs/model_environments.md`](model_environments.md).
@@ -1107,7 +1107,7 @@ access to Hugging Face, GitHub and `repo.roboflow.com` while preparing.
    and start the server:
 
    ```bash
-   uv run --extra infer --extra web det-depth-distance-web --weights-root weights
+   uv run --extra infer --extra web av-perception-lab-web --weights-root weights
    ```
 
 3. Open a sample YAML from `configs/` in the editor (**Open YAML**); start
@@ -1126,13 +1126,13 @@ access to Hugging Face, GitHub and `repo.roboflow.com` while preparing.
 Without the web interface, the same from the command line:
 
 ```bash
-uv run --extra infer det-depth-distance --config configs/rfdetr_da3.yaml --prepare   # exit 0 = all ready
-uv run --extra infer det-depth-distance --config configs/rfdetr_da3.yaml VIDEO.MOV
+uv run --extra infer av-perception-lab --config configs/rfdetr_da3.yaml --prepare   # exit 0 = all ready
+uv run --extra infer av-perception-lab --config configs/rfdetr_da3.yaml VIDEO.MOV
 ```
 
 - **Weights root:** `--weights-root DIR` sets it for the web server, which
-  passes it (absolute) to every run worker as `DDD_WEIGHTS_ROOT`, so nothing
-  else needs exporting; `DDD_WEIGHTS_ROOT=DIR` sets it for the CLI (and for
+  passes it (absolute) to every run worker as `AVPL_WEIGHTS_ROOT`, so nothing
+  else needs exporting; `AVPL_WEIGHTS_ROOT=DIR` sets it for the CLI (and for
   the server when `--weights-root` is absent). It must be a dedicated folder:
   `/`, the home folder and folders that contain the project, the active
   Python environment, the run outputs or the video library are refused.
@@ -1203,7 +1203,7 @@ the model in state `conflict` with the resolver's reason; the ways to resolve
 it are described in `docs/model_environments.md`. After an install, new runs
 use the packages at once (each run starts a fresh worker process); restart
 the web server only if it should use an upgraded package it had already
-imported. `DDD_UV` names the `uv` executable (default: `uv` on the
+imported. `AVPL_UV` names the `uv` executable (default: `uv` on the
 `PATH`).
 
 An explicit path in the YAML overrides the default and behaves as before
@@ -1216,7 +1216,7 @@ moved or deleted.
 Sources, sizes and licences of every declared file: `docs/task_0021.md`.
 The GPU smoke and the task_0001 regression skip an example config until its
 models are ready under the weights root: on a GPU host run `--prepare` once per
-config (the adapter-contract tests keep their `DDD_*` paths).
+config (the adapter-contract tests keep their `AVPL_*` paths).
 
 ### Web interface: model status and Prepare
 
@@ -1225,7 +1225,7 @@ and the editor shows it on the pipeline (task_0023). Start it with the weights
 root it should check and fill:
 
 ```bash
-uv run --extra infer --extra web det-depth-distance-web --weights-root weights   # default: $DDD_WEIGHTS_ROOT, else weights/
+uv run --extra infer --extra web av-perception-lab-web --weights-root weights   # default: $AVPL_WEIGHTS_ROOT, else weights/
 ```
 
 - `POST /api/models/status` with `{config}` returns one row per model the
@@ -1254,13 +1254,13 @@ uv run --extra infer --extra web det-depth-distance-web --weights-root weights  
   run is queued or running an install answers 409, and while an install is
   queued or running `POST /api/runs` answers 409. A row whose dry-run could
   not run (uv not found, timeout) is `failed` with the reason and checked
-  again next time (set `DDD_UV` when uv is not on the `PATH`).
+  again next time (set `AVPL_UV` when uv is not on the `PATH`).
 - From the web, Prepare only downloads sources the adapters vouch for: a
   Hugging Face repo typed in `depth.model`, `refiners[].model` or
   `semantic[].model` that the project does not ship reads "unknown source:
   prepare it from the CLI (--prepare)" (422 when named; `models: "all"`
   prepares the rest and lists it under `skipped`). Run
-  `det-depth-distance --config X.yaml --prepare` on the server for it.
+  `av-perception-lab --config X.yaml --prepare` on the server for it.
 - The client only names models: URLs and target folders come from the
   adapters' code, downloads land only under the weights root, and messages
   show `<weights root>` instead of the server's absolute path. The weights
@@ -1285,7 +1285,7 @@ In the editor (task_0023):
   (assets, code, packages), what is missing, size, where the files go, and
   **Prepare model** (or **Retry** after a failure). A model whose source the
   web may not download shows the command to run on the server instead,
-  `det-depth-distance --config <file> --prepare`, with a copy button. To use
+  `av-perception-lab --config <file> --prepare`, with a copy button. To use
   your own file, set the module's path option (e.g. `weights`) in Options.
 - Python packages (task_0024): a missing base stack shows
   `uv sync --extra infer --extra web` with a copy button (no install button);
@@ -1393,7 +1393,7 @@ converte a profundidade ao longo do eixo óptico em distância em linha reta.
 - [x] **Smoke test ponta a ponta** (`task_0008`) — smoke local sem GPU (cena sintética, dublês, matriz de configurações em pares, calibrar → rodar → avaliar), smoke `gpu` com os modelos reais e `utils/gpu_pending.sh` com todas as pendências de GPU em ordem. Execução no servidor GPU pendente.
 - [x] **Movimento por trilha e previsão de trajetória** (`task_0009`) — estágio `motion`: posição no plano, velocidade, rumo e taxa de giro com incertezas, modelos por classe (`cv`, `ctrv`), trajetória prevista com covariância no vídeo, no painel BEV e em `trajectories.jsonl`, ego-motion opcional por CSV. Validado no servidor GPU (`-m gpu` e passo `20-motion` do `gpu_pending.sh`); conferência visual dos vídeos pendente.
 - [x] **Model requirements and status check** (`task_0019`) — `core/requirements.py` declares what a model needs (weights, pinned code clones, packages) and `check()` reports readiness without importing torch; the provisioning engine, adapter migration and UI follow in `task_0020`–`task_0025`. New documentation is written in English.
-- [x] **Provisioning engine and `--prepare`** (`task_0020`) — `core/provision/` obtains a model's declared weights and code with registered sources (Hugging Face, URL with resume and sha256, pinned git clone; a new source kind is one class + `register_source`; Google Drive not yet), atomically, cancellably and idempotently; `det-depth-distance --config X.yaml --prepare` prepares every model of a YAML. Adapters declare their requirements in `task_0021`.
+- [x] **Provisioning engine and `--prepare`** (`task_0020`) — `core/provision/` obtains a model's declared weights and code with registered sources (Hugging Face, URL with resume and sha256, pinned git clone; a new source kind is one class + `register_source`; Google Drive not yet), atomically, cancellably and idempotently; `av-perception-lab --config X.yaml --prepare` prepares every model of a YAML. Adapters declare their requirements in `task_0021`.
 - [x] **Web API for model status and Prepare** (`task_0022`) — `POST /api/models/status`, a prepare queue with SSE progress and cancel (independent from the GPU queue), 409 for runs with models not ready, `--weights-root`.
 - [x] **Model readiness in the editor** (`task_0023`) — card states (not ready: yellow dashed + alert icon; preparing: progress bar; failed: red dashed), "N models need preparing · X GB" banner with Prepare all, inspector "Weights & requirements" with Prepare model / Retry, Process gated until every model is ready, 409 dialog. Real download through the UI on a networked host pending.
 - [x] **Packages layer** (`task_0024`) — per-model extras detected without imports, `uv sync --dry-run --locked --inexact` before any install, state `conflict` with the resolver's reason, `--prepare --install-packages` and **Install packages** in the inspector; the base stack (`uv sync --extra infer --extra web`) is never installed by the server.

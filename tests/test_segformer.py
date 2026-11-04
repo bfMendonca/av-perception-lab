@@ -4,13 +4,13 @@ import sys
 
 import pytest
 
-from det_depth_distance.adapters.semantic.segformer import (
+from av_perception_lab.adapters.semantic.segformer import (
     SegformerSegmenter,
     _id2label_names,
 )
-from det_depth_distance.core import registry
-from det_depth_distance.core.options import ConfigError
-from det_depth_distance.core.types import ContractError
+from av_perception_lab.core import registry
+from av_perception_lab.core.options import ConfigError
+from av_perception_lab.core.types import ContractError
 
 
 def test_options_defaults():

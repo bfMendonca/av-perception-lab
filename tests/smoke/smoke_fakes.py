@@ -24,29 +24,29 @@ import numpy as np
 import pytest
 from smoke_scene import SCENE, SceneSpec, classify
 
-from det_depth_distance import cli
-from det_depth_distance.adapters.depth import da3
-from det_depth_distance.adapters.refiners.box_prompt import (
+from av_perception_lab import cli
+from av_perception_lab.adapters.depth import da3
+from av_perception_lab.adapters.refiners.box_prompt import (
     BoxPromptOptions,
     BoxPromptRefiner,
     DecodedMasks,
 )
-from det_depth_distance.core import registry
-from det_depth_distance.core.components import (
+from av_perception_lab.core import registry
+from av_perception_lab.core.components import (
     Detector,
     DetectorOptions,
     LoadContext,
     SemanticSegmenter,
 )
-from det_depth_distance.core.labels import COCO
-from det_depth_distance.core.requirements import Requirements
-from det_depth_distance.core.types import (
+from av_perception_lab.core.labels import COCO
+from av_perception_lab.core.requirements import Requirements
+from av_perception_lab.core.types import (
     CameraIntrinsics,
     Instances,
     MapGeometry,
     SemanticMap,
 )
-from det_depth_distance.distance import resample_mask
+from av_perception_lab.distance import resample_mask
 
 
 def _box_window(box: np.ndarray, w: int, h: int) -> tuple[int, int, int, int]:

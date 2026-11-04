@@ -1,5 +1,5 @@
 <svg xmlns="http://www.w3.org/2000/svg" width="1800" height="1300" viewBox="0 0 1800 1300" font-family="DejaVu Sans, Helvetica, Arial, sans-serif">
-  <title>det-depth-distance — arquitetura alvo do pipeline modular (tasks 0002–0007)</title>
+  <title>av-perception-lab — arquitetura alvo do pipeline modular (tasks 0002–0007)</title>
   <defs>
     <marker id="arr" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse">
       <path d="M0,0 L10,5 L0,10 z" fill="#334155"/>
@@ -29,14 +29,14 @@
   <rect class="bg" width="1800" height="1300"/>
 
   <!-- Header -->
-  <text x="30" y="40" font-size="24" font-weight="700" fill="#0f172a">det-depth-distance — arquitetura alvo do pipeline modular</text>
+  <text x="30" y="40" font-size="24" font-weight="700" fill="#0f172a">av-perception-lab — arquitetura alvo do pipeline modular</text>
   <text x="30" y="64" class="s">Estado planejado após as tasks 0002→0007 (ordem linear estrita). Fonte: docs/task_0002.md … task_0007.md consolidados e auditados entre planos em 2026-10-12/13. Código atual (ddbb153) = layout da task_0001.</text>
 
   <!-- ============ Row A: setup ============ -->
   <rect class="panel" x="30" y="85" width="420" height="190" rx="10"/>
   <text x="45" y="110" class="ptitle">Configuração e CLI</text>
   <rect x="380" y="95" width="56" height="18" rx="9" fill="#2563eb"/><text x="408" y="108" text-anchor="middle" class="badge">0002</text>
-  <text x="45" y="134" class="m">det-depth-distance --config run.yaml [VIDEO]</text>
+  <text x="45" y="134" class="m">av-perception-lab --config run.yaml [VIDEO]</text>
   <text x="45" y="152" class="m">  --set a.b=valor   --list-models</text>
   <text x="45" y="176" class="t">config.py · RunConfig (YAML → dataclasses)</text>
   <text x="45" y="195" class="s">seções: source, detectors[ ], depth, camera, aggregation,</text>
@@ -298,13 +298,13 @@
   <rect class="panel" x="910" y="950" width="860" height="225" rx="10"/>
   <text x="925" y="977" class="ptitle">Ferramentas offline (task 0007) · fora do laço por quadro</text>
   <rect x="925" y="992" width="250" height="88" rx="8" class="t7" stroke-width="2"/>
-  <text x="935" y="1012" class="st">det-depth-distance-calibrate</text>
+  <text x="935" y="1012" class="st">av-perception-lab-calibrate</text>
   <text x="935" y="1030" class="s">calibration.py: tabuleiro / ChArUco</text>
   <text x="935" y="1045" class="s">(cv2 4.11, sem opencv-contrib)</text>
   <text x="935" y="1060" class="s">calibrate · board · inspect</text>
   <text x="935" y="1074" class="s">→ calibração (K, distorção)</text>
   <rect x="1205" y="992" width="270" height="88" rx="8" class="t7" stroke-width="2"/>
-  <text x="1215" y="1012" class="st">det-depth-distance-evaluate</text>
+  <text x="1215" y="1012" class="st">av-perception-lab-evaluate</text>
   <text x="1215" y="1030" class="s">evaluation/: references · run_data ·</text>
   <text x="1215" y="1045" class="s">matching · stats · report</text>
   <text x="1215" y="1060" class="s">erro abs./rel. por faixa, classe,</text>

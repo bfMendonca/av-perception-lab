@@ -3,17 +3,17 @@ import sys
 
 import pytest
 
-from det_depth_distance.adapters.depth.da3 import DA3Depth
-from det_depth_distance.adapters.detectors.rfdetr import RFDETRDetector
-from det_depth_distance.adapters.detectors.ultralytics_yolo import YoloDetector
-from det_depth_distance.adapters.refiners.box_prompt import BoxPromptRefiner
-from det_depth_distance.adapters.refiners.hf_sam import HFSamRefiner
-from det_depth_distance.adapters.semantic.segformer import SegformerSegmenter
-from det_depth_distance.adapters.semantic.twinlitenet import TwinLiteNetSegmenter
-from det_depth_distance.core import registry
-from det_depth_distance.core.aggregate import Concat, Nms, Wbf
-from det_depth_distance.core.options import ConfigError
-from det_depth_distance.core.tracking import IouTracker
+from av_perception_lab.adapters.depth.da3 import DA3Depth
+from av_perception_lab.adapters.detectors.rfdetr import RFDETRDetector
+from av_perception_lab.adapters.detectors.ultralytics_yolo import YoloDetector
+from av_perception_lab.adapters.refiners.box_prompt import BoxPromptRefiner
+from av_perception_lab.adapters.refiners.hf_sam import HFSamRefiner
+from av_perception_lab.adapters.semantic.segformer import SegformerSegmenter
+from av_perception_lab.adapters.semantic.twinlitenet import TwinLiteNetSegmenter
+from av_perception_lab.core import registry
+from av_perception_lab.core.aggregate import Concat, Nms, Wbf
+from av_perception_lab.core.options import ConfigError
+from av_perception_lab.core.tracking import IouTracker
 
 
 def test_available_lists_every_family():
@@ -86,7 +86,7 @@ def test_relative_depth_model_refused_before_loading():
 
 def test_load_adapters_imports_no_framework():
     code = (
-        "import sys; from det_depth_distance.core import registry; "
+        "import sys; from av_perception_lab.core import registry; "
         "registry.load_adapters(); "
         "print(sorted({'torch', 'ultralytics', 'rfdetr', 'depth_anything_3', "
         "'transformers', 'timm', 'model', 'lap', 'scipy'} & set(sys.modules)))"
@@ -117,7 +117,7 @@ def test_refiners_and_segmenters_are_registered():
 
 
 def test_builtin_stages_are_registered_in_order():
-    from det_depth_distance import config  # noqa: F401  (registers the stages)
+    from av_perception_lab import config  # noqa: F401  (registers the stages)
 
     stages = registry.stages()
     keys = [s.yaml_key for s in stages if not s.general]
@@ -146,7 +146,7 @@ def test_builtin_stages_are_registered_in_order():
 
 
 def test_duplicate_stage_is_an_error():
-    from det_depth_distance import config  # noqa: F401
+    from av_perception_lab import config  # noqa: F401
 
     with pytest.raises(ValueError, match="already registered"):
         registry.register_stage(registry.Stage(yaml_key="depth", title="x", order=1))

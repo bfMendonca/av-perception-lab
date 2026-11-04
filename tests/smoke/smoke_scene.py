@@ -17,7 +17,7 @@ from pathlib import Path
 
 import numpy as np
 
-from det_depth_distance.io.video import VideoWriter
+from av_perception_lab.io.video import VideoWriter
 
 
 @dataclass(frozen=True, slots=True)

@@ -1,8 +1,8 @@
 # FICTITIOUS example of a field reference file (format of
-# det_depth_distance.evaluation.references; protocol in
+# av_perception_lab.evaluation.references; protocol in
 # docs/refs/protocolo_calibracao_e_referencias.md). Copy it next to your
 # measurements, one file per video, and replace every value.
-# Evaluate: det-depth-distance-evaluate --refs <this file> <run folder> [<run folder>...]
+# Evaluate: av-perception-lab-evaluate --refs <this file> <run folder> [<run folder>...]
 version: 1
 video: IMG_4100.MOV  # file name of the recorded video; checked against metrics.json
 

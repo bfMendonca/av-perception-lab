@@ -18,13 +18,13 @@ from pathlib import Path
 
 import pytest
 
-from det_depth_distance.core.provision import (
+from av_perception_lab.core.provision import (
     ProvisionCancelled,
     ProvisionError,
     prepare,
 )
-from det_depth_distance.core.provision import sources as src
-from det_depth_distance.core.requirements import (
+from av_perception_lab.core.provision import sources as src
+from av_perception_lab.core.requirements import (
     CodeRepo,
     GoogleDriveAsset,
     HuggingFaceAsset,
@@ -848,7 +848,7 @@ def test_drive_source_builds_the_fixed_endpoint_url():
         "https://drive.usercontent.google.com/download?"
         "id=1N7jNsa8P1dM-UevqPRsx6heUpN4L00FJ&export=download&confirm=t"
     )
-    from det_depth_distance.core.provision import source_for
+    from av_perception_lab.core.provision import source_for
 
     assert isinstance(source_for(asset), src.GoogleDriveSource)
 

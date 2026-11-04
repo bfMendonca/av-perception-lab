@@ -7,16 +7,16 @@ import sys
 import numpy as np
 import pytest
 
-from det_depth_distance.adapters._ultralytics_env import apply_ultralytics_env
-from det_depth_distance.adapters.refiners.ultralytics_sam import (
+from av_perception_lab.adapters._ultralytics_env import apply_ultralytics_env
+from av_perception_lab.adapters.refiners.ultralytics_sam import (
     _UltralyticsFrame,
     split_flat,
 )
-from det_depth_distance.core import registry
-from det_depth_distance.core.components import LoadContext
-from det_depth_distance.core.options import ConfigError
-from det_depth_distance.core.types import ContractError
-from det_depth_distance.runtime import REPO
+from av_perception_lab.core import registry
+from av_perception_lab.core.components import LoadContext
+from av_perception_lab.core.options import ConfigError
+from av_perception_lab.core.types import ContractError
+from av_perception_lab.runtime import REPO
 
 ENV = ("YOLO_OFFLINE", "YOLO_AUTOINSTALL", "YOLO_CONFIG_DIR")
 

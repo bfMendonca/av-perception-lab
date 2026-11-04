@@ -9,8 +9,8 @@ pytest.importorskip("fastapi")
 
 from fastapi.testclient import TestClient
 
-from det_depth_distance.web.app import create_app
-from det_depth_distance.web.paths import WebPaths
+from av_perception_lab.web.app import create_app
+from av_perception_lab.web.paths import WebPaths
 
 REPO = Path(__file__).resolve().parents[2]
 # The server answers loopback Host names only (TrustedHostMiddleware), not
@@ -22,7 +22,7 @@ LOCAL = "http://127.0.0.1"
 def models_ready(monkeypatch):
     """Run tests submit configs whose weights are not on this machine: the 409
     gate counts every model as ready. The gating tests override this fixture."""
-    from det_depth_distance.web import models
+    from av_perception_lab.web import models
 
     monkeypatch.setattr(models, "not_ready", lambda statuses: [])
 

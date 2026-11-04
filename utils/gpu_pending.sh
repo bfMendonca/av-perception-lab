@@ -94,7 +94,7 @@ x() {
 }
 
 uvr() { x "$UV" run --extra infer "$@"; }
-ddd() { uvr python -m det_depth_distance "$@"; }
+ddd() { uvr python -m av_perception_lab "$@"; }
 pytest_gpu() { uvr pytest --basetemp="${LOG}_pytest/$1" "${@:2}"; }
 
 skip() {
@@ -144,7 +144,7 @@ step_06_plots() { pytest_gpu plots tests/test_eval_report.py -v -rs; }
 step_07_inspect() {
   local v
   for v in "${VIDEOS[@]}"; do
-    uvr det-depth-distance-calibrate inspect "_testbed/data/$v.MOV"
+    uvr av-perception-lab-calibrate inspect "_testbed/data/$v.MOV"
   done
 }
 
@@ -201,10 +201,10 @@ EOF
 
 VOCAB_PY='import os
 from pathlib import Path
-import det_depth_distance.adapters.detectors.ultralytics_yolo  # sets YOLO_* env
+import av_perception_lab.adapters.detectors.ultralytics_yolo  # sets YOLO_* env
 Path(os.environ["YOLO_CONFIG_DIR"]).mkdir(parents=True, exist_ok=True)
 from ultralytics import YOLO
-from det_depth_distance.core.labels import identify_vocabulary
+from av_perception_lab.core.labels import identify_vocabulary
 d = Path("~/dev/ultralytics/_testbed/weights").expanduser()
 for w in ("yolo26n-objv1-seg", "yolo26l-objv1-seg"):
     m = YOLO(str(d / f"{w}.pt"))

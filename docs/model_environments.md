@@ -11,7 +11,7 @@ reference for two readers:
   dependency conflict (section 8, the five resolution paths).
 
 Everything below was checked against the code on 2026-10-31 (tasks
-0019–0024). The implementation lives in `src/det_depth_distance/core/requirements.py`
+0019–0024). The implementation lives in `src/av_perception_lab/core/requirements.py`
 (declarations and the torch-free check), `core/provision/` (engine, sources,
 packages layer), `adapters/_weights.py`, `adapters/_hf_hub.py`,
 `adapters/_ultralytics.py` (shared adapter helpers), `cli.py` (`--prepare`,
@@ -126,7 +126,7 @@ A new kind:
 ```python
 # a stdlib-only module (no framework imports)
 from dataclasses import dataclass
-from det_depth_distance.core.requirements import Asset, AssetState, register_asset_kind
+from av_perception_lab.core.requirements import Asset, AssetState, register_asset_kind
 
 @register_asset_kind("s3")
 @dataclass(frozen=True, kw_only=True)
@@ -145,7 +145,7 @@ class S3Asset(Asset):
 ```python
 # next to the built-in sources (core/provision/sources.py, or a module that
 # core/provision/__init__.py imports, so it is registered before any Prepare)
-from det_depth_distance.core.provision.engine import ProvisionError, register_source
+from av_perception_lab.core.provision.engine import ProvisionError, register_source
 
 @register_source(S3Asset)
 class S3Source:
@@ -175,15 +175,15 @@ register_source)" instead of the hint.
 
 Everything a model downloads lives under one folder, the **weights root**:
 
-1. `--weights-root DIR` of the web server (`det-depth-distance-web`), else
-2. the environment variable `DDD_WEIGHTS_ROOT`, else
+1. `--weights-root DIR` of the web server (`av-perception-lab-web`), else
+2. the environment variable `AVPL_WEIGHTS_ROOT`, else
 3. `weights/` of the checkout (git-ignored).
 
-The CLI (`det-depth-distance`) has no flag: it reads `DDD_WEIGHTS_ROOT`.
+The CLI (`av-perception-lab`) has no flag: it reads `AVPL_WEIGHTS_ROOT`.
 The web server passes its root (from `--weights-root`, else
-`DDD_WEIGHTS_ROOT`) to every run worker subprocess as an absolute, resolved
-`DDD_WEIGHTS_ROOT`, so `--weights-root` alone is enough for the web; export
-`DDD_WEIGHTS_ROOT` only for CLI runs outside the server. The weights root
+`AVPL_WEIGHTS_ROOT`) to every run worker subprocess as an absolute, resolved
+`AVPL_WEIGHTS_ROOT`, so `--weights-root` alone is enough for the web; export
+`AVPL_WEIGHTS_ROOT` only for CLI runs outside the server. The weights root
 must be a dedicated folder: `/`, the home folder, and folders that contain
 the project, the active Python environment or the run outputs are refused
 (CLI: exit 2; web: start-up error), and the web server also refuses one that
@@ -275,7 +275,7 @@ server's message. Each status row also has `layers` (each of `assets`,
 
 ```bash
 # base stack once (see 6.1), then:
-uv run --extra infer det-depth-distance --config configs/rfdetr_da3.yaml --prepare
+uv run --extra infer av-perception-lab --config configs/rfdetr_da3.yaml --prepare
 ```
 
 `--prepare` builds the components (nothing is loaded, the video is not
@@ -300,7 +300,7 @@ error: 3 model(s) not ready under the weights root:
   detectors[0] rfdetr-large (rfdetr): weights: rfdetr/rf-detr-large-2026.pth not found
   depth da3metric-large (da3): weights: depth-anything/DA3METRIC-LARGE not in hf
   camera.estimate da3-large-1.1 (da3): weights: depth-anything/DA3-LARGE-1.1 not in hf
-run `det-depth-distance --config <yaml> --prepare` first
+run `av-perception-lab --config <yaml> --prepare` first
 ```
 
 When only Python packages are missing, the hint names the base stack command
@@ -312,7 +312,7 @@ per-model extra, `--prepare --install-packages`.
 ## 5. Preparing from the web interface
 
 ```bash
-uv run --extra infer --extra web det-depth-distance-web --weights-root weights
+uv run --extra infer --extra web av-perception-lab-web --weights-root weights
 ```
 
 ### 5.1 Status
@@ -355,7 +355,7 @@ run with 409 `{models_not_ready: [...]}` (the editor then offers Prepare all).
 (`adapters/_hf_hub.py: HF_FACTS`) reads "unknown source: prepare it from the
 CLI (--prepare)": naming it in a Prepare is a 422, `models: "all"` prepares
 the rest and lists it under `skipped`, and the inspector shows the command
-`det-depth-distance --config <file> --prepare` with a copy button. The same
+`av-perception-lab --config <file> --prepare` with a copy button. The same
 holds for a known file or repo at a location of the YAML's choosing (a
 release file name in a `weights` path outside `<root>/ultralytics/`, an
 `hf_cache` other than `<root>/hf`): `known` is tied to the canonical target.
@@ -474,12 +474,12 @@ detected.
   `pyproject.toml` and run `uv lock`) and commit both files. An extra the
   `pyproject.toml` does not declare is `failed` with "extra '<name>' is not
   declared in pyproject.toml".
-- **`DDD_UV`** names the `uv` executable (default `uv` on the `PATH`; set
-  `DDD_UV` when uv is not on the `PATH`). The
+- **`AVPL_UV`** names the `uv` executable (default `uv` on the `PATH`; set
+  `AVPL_UV` when uv is not on the `PATH`). The
   command runs in the repository; when `UV_PROJECT_ENVIRONMENT` is not set
   it targets the environment the server or CLI runs in.
 - **Transient failure vs conflict.** uv not found, a timeout or a cancel is
-  *not* a conflict: the row is `failed` with the reason (naming `DDD_UV` when
+  *not* a conflict: the row is `failed` with the reason (naming `AVPL_UV` when
   uv is missing), the result is not cached and the next status check asks
   again. A resolver error or a plan that would remove/replace packages is
   `conflict` (cached until `pyproject.toml` or `uv.lock` changes).
@@ -508,7 +508,7 @@ described below.
 
 ### 7.1 The adapter module
 
-`src/det_depth_distance/adapters/depth/metric3d.py`:
+`src/av_perception_lab/adapters/depth/metric3d.py`:
 
 ```python
 """Metric3D v2 metric depth.
@@ -524,18 +524,18 @@ from typing import Literal
 
 import numpy as np
 
-from det_depth_distance.adapters._weights import not_prepared, under_root
-from det_depth_distance.core.components import DepthEstimator, LoadContext
-from det_depth_distance.core.options import ConfigError
-from det_depth_distance.core.registry import register
-from det_depth_distance.core.requirements import (
+from av_perception_lab.adapters._weights import not_prepared, under_root
+from av_perception_lab.core.components import DepthEstimator, LoadContext
+from av_perception_lab.core.options import ConfigError
+from av_perception_lab.core.registry import register
+from av_perception_lab.core.requirements import (
     CodeRepo,
     Requirements,
     UrlAsset,
     UserProvided,
     weights_root,
 )
-from det_depth_distance.core.types import DepthResult
+from av_perception_lab.core.types import DepthResult
 
 METRIC3D_DIR = "metric3d"  # <weights root>/metric3d/<variant>/<file>
 METRIC3D_EXTRA = "model-metric3d"  # [project.optional-dependencies]
@@ -674,7 +674,7 @@ example, a package that needs `numpy>=2` while `depth-anything-3` needs
 Add one line to `ADAPTER_MODULES` in `core/registry.py`:
 
 ```python
-    "det_depth_distance.adapters.depth.metric3d",
+    "av_perception_lab.adapters.depth.metric3d",
 ```
 
 Tests: a unit test of `requirements()` (default, own file inside and outside
@@ -684,7 +684,7 @@ and record the real URL, size and licence in the task file.
 
 ### 7.4 What appears with no web edits
 
-Nothing under `web/` or `src/det_depth_distance/web/` changes:
+Nothing under `web/` or `src/av_perception_lab/web/` changes:
 
 - the catalog (`GET /api/catalog`) lists `depth.metric3d` with its options,
   the hints above and the docstring's first paragraph; `--list-models` shows
@@ -808,7 +808,7 @@ is unaffected (still one process per run).
 **How it would plug in.**
 
 - The worker command is already injected: `web/app.py:default_worker_argv`
-  returns `[sys.executable, "-m", "det_depth_distance.web.worker", CONFIG]`
+  returns `[sys.executable, "-m", "av_perception_lab.web.worker", CONFIG]`
   and `JobQueue` starts it as a subprocess. It would pick the profile's
   interpreter instead (`<env>/bin/python`), chosen from the extras the
   config's components declare (`Requirements.extra`, already known per row).
@@ -821,7 +821,7 @@ is unaffected (still one process per run).
   packages; the base stack of a profile, like today's, would be the one-time
   documented command.
 - The CLI needs nothing new: `UV_PROJECT_ENVIRONMENT=<env> uv run --extra
-  infer --extra <x> det-depth-distance --config …`.
+  infer --extra <x> av-perception-lab --config …`.
 - Status rows would carry the profile so the UI can say which environment a
   config runs in.
 

@@ -1,7 +1,7 @@
 import numpy as np
 import pytest
 
-from det_depth_distance.core.boxes import (
+from av_perception_lab.core.boxes import (
     greedy_match,
     iou_matrix,
     label_groups,

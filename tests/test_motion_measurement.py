@@ -8,10 +8,10 @@ import math
 import numpy as np
 import pytest
 
-from det_depth_distance.core.types import CameraIntrinsics, MapGeometry
-from det_depth_distance.distance import BoxDepthStats
-from det_depth_distance.motion.config import MeasurementConfig
-from det_depth_distance.motion.measurement import (
+from av_perception_lab.core.types import CameraIntrinsics, MapGeometry
+from av_perception_lab.distance import BoxDepthStats
+from av_perception_lab.motion.config import MeasurementConfig
+from av_perception_lab.motion.measurement import (
     MIN_PROJECT_Z_M,
     measure,
     project_points,

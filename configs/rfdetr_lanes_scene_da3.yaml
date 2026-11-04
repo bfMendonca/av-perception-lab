@@ -7,7 +7,7 @@
 # belong to no object), scene.sky backs up DA3's sky, scene.vegetation suits street scenes
 # (review it in agricultural scenes). SegFormer is item 1:
 #   --set semantic.1.size=[1024,1792]
-# Run: det-depth-distance --config configs/rfdetr_lanes_scene_da3.yaml [VIDEO] [--set key=value]...
+# Run: av-perception-lab --config configs/rfdetr_lanes_scene_da3.yaml [VIDEO] [--set key=value]...
 device: cuda:0
 source: {video: _testbed/data/IMG_4021.MOV, start: 0.0, duration: 0.0, max_frames: 0, stride: 1}
 detectors:

@@ -21,9 +21,9 @@ from run_outputs import single_run_dir
 from smoke_fakes import DepthOracle, install_scene_fakes
 from smoke_scene import SCENE, scene_frames, write_scene_video
 
-from det_depth_distance import cli
-from det_depth_distance.camera import Calibration, Undistorter, save_calibration
-from det_depth_distance.core.types import CameraIntrinsics
+from av_perception_lab import cli
+from av_perception_lab.camera import Calibration, Undistorter, save_calibration
+from av_perception_lab.core.types import CameraIntrinsics
 
 SMOKE_DIR = Path(__file__).parent
 REPO = SMOKE_DIR.parents[1]

@@ -4,7 +4,7 @@ from pathlib import Path
 import numpy as np
 import pytest
 
-from det_depth_distance.io.video import (
+from av_perception_lab.io.video import (
     VideoWriter,
     _parse_probe,
     output_fps,

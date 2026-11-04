@@ -5,10 +5,10 @@ import numpy as np
 import pytest
 import yaml
 
-from det_depth_distance import cli
-from det_depth_distance.cli import build_parser, main
-from det_depth_distance.io import source as source_module
-from det_depth_distance.io.video import VideoInfo
+from av_perception_lab import cli
+from av_perception_lab.cli import build_parser, main
+from av_perception_lab.io import source as source_module
+from av_perception_lab.io.video import VideoInfo
 
 
 @pytest.fixture
@@ -126,7 +126,7 @@ def test_configuration_errors_exit_with_code_2(tmp_path, config, capsys, monkeyp
 
 def test_help_without_torch():
     code = (
-        "import sys; from det_depth_distance.cli import main\n"
+        "import sys; from av_perception_lab.cli import main\n"
         "try:\n    main(['--help'])\nexcept SystemExit:\n    pass\n"
         "assert 'torch' not in sys.modules"
     )
@@ -146,8 +146,8 @@ def test_run_calls_on_frame_per_frame(tmp_path, monkeypatch):
     from smoke_fakes import DepthOracle, install_scene_fakes
     from smoke_scene import SCENE, scene_frames, write_scene_video
 
-    from det_depth_distance.config import RunConfig, config_from_mapping
-    from det_depth_distance.core.types import CameraIntrinsics
+    from av_perception_lab.config import RunConfig, config_from_mapping
+    from av_perception_lab.core.types import CameraIntrinsics
 
     focal = 725.0 / 3
     install_scene_fakes(
@@ -190,8 +190,8 @@ def _prepare_config(tmp_path, detector_type: str):
 
 
 def _fake_detector(asset):
-    from det_depth_distance.core.components import Detector, DetectorOptions
-    from det_depth_distance.core.requirements import Requirements
+    from av_perception_lab.core.components import Detector, DetectorOptions
+    from av_perception_lab.core.requirements import Requirements
 
     class _NeedsWeights(Detector):
         Options = DetectorOptions
@@ -215,9 +215,9 @@ def _fake_detector(asset):
 
 
 def test_cli_prepare_exit_code_and_table(tmp_path, monkeypatch, capsys):
-    from det_depth_distance.core import registry
-    from det_depth_distance.core.provision import sources
-    from det_depth_distance.core.requirements import UrlAsset
+    from av_perception_lab.core import registry
+    from av_perception_lab.core.provision import sources
+    from av_perception_lab.core.requirements import UrlAsset
 
     def no_models(*args, **kwargs):
         raise AssertionError("a model was about to be loaded")
@@ -225,7 +225,7 @@ def test_cli_prepare_exit_code_and_table(tmp_path, monkeypatch, capsys):
     monkeypatch.setattr(cli.Pipeline, "load", no_models)
     monkeypatch.setattr(cli, "run", no_models)
     root = tmp_path / "weights"
-    monkeypatch.setenv("DDD_WEIGHTS_ROOT", str(root))
+    monkeypatch.setenv("AVPL_WEIGHTS_ROOT", str(root))
     registry.load_adapters()
     asset = UrlAsset(
         key="ckpt", target="fake/ckpt.bin", url="https://example.invalid/c"
@@ -245,7 +245,7 @@ def test_cli_prepare_exit_code_and_table(tmp_path, monkeypatch, capsys):
     monkeypatch.setattr(sources, "_open", offline)
     monkeypatch.setattr(sources.HuggingFaceSource, "prepare", hf_offline)
     # Packages are reported, not installed: pretend the infer stack is there.
-    monkeypatch.setattr("det_depth_distance.core.requirements._top_level_present", bool)
+    monkeypatch.setattr("av_perception_lab.core.requirements._top_level_present", bool)
     assert main(["--config", str(cfg), "--prepare"]) == 1
     out = capsys.readouterr().out
     assert "[prepare] detectors[0] fake (needs_weights)" in out
@@ -294,12 +294,12 @@ def test_cli_existing_invocations_unchanged(tmp_path, config, monkeypatch):
 
 
 def test_cli_prepare_ctrl_c_exits_130_and_keeps_part(tmp_path, monkeypatch, capsys):
-    from det_depth_distance.core import registry
-    from det_depth_distance.core.provision import sources
-    from det_depth_distance.core.requirements import UrlAsset
+    from av_perception_lab.core import registry
+    from av_perception_lab.core.provision import sources
+    from av_perception_lab.core.requirements import UrlAsset
 
     root = tmp_path / "weights"
-    monkeypatch.setenv("DDD_WEIGHTS_ROOT", str(root))
+    monkeypatch.setenv("AVPL_WEIGHTS_ROOT", str(root))
     registry.load_adapters()
     asset = UrlAsset(
         key="ckpt", target="fake/ckpt.bin", url="https://example.invalid/c"
@@ -329,12 +329,12 @@ def _gated_config(tmp_path, monkeypatch):
     """A config whose only declared requirement is the fake detector's file:
     DA3 points its cache outside the weights root (nothing declared) and the
     focal is given; packages count as installed."""
-    from det_depth_distance.core import registry
-    from det_depth_distance.core.requirements import UrlAsset
+    from av_perception_lab.core import registry
+    from av_perception_lab.core.requirements import UrlAsset
 
     root = tmp_path / "weights"
-    monkeypatch.setenv("DDD_WEIGHTS_ROOT", str(root))
-    monkeypatch.setattr("det_depth_distance.core.requirements._top_level_present", bool)
+    monkeypatch.setenv("AVPL_WEIGHTS_ROOT", str(root))
+    monkeypatch.setattr("av_perception_lab.core.requirements._top_level_present", bool)
     registry.load_adapters()
     asset = UrlAsset(
         key="ckpt", target="fake/ckpt.bin", url="https://example.invalid/c"
@@ -382,7 +382,7 @@ def test_run_refuses_not_ready_models_before_any_load(tmp_path, monkeypatch, cap
 
 
 def test_run_gate_passes_once_prepared(tmp_path, monkeypatch, capsys):
-    from det_depth_distance.config import load_config
+    from av_perception_lab.config import load_config
 
     root, path = _gated_config(tmp_path, monkeypatch)
     cfg = load_config(path, [], None)
@@ -401,7 +401,7 @@ def test_run_gate_passes_once_prepared(tmp_path, monkeypatch, capsys):
 def test_cli_refuses_an_unsafe_weights_root(tmp_path, monkeypatch, capsys, bad):
     cfg = _prepare_config(tmp_path, "rfdetr")
     root = {"/": "/", "~": "~", "parent-of-out": str(tmp_path)}[bad]
-    monkeypatch.setenv("DDD_WEIGHTS_ROOT", root)
+    monkeypatch.setenv("AVPL_WEIGHTS_ROOT", root)
     over = ["--set", f"output.out_root={tmp_path / 'outputs'}"]
     monkeypatch.setattr(cli, "run", lambda cfg: pytest.fail("ran"))
     monkeypatch.setattr(cli, "prepare_command", lambda *a, **k: pytest.fail("ran"))
@@ -413,11 +413,11 @@ def test_cli_refuses_an_unsafe_weights_root(tmp_path, monkeypatch, capsys, bad):
 def test_cli_prepare_reports_a_user_provided_file_without_failing(
     tmp_path, monkeypatch, capsys
 ):
-    from det_depth_distance.core import registry
-    from det_depth_distance.core.requirements import UserProvided
+    from av_perception_lab.core import registry
+    from av_perception_lab.core.requirements import UserProvided
 
     root = tmp_path / "weights"
-    monkeypatch.setenv("DDD_WEIGHTS_ROOT", str(root))
+    monkeypatch.setenv("AVPL_WEIGHTS_ROOT", str(root))
     registry.load_adapters()
     asset = UserProvided(
         key="weights", target="m/large.pth", option="weights", hint="get large.pth"
@@ -425,7 +425,7 @@ def test_cli_prepare_reports_a_user_provided_file_without_failing(
     monkeypatch.setitem(
         registry._REGISTRY["detector"], "needs_weights", _fake_detector(asset)
     )
-    monkeypatch.setattr("det_depth_distance.core.requirements._top_level_present", bool)
+    monkeypatch.setattr("av_perception_lab.core.requirements._top_level_present", bool)
     cfg = _prepare_config(tmp_path, "needs_weights")
     data = yaml.safe_load(cfg.read_text())
     data["depth"]["hf_cache"] = str(tmp_path / "elsewhere")

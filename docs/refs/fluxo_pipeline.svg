@@ -1,9 +1,9 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1800 3704" width="1800" height="3704" font-family="DejaVu Sans, Arial, sans-serif">
-<title>det-depth-distance — fluxo por quadro do core/pipeline.py (planejado, tasks 0002–0007)</title>
+<title>av-perception-lab — fluxo por quadro do core/pipeline.py (planejado, tasks 0002–0007)</title>
 <defs><marker id="a" markerWidth="10" markerHeight="10" refX="8" refY="5" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#334155"/></marker>
 <style>.s{font-size:13px;fill:#1e293b}.m{font-size:12.5px;fill:#0f172a;font-family:DejaVu Sans Mono,monospace}.h{font-size:17px;font-weight:700;fill:#0f172a}.num{font-size:16px;font-weight:700;fill:#fff}.badge{font-size:11px;font-weight:700;fill:#fff}.tk{font-size:12px;fill:#475569;font-family:DejaVu Sans Mono,monospace}.y{font-size:12.5px;fill:#e2e8f0;font-family:DejaVu Sans Mono,monospace}.yc{font-size:12.5px;fill:#94a3b8;font-family:DejaVu Sans Mono,monospace}.cap{font-size:11.5px;fill:#334155}.ph{font-size:13px;fill:#64748b}.ax{font-size:11px;fill:#475569}.col{font-size:14px;font-weight:700;fill:#475569}</style></defs>
 <rect width="1800" height="3704" fill="#ffffff"/>
-<text x="30" y="40" class="h" font-size="24">det-depth-distance — fluxo por quadro do core/pipeline.py</text>
+<text x="30" y="40" class="h" font-size="24">av-perception-lab — fluxo por quadro do core/pipeline.py</text>
 <text x="30" y="66" class="s" >Estado planejado após as tasks 0002→0007 (docs/task_0002.md … task_0007.md, revisados em 2026-10-12). Cada linha = uma etapa de Pipeline.process(frame), na ordem real.</text>
 <text x="30" y="86" class="s" >Imagens: IMG_4021.MOV, quadro 1091. &#x27;Real&#x27; = saída de modelo/código existente; &#x27;ILUSTRAÇÃO&#x27;/&#x27;prévia&#x27; = dado real processado por script de demonstração; tracejado = etapa ainda sem execução possível.</text>
 <rect x="30" y="104" width="1740" height="98" rx="10" fill="#f1f5f9" stroke="#64748b"/>
