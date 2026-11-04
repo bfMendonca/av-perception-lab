@@ -398,9 +398,8 @@ def create_app(
             ) from None
         if len(text) > MAX_YAML_CHARS:
             raise HTTPException(413, f"YAML longer than {MAX_YAML_CHARS >> 10} KiB")
-        errors = schema.validate_config(
-            {k: v for k, v in data.items() if k in body.config}
-        )
+        known = _known_keys()
+        errors = schema.validate_config({k: v for k, v in data.items() if k in known})
         if errors:
             raise HTTPException(422, errors)
         try:

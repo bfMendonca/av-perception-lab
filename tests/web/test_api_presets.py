@@ -201,3 +201,16 @@ def test_state_changing_routes_require_local_origin(preset_client):
         preset_client.delete("/api/presets/user:mine", headers=evil).status_code == 403
     )
     assert preset_client.get("/api/presets/user:mine").status_code == 200
+
+
+def test_put_invalid_known_key_in_extras_is_422(preset_client, user_root):
+    resp = _put(preset_client, extras={"tracking": {"bogus_option": 1}})
+    assert resp.status_code == 422
+    assert isinstance(resp.json()["detail"], list)
+    assert not user_root.exists() or not list(user_root.glob("*.yaml"))
+
+
+def test_put_unknown_extras_key_is_saved_and_roundtrips(preset_client):
+    assert _put(preset_client, extras={"mystery": {"a": 1}}).status_code == 200
+    got = preset_client.get("/api/presets/user:mine").json()
+    assert got["extras"] == {"mystery": {"a": 1}}
