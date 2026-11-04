@@ -18,15 +18,15 @@ from typing import Any, ClassVar
 
 import pytest
 
-from det_depth_distance.core import registry
-from det_depth_distance.core import requirements as rq
-from det_depth_distance.core.components import Detector, DetectorOptions
-from det_depth_distance.core.provision import (
+from av_perception_lab.core import registry
+from av_perception_lab.core import requirements as rq
+from av_perception_lab.core.components import Detector, DetectorOptions
+from av_perception_lab.core.provision import (
     ProvisionCancelled,
     ProvisionError,
     engine,
 )
-from det_depth_distance.core.requirements import Asset, AssetState, Requirements
+from av_perception_lab.core.requirements import Asset, AssetState, Requirements
 
 CODE_URL = "https://example.invalid/fixed-in-code"
 

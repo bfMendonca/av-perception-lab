@@ -3,19 +3,19 @@ import math
 import numpy as np
 import pytest
 
-from det_depth_distance.core.options import ConfigError
-from det_depth_distance.core.types import CameraIntrinsics
-from det_depth_distance.evaluation.matching import (
+from av_perception_lab.core.options import ConfigError
+from av_perception_lab.core.types import CameraIntrinsics
+from av_perception_lab.evaluation.matching import (
     match_references,
     reference_to_run_quantity,
 )
-from det_depth_distance.evaluation.references import (
+from av_perception_lab.evaluation.references import (
     Instrument,
     Reference,
     ReferenceSet,
     Selector,
 )
-from det_depth_distance.evaluation.run_data import load_run
+from av_perception_lab.evaluation.run_data import load_run
 
 TWO_DETECTORS = {
     "components": {

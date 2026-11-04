@@ -8,10 +8,10 @@ import numpy as np
 import pytest
 from PIL import Image
 
-from det_depth_distance.calibration import CalibrationReport
-from det_depth_distance.camera import Calibration, load_calibration
-from det_depth_distance.io.video import VideoWriter
-from det_depth_distance.tools.calibrate import _acceptance, build_parser, main
+from av_perception_lab.calibration import CalibrationReport
+from av_perception_lab.camera import Calibration, load_calibration
+from av_perception_lab.io.video import VideoWriter
+from av_perception_lab.tools.calibrate import _acceptance, build_parser, main
 
 needs_ffmpeg = pytest.mark.skipif(
     shutil.which("ffmpeg") is None, reason="needs ffmpeg/ffprobe"

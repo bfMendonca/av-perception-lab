@@ -2,8 +2,8 @@
 
 from pathlib import Path
 
-from det_depth_distance.core import registry
-from det_depth_distance.core.labels import VOCABULARIES
+from av_perception_lab.core import registry
+from av_perception_lab.core.labels import VOCABULARIES
 
 LABELS_DIR = Path(__file__).parents[2] / "configs" / "labels"
 LABEL_MAPS = {

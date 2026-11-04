@@ -1,5 +1,5 @@
 // Client of the video library, run queue and GPU routes
-// (src/det_depth_distance/web/app.py); injected so tests can fake it.
+// (src/av_perception_lab/web/app.py); injected so tests can fake it.
 import type { ConfigDict, ValidationError } from "./types";
 import { ApiError } from "./client";
 import type { ModelStatus } from "./models";

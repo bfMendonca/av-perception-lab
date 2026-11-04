@@ -7,7 +7,7 @@ import pytest
 
 pytest.importorskip("fastapi")
 
-from det_depth_distance.web.history import load_run, scan_runs
+from av_perception_lab.web.history import load_run, scan_runs
 
 METRICS = {
     "video": {"path": "data/IMG_1.MOV"},

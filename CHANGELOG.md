@@ -1,8 +1,26 @@
 # Changelog
 
-Todas as mudancas relevantes do det-depth-distance serao documentadas neste arquivo.
+Todas as mudancas relevantes do av-perception-lab serao documentadas neste arquivo.
 
 ---
+
+## [Unreleased] Rename to av-perception-lab
+
+Project renamed (task_0031): it is now a perception test bed for autonomous
+driving, not just a distance script.
+
+### Changed
+
+- Python package `det_depth_distance` -> `av_perception_lab`; distribution and
+  console scripts `det-depth-distance[-calibrate|-evaluate|-web]` ->
+  `av-perception-lab[-calibrate|-evaluate|-web]`; front-end package
+  `av-perception-lab-web`.
+- Environment variables `DDD_*` -> `AVPL_*` (`AVPL_WEIGHTS_ROOT`, `AVPL_UV`, ...).
+  There is no compatibility alias: **migration** = rename the variables in your
+  shell/profile and run `uv sync` again (the editable install changes name).
+- Project summary (README, DESCRIPTION, CITATION, `pyproject.toml`) rewritten
+  as a perception test bed. Task files `docs/task_0001`-`task_0030` and
+  `docs/superpowers/` keep the old name (historical records).
 
 ## [Unreleased] Config presets
 
@@ -13,7 +31,7 @@ Web config presets (task_0030): backend and front-end.
 - `GET /api/presets`, `GET /api/presets/{id}`, `PUT /api/presets` and
   `DELETE /api/presets/{id}`: built-in presets from `configs/` (manifest
   `configs/presets.yaml`) plus the user's own, stored without `source`/`output`.
-- `det-depth-distance-web --presets-root` (default `_testbed/presets`) and
+- `av-perception-lab-web --presets-root` (default `_testbed/presets`) and
   `WebPaths.presets_root`; `create_app(builtin_presets_dir=...)`.
 - Web editor: **Presets** menu (built-in and own presets, delete for own),
   **Save as preset...** dialog with overwrite confirmation, and the

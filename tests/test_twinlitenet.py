@@ -6,15 +6,15 @@ import types
 import numpy as np
 import pytest
 
-from det_depth_distance.adapters.semantic.twinlitenet import (
+from av_perception_lab.adapters.semantic.twinlitenet import (
     TWINLITENET_CLASSES,
     _import_network,
     _letterbox,
     _merge_heads,
 )
-from det_depth_distance.core import registry
-from det_depth_distance.core.components import LoadContext
-from det_depth_distance.core.options import ConfigError
+from av_perception_lab.core import registry
+from av_perception_lab.core.components import LoadContext
+from av_perception_lab.core.options import ConfigError
 
 
 def test_letterbox_1080p_matches_the_demo():

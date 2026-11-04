@@ -1,4 +1,4 @@
-// Client of the results routes (src/det_depth_distance/web/app.py, web/compare.py):
+// Client of the results routes (src/av_perception_lab/web/app.py, web/compare.py):
 // summaries, comparison, distance series, discovered artifacts, reopen, rerun.
 // Injected so tests can fake it. Metric names, labels and the "better"
 // direction come from the server (`metrics`), never from this file.

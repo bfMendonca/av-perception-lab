@@ -1,6 +1,6 @@
 # RF-DETR large (COCO) and YOLO26-L (Objects365) on the same frames + DA3METRIC-LARGE.
 # aggregation concat keeps every box, tagged and coloured by its source detector.
-# Run: det-depth-distance --config configs/multi_detector.yaml [VIDEO] [--set key=value]...
+# Run: av-perception-lab --config configs/multi_detector.yaml [VIDEO] [--set key=value]...
 device: cuda:0
 source: {video: _testbed/data/IMG_4021.MOV, start: 0.0, duration: 0.0, max_frames: 0, stride: 1}
 detectors:

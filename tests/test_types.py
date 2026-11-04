@@ -3,11 +3,11 @@ import dataclasses
 import numpy as np
 import pytest
 
-from det_depth_distance.adapters.depth.da3 import (
+from av_perception_lab.adapters.depth.da3 import (
     da3_map_geometry,
     intrinsics_from_focal,
 )
-from det_depth_distance.core.types import (
+from av_perception_lab.core.types import (
     CameraIntrinsics,
     ContractError,
     DepthResult,
@@ -20,7 +20,7 @@ from det_depth_distance.core.types import (
     SemanticMap,
     best_per_source,
 )
-from det_depth_distance.distance import DistanceConfig, box_depth_stats
+from av_perception_lab.distance import DistanceConfig, box_depth_stats
 
 
 def test_select_by_mask_and_indices(make_instances):

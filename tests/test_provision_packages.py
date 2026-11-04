@@ -15,20 +15,20 @@ import pytest
 import yaml
 from fake_uv import FakeUv, fake_uv, snapshot  # noqa: F401 - fake_uv is a fixture
 
-from det_depth_distance import cli
-from det_depth_distance.cli import main
-from det_depth_distance.core import registry
-from det_depth_distance.core import requirements as rq
-from det_depth_distance.core.components import Detector, DetectorOptions
-from det_depth_distance.core.provision import (
+from av_perception_lab import cli
+from av_perception_lab.cli import main
+from av_perception_lab.core import registry
+from av_perception_lab.core import requirements as rq
+from av_perception_lab.core.components import Detector, DetectorOptions
+from av_perception_lab.core.provision import (
     ProvisionCancelled,
     ProvisionError,
     install_packages,
     packages,
     with_package_plan,
 )
-from det_depth_distance.core.provision.packages import PackagePlan
-from det_depth_distance.core.requirements import Requirements
+from av_perception_lab.core.provision.packages import PackagePlan
+from av_perception_lab.core.requirements import Requirements
 
 MODEL = Requirements(packages=("xyzlib",), extra="model-xyz")
 IMPORTS = {"infer": ("fakebase",)}
@@ -134,14 +134,14 @@ def test_uv_missing_is_an_error_not_a_conflict_and_never_cached(
     tmp_path,
     monkeypatch,
 ):
-    monkeypatch.setenv("DDD_UV", str(tmp_path / "no-uv"))
+    monkeypatch.setenv("AVPL_UV", str(tmp_path / "no-uv"))
     plan = packages.plan_packages(MODEL, imports=IMPORTS)
     assert plan.action == "error"
-    assert "DDD_UV" in plan.message and "conflict" not in plan.message
+    assert "AVPL_UV" in plan.message and "conflict" not in plan.message
     status = with_package_plan(rq.check(MODEL, tmp_path), plan)
     assert status.state == "failed"
     # uv becomes available: the next check is not shadowed by the failure.
-    monkeypatch.setenv("DDD_UV", fake_uv.uv)
+    monkeypatch.setenv("AVPL_UV", fake_uv.uv)
     assert packages.plan_packages(MODEL, imports=IMPORTS).action == "install"
 
 
@@ -457,7 +457,7 @@ def _model_detector():
 def packages_config(tmp_path, monkeypatch, fake_uv):  # noqa: F811
     """A config whose only unmet requirement is the fake detector's packages
     (DA3's cache outside the weights root; its packages count as present)."""
-    monkeypatch.setenv("DDD_WEIGHTS_ROOT", str(tmp_path / "weights"))
+    monkeypatch.setenv("AVPL_WEIGHTS_ROOT", str(tmp_path / "weights"))
     real = rq._top_level_present
     stack = {"torch", "depth_anything_3"}
     monkeypatch.setattr(rq, "_top_level_present", lambda n: n in stack or real(n))
@@ -469,8 +469,8 @@ def packages_config(tmp_path, monkeypatch, fake_uv):  # noqa: F811
     monkeypatch.setattr(
         cli.Pipeline, "resolve_intrinsics", lambda *a, **k: pytest.fail("loaded")
     )
-    from det_depth_distance.io import source as source_module
-    from det_depth_distance.io.video import VideoInfo
+    from av_perception_lab.io import source as source_module
+    from av_perception_lab.io.video import VideoInfo
 
     monkeypatch.setattr(
         source_module,

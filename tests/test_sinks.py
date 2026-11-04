@@ -8,9 +8,9 @@ from types import SimpleNamespace
 import numpy as np
 import pytest
 
-from det_depth_distance.config import RenderConfig, RunConfig, SourceConfig
-from det_depth_distance.core.pipeline import SetupInfo
-from det_depth_distance.core.types import (
+from av_perception_lab.config import RenderConfig, RunConfig, SourceConfig
+from av_perception_lab.core.pipeline import SetupInfo
+from av_perception_lab.core.types import (
     CameraIntrinsics,
     DepthResult,
     Frame,
@@ -24,13 +24,13 @@ from det_depth_distance.core.types import (
     TrackEstimate,
     Trajectory,
 )
-from det_depth_distance.distance import (
+from av_perception_lab.distance import (
     DistanceConfig,
     box_depth_stats,
     instance_depth_stats,
     resample_mask,
 )
-from det_depth_distance.io.sinks import (
+from av_perception_lab.io.sinks import (
     CSV_FIELDS,
     CsvSink,
     MetricsSink,
@@ -43,10 +43,10 @@ from det_depth_distance.io.sinks import (
     latency_stats,
     make_run_dir,
 )
-from det_depth_distance.io.source import VideoSource
-from det_depth_distance.io.video import VideoWriter, probe
-from det_depth_distance.motion import MotionConfig
-from det_depth_distance.motion.measurement import MIN_PROJECT_Z_M
+from av_perception_lab.io.source import VideoSource
+from av_perception_lab.io.video import VideoWriter, probe
+from av_perception_lab.motion import MotionConfig
+from av_perception_lab.motion.measurement import MIN_PROJECT_Z_M
 
 GEOMETRY = MapGeometry(100, 100, 50, 50, 0.5, 0.5)
 MASK_COLUMNS = ("used_mask", "mask_px", "mask_erode", "box_distance_m")  # task_0004

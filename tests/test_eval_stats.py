@@ -4,9 +4,9 @@ from dataclasses import replace
 import numpy as np
 import pytest
 
-from det_depth_distance.evaluation.matching import Match
-from det_depth_distance.evaluation.run_data import load_run
-from det_depth_distance.evaluation.stats import (
+from av_perception_lab.evaluation.matching import Match
+from av_perception_lab.evaluation.run_data import load_run
+from av_perception_lab.evaluation.stats import (
     Sample,
     bin_label,
     build_samples,

@@ -4,7 +4,7 @@ import subprocess
 
 import pytest
 
-from det_depth_distance.io.quicktime import camera_metadata, read_quicktime_metadata
+from av_perception_lab.io.quicktime import camera_metadata, read_quicktime_metadata
 
 LENS = "iPhone 14 Pro Max back triple camera 6.86mm f/1.78"
 

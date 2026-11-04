@@ -82,7 +82,7 @@ def test_dry_run_builds_the_front_end_when_dist_is_missing(sandbox):
     assert proc.returncode == 0, proc.stderr
     assert "+ (cd web && npm ci)" in proc.stdout
     assert "+ (cd web && npm run build)" in proc.stdout
-    assert "+ uv run --extra web det-depth-distance-web" in proc.stdout
+    assert "+ uv run --extra web av-perception-lab-web" in proc.stdout
     assert "infer" not in proc.stdout.split("+ uv run")[1]
 
 
@@ -103,7 +103,7 @@ def test_installed_gpu_stack_is_kept(sandbox, tmp_path):
     _with_dist(sandbox[0])
     proc = _run(sandbox, "--dry-run", env_dir=_with_torch(tmp_path))
     assert "keeping it" in proc.stdout
-    assert "+ uv run --extra infer --extra web det-depth-distance-web" in proc.stdout
+    assert "+ uv run --extra infer --extra web av-perception-lab-web" in proc.stdout
 
 
 def test_gpu_flag_selects_the_infer_extra_and_says_what_it_installs(sandbox):
@@ -117,7 +117,7 @@ def test_server_options_pass_through_and_show_in_the_url(sandbox):
     _with_dist(sandbox[0])
     proc = _run(sandbox, "--dry-run", "--port", "8010", "--host", "0.0.0.0")
     assert "http://0.0.0.0:8010" in proc.stdout
-    assert "det-depth-distance-web --port 8010 --host 0.0.0.0" in proc.stdout
+    assert "av-perception-lab-web --port 8010 --host 0.0.0.0" in proc.stdout
 
 
 def test_dry_run_executes_nothing(sandbox):
@@ -131,7 +131,7 @@ def test_real_run_calls_uv_with_the_extras(sandbox):
     proc = _run(sandbox, "--port", "8010")
     assert proc.returncode == 0, proc.stderr
     assert sandbox[2].read_text().strip() == (
-        "uv run --extra web det-depth-distance-web --port 8010"
+        "uv run --extra web av-perception-lab-web --port 8010"
     )
 
 

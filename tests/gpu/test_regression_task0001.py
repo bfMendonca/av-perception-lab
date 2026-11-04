@@ -1,7 +1,7 @@
 """The refactored pipeline must reproduce task_0001 on IMG_4021 (frames 0-59).
 
 Reference: the first 60 frames of task_0001's full run (frozen in Passo 0 under
-_testbed/regression/, or $DDD_REGRESSION_REF), proven bit-identical across
+_testbed/regression/, or $AVPL_REGRESSION_REF), proven bit-identical across
 three task_0001 runs. Tolerances only absorb the CSV's decimal representation;
 a failure means the refactor changed results - investigate before relaxing.
 The run happens in a fresh interpreter so that no other test of the session
@@ -16,12 +16,12 @@ from pathlib import Path
 
 import pytest
 
-from det_depth_distance.distance import STATS_ROW_FIELDS
+from av_perception_lab.distance import STATS_ROW_FIELDS
 
 REPO = Path(__file__).resolve().parents[2]
 REF_CSV = Path(
     os.environ.get(
-        "DDD_REGRESSION_REF",
+        "AVPL_REGRESSION_REF",
         REPO / "_testbed" / "regression" / "task_0001_IMG_4021_60f.csv",
     )
 )

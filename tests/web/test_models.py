@@ -22,9 +22,9 @@ from model_fakes import (  # noqa: F401 - fake_models is a fixture
     wait_prepare,
 )
 
-from det_depth_distance.web import security
-from det_depth_distance.web.app import create_app
-from det_depth_distance.web.paths import WebPaths
+from av_perception_lab.web import security
+from av_perception_lab.web.app import create_app
+from av_perception_lab.web.paths import WebPaths
 
 FAKE_WORKER = Path(__file__).with_name("fake_worker.py")
 
@@ -72,8 +72,8 @@ import json, sys
 from pathlib import Path
 import yaml
 from fastapi.testclient import TestClient
-from det_depth_distance.web.app import create_app
-from det_depth_distance.web.paths import WebPaths
+from av_perception_lab.web.app import create_app
+from av_perception_lab.web.paths import WebPaths
 
 tmp = Path(sys.argv[1])
 app = create_app(WebPaths(tmp / "out", tmp / "lib", (tmp / "data",)))
@@ -92,7 +92,7 @@ print(json.dumps({"torch": "torch" in sys.modules, "configs": out}))
 def test_status_for_fresh_config_lists_missing_models_without_torch(tmp_path):
     # A fresh clone: empty weights root, every shipped config, in a process
     # that never imports torch.
-    env = {**os.environ, "DDD_WEIGHTS_ROOT": str(tmp_path / "weights")}
+    env = {**os.environ, "AVPL_WEIGHTS_ROOT": str(tmp_path / "weights")}
     out = subprocess.run(
         [sys.executable, "-c", _FRESH_SCRIPT, str(tmp_path)],
         cwd=REPO,
@@ -354,7 +354,7 @@ def test_prepare_never_uses_client_supplied_urls(
     assert fake_models.source.calls == [("gate/a.bin", CODE_URL)]
     # A YOLO `weights` that looks like a URL is a path outside the weights
     # root: nothing is declared, so nothing is downloaded.
-    from det_depth_distance.core.provision import sources
+    from av_perception_lab.core.provision import sources
 
     def no_network(*args, **kwargs):
         raise AssertionError("a download was attempted")
@@ -424,8 +424,8 @@ def test_weights_root_containment_enforced(api, fake_models, web_paths, tmp_path
 
 
 def test_create_app_and_server_refuse_overlapping_weights_root(monkeypatch, tmp_path):
-    from det_depth_distance.core import requirements as rq
-    from det_depth_distance.web import server
+    from av_perception_lab.core import requirements as rq
+    from av_perception_lab.web import server
 
     paths = WebPaths(tmp_path / "out", tmp_path / "lib", ())
     monkeypatch.setattr(rq, "_explicit_root", tmp_path / "lib" / "weights")
@@ -443,13 +443,13 @@ def test_create_app_and_server_refuse_overlapping_weights_root(monkeypatch, tmp_
     with pytest.raises(SystemExit) as exc:
         server.main([*argv, "--weights-root", str(tmp_path / "out")])
     assert exc.value.code == 2 and not ran
-    # DDD_WEIGHTS_ROOT is honoured (and checked) when the flag is absent.
+    # AVPL_WEIGHTS_ROOT is honoured (and checked) when the flag is absent.
     monkeypatch.setattr(rq, "_explicit_root", None)
-    monkeypatch.setenv("DDD_WEIGHTS_ROOT", str(tmp_path / "lib"))
+    monkeypatch.setenv("AVPL_WEIGHTS_ROOT", str(tmp_path / "lib"))
     with pytest.raises(SystemExit):
         server.main(argv)
     assert not ran
-    monkeypatch.setenv("DDD_WEIGHTS_ROOT", str(tmp_path / "w-env"))
+    monkeypatch.setenv("AVPL_WEIGHTS_ROOT", str(tmp_path / "w-env"))
     server.main(argv)
     assert len(ran) == 1
     server.main([*argv, "--weights-root", str(tmp_path / "w-flag")])
@@ -478,7 +478,7 @@ UNKNOWN_CASES = {
 @pytest.fixture
 def hf_calls(monkeypatch):
     """Hugging Face source stand-in: records the repo, downloads nothing."""
-    from det_depth_distance.core.provision import sources
+    from av_perception_lab.core.provision import sources
 
     calls = []
 
@@ -498,8 +498,8 @@ def test_unknown_hf_repo_is_refused_by_the_web_and_preparable_by_the_cli(
     tmp_path,
     hf_calls,
 ):
-    from det_depth_distance.core.provision import prepare
-    from det_depth_distance.web import models
+    from av_perception_lab.core.provision import prepare
+    from av_perception_lab.web import models
 
     extra, (stage, index) = UNKNOWN_CASES[case]
     cfg = {**gate_config(tmp_path, "a"), **extra}
@@ -567,7 +567,7 @@ def test_known_hf_repo_is_prepared_by_the_web(api, fake_models, tmp_path, hf_cal
 
 
 def test_redact_relative_root_and_sibling_folders(tmp_path, monkeypatch):
-    from det_depth_distance.web.models import redact
+    from av_perception_lab.web.models import redact
 
     monkeypatch.chdir(tmp_path)
     abs_root = tmp_path / "weights"
@@ -625,8 +625,8 @@ def test_status_rows_carry_source_license_target_and_action(api, fake_models, tm
 
 
 def test_declaration_view_redacts_and_classifies(tmp_path):
-    from det_depth_distance.core import requirements as rq
-    from det_depth_distance.web import models
+    from av_perception_lab.core import requirements as rq
+    from av_perception_lab.web import models
 
     root = tmp_path / "weights"
     req = rq.Requirements(
@@ -780,7 +780,7 @@ def test_web_cannot_prepare_hostile_weights_or_hf_cache_targets(
     """A release name or a known repo at a client-chosen place inside the
     weights root is not vouched for: shown as unknown source, refused, and
     nothing is written."""
-    from det_depth_distance.core.provision import sources
+    from av_perception_lab.core.provision import sources
 
     def no_network(*args, **kwargs):
         raise AssertionError("the web downloaded a client-chosen target")
@@ -819,7 +819,7 @@ def test_size_mismatched_file_survives_a_web_prepare(
     tmp_path,
     monkeypatch,
 ):
-    from det_depth_distance.core.provision import sources
+    from av_perception_lab.core.provision import sources
 
     monkeypatch.setattr(
         sources, "_open", lambda *a, **k: pytest.fail("downloaded over a user file")
@@ -848,8 +848,8 @@ def test_prepare_422_replies_are_redacted(
     tmp_path,
     monkeypatch,
 ):
-    from det_depth_distance.core.options import ConfigError
-    from det_depth_distance.web import models
+    from av_perception_lab.core.options import ConfigError
+    from av_perception_lab.web import models
 
     root = fake_models.root
 
@@ -871,8 +871,8 @@ def test_prepare_422_replies_are_redacted(
 
 @pytest.mark.parametrize("bad", ["/", "home", "repo-parent"])
 def test_server_refuses_an_unsafe_weights_root(monkeypatch, tmp_path, capsys, bad):
-    from det_depth_distance.core import requirements as rq
-    from det_depth_distance.web import server
+    from av_perception_lab.core import requirements as rq
+    from av_perception_lab.web import server
 
     root = {"/": Path("/"), "home": Path.home(), "repo-parent": REPO.parent}[bad]
     monkeypatch.setattr(rq, "_explicit_root", None)

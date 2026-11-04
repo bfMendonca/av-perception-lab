@@ -4,16 +4,16 @@ import sys
 
 import pytest
 
-from det_depth_distance.core.options import ConfigError
-from det_depth_distance.evaluation.evaluate import EvalOptions, evaluate
-from det_depth_distance.evaluation.references import (
+from av_perception_lab.core.options import ConfigError
+from av_perception_lab.evaluation.evaluate import EvalOptions, evaluate
+from av_perception_lab.evaluation.references import (
     Instrument,
     Reference,
     ReferenceSet,
     Selector,
 )
-from det_depth_distance.evaluation.report import render_markdown, write_report
-from det_depth_distance.evaluation.run_data import load_run
+from av_perception_lab.evaluation.report import render_markdown, write_report
+from av_perception_lab.evaluation.run_data import load_run
 
 TWO_DETECTORS = {
     "components": {

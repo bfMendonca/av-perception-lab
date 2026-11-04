@@ -9,12 +9,12 @@ import sys
 import numpy as np
 import pytest
 
-from det_depth_distance.core import registry
-from det_depth_distance.core.aggregate import Concat
-from det_depth_distance.core.labels import VOCABULARIES
-from det_depth_distance.core.pipeline import Pipeline, SetupInfo
-from det_depth_distance.core.types import DepthResult, Instances
-from det_depth_distance.distance import (
+from av_perception_lab.core import registry
+from av_perception_lab.core.aggregate import Concat
+from av_perception_lab.core.labels import VOCABULARIES
+from av_perception_lab.core.pipeline import Pipeline, SetupInfo
+from av_perception_lab.core.types import DepthResult, Instances
+from av_perception_lab.distance import (
     DistanceConfig,
     box_depth_stats,
     map_eligibility,
@@ -50,11 +50,11 @@ def test_rfdetr_and_da3_do_not_import_ultralytics(video, hf_cache):
     code = f"""
 import sys
 from pathlib import Path
-from det_depth_distance.config import SourceConfig
-from det_depth_distance.core import registry
-from det_depth_distance.core.components import LoadContext
-from det_depth_distance.core.types import CameraIntrinsics
-from det_depth_distance.io.source import VideoSource
+from av_perception_lab.config import SourceConfig
+from av_perception_lab.core import registry
+from av_perception_lab.core.components import LoadContext
+from av_perception_lab.core.types import CameraIntrinsics
+from av_perception_lab.io.source import VideoSource
 
 source = VideoSource(SourceConfig(video=Path({str(video)!r}), max_frames=1))
 frame = next(iter(source))
@@ -419,7 +419,7 @@ def _twinlitenet_reference(frame_rgb, repo, net, device):
 
 
 def test_twinlitenet_matches_the_reference(twinlitenet, frame0, load_ctx):
-    from det_depth_distance.adapters.semantic.twinlitenet import _merge_heads
+    from av_perception_lab.adapters.semantic.twinlitenet import _merge_heads
 
     twinlitenet.load(load_ctx)
     try:

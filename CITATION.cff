@@ -1,7 +1,7 @@
 cff-version: 1.2.0
 message: "If you use this software, please cite it using these metadata."
-title: "det-depth-distance"
-abstract: "Per-object distance to the camera from pluggable detectors and metric depth models, rendered on video."
+title: "av-perception-lab"
+abstract: "A perception test bed for autonomous driving: pluggable detectors, metric depth, segmentation, tracking and motion prediction, with per-object distance, camera calibration and evaluation against field references."
 type: software
 authors:
   - family-names: "Mendonça"

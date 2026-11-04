@@ -4,8 +4,8 @@ from pathlib import Path
 import pytest
 import yaml
 
-from det_depth_distance.core.options import ConfigError
-from det_depth_distance.evaluation.references import (
+from av_perception_lab.core.options import ConfigError
+from av_perception_lab.evaluation.references import (
     Reference,
     Selector,
     load_references,

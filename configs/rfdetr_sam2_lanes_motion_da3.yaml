@@ -7,7 +7,7 @@
 # on the Raspberry Pi highway videos (RPI_0000/0001, 1296x972 @ 25 fps) on 2026-10-23.
 # Weights: SAM 2.1 in weights/hf; TwinLiteNet+ from the pinned clone
 # weights/_code/TwinLiteNetPlus; fetch with --prepare, nothing is downloaded at run time.
-# Run: det-depth-distance --config configs/rfdetr_sam2_lanes_motion_da3.yaml [VIDEO] [--set key=value]...
+# Run: av-perception-lab --config configs/rfdetr_sam2_lanes_motion_da3.yaml [VIDEO] [--set key=value]...
 device: cuda:0
 source: {video: _testbed/data/IMG_4021.MOV, start: 0.0, duration: 0.0, max_frames: 0, stride: 1}
 detectors:

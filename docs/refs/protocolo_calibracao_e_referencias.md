@@ -2,8 +2,8 @@
 
 Roteiro de campo da task_0007: como calibrar a câmera das gravações e como
 medir distâncias de referência (verdade de campo) para avaliar o pipeline
-com `det-depth-distance-evaluate`. Ferramentas: `det-depth-distance-calibrate`
-(`calibrate`, `board`, `inspect`) e `det-depth-distance-evaluate`.
+com `av-perception-lab-evaluate`. Ferramentas: `av-perception-lab-calibrate`
+(`calibrate`, `board`, `inspect`) e `av-perception-lab-evaluate`.
 
 ## 1. Por que calibrar
 
@@ -25,9 +25,9 @@ com `det-depth-distance-evaluate`. Ferramentas: `det-depth-distance-calibrate`
 1. Gerar o alvo e imprimir em **100 %** (sem "ajustar à página"):
 
    ```bash
-   uv run det-depth-distance-calibrate board --out _testbed/board_9x6_25mm.png --dpi 300
+   uv run av-perception-lab-calibrate board --out _testbed/board_9x6_25mm.png --dpi 300
    # ChArUco (aceita o alvo parcialmente visível, ajuda a cobrir os cantos do quadro):
-   uv run det-depth-distance-calibrate board --target charuco --cols 7 --rows 5 \
+   uv run av-perception-lab-calibrate board --target charuco --cols 7 --rows 5 \
        --square-mm 30 --marker-mm 22 --out _testbed/charuco_7x5.png
    ```
 
@@ -51,17 +51,17 @@ com `det-depth-distance-evaluate`. Ferramentas: `det-depth-distance-calibrate`
 
 ```bash
 # Metadados da câmera (lente, 35 mm-eq.) do vídeo de calibração e dos vídeos de campo
-uv run det-depth-distance-calibrate inspect _testbed/data/CALIB_01.MOV
-uv run det-depth-distance-calibrate inspect _testbed/data/IMG_4021.MOV
+uv run av-perception-lab-calibrate inspect _testbed/data/CALIB_01.MOV
+uv run av-perception-lab-calibrate inspect _testbed/data/IMG_4021.MOV
 
 # Calibração (um quadro a cada 0,5 s, até 60 vistas; --debug-dir salva as vistas detectadas)
-uv run det-depth-distance-calibrate calibrate _testbed/data/CALIB_01.MOV \
+uv run av-perception-lab-calibrate calibrate _testbed/data/CALIB_01.MOV \
     --square-mm 24.9 --note "estabilizacao padrao, 1080p30, camera 1x" \
     --out configs/calibration/iphone14promax_main_1080p30.yaml \
     --debug-dir _testbed/calib_debug
 
 # Conferir a calibração contra um vídeo de campo (código 1 se a câmera não confere)
-uv run det-depth-distance-calibrate inspect _testbed/data/IMG_4021.MOV \
+uv run av-perception-lab-calibrate inspect _testbed/data/IMG_4021.MOV \
     --calibration configs/calibration/iphone14promax_main_1080p30.yaml
 ```
 
@@ -145,16 +145,16 @@ e preencher um arquivo por vídeo:
 
 ```bash
 # Uma execução: relatório em <execução>/eval_<nome das referências>/
-uv run det-depth-distance-evaluate --refs refs/IMG_4100.yaml _testbed/outputs/<execução>
+uv run av-perception-lab-evaluate --refs refs/IMG_4100.yaml _testbed/outputs/<execução>
 
 # Comparar configurações (focal estimada × calibrada × undistort × region both × suavização)
-uv run det-depth-distance-evaluate --refs refs/IMG_4100.yaml RUN_A RUN_B RUN_C --out _testbed/eval_4100
+uv run av-perception-lab-evaluate --refs refs/IMG_4100.yaml RUN_A RUN_B RUN_C --out _testbed/eval_4100
 
 # Gráficos (precisa do matplotlib: extra eval no laptop)
-uv run --extra eval det-depth-distance-evaluate --refs refs/IMG_4100.yaml RUN_A --plot
+uv run --extra eval av-perception-lab-evaluate --refs refs/IMG_4100.yaml RUN_A --plot
 # Com o ambiente de inferência, NUNCA --extra eval sozinho (o sync exato removeria a stack GPU);
 # o --extra infer já traz o matplotlib:
-#   uv run --extra infer det-depth-distance-evaluate --refs ... RUN_A --plot
+#   uv run --extra infer av-perception-lab-evaluate --refs ... RUN_A --plot
 ```
 
 Leitura do `eval.md`:

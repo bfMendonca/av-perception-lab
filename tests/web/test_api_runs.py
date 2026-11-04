@@ -12,8 +12,8 @@ pytest.importorskip("fastapi")
 from conftest import LOCAL
 from fastapi.testclient import TestClient
 
-from det_depth_distance.web import gpu
-from det_depth_distance.web.app import create_app
+from av_perception_lab.web import gpu
+from av_perception_lab.web.app import create_app
 
 FAKE = Path(__file__).with_name("fake_worker.py")
 VALID = {

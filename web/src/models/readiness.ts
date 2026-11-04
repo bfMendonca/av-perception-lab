@@ -107,7 +107,7 @@ export function sizeOf(rows: Pick<ModelStatus, "size_bytes">[]): { bytes: number
 
 /** The CLI command that prepares any model (sources the web does not vouch for too). */
 export function prepareCommand(fileName: string | null): string {
-  return `det-depth-distance --config ${fileName ?? "<config.yaml>"} --prepare`;
+  return `av-perception-lab --config ${fileName ?? "<config.yaml>"} --prepare`;
 }
 
 export const plural = (n: number, one: string, many: string = `${one}s`) => `${n} ${n === 1 ? one : many}`;

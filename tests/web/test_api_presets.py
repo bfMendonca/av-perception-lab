@@ -10,9 +10,9 @@ pytest.importorskip("fastapi")
 from conftest import LOCAL, REPO
 from fastapi.testclient import TestClient
 
-from det_depth_distance.web import app as web_app
-from det_depth_distance.web.app import create_app
-from det_depth_distance.web.paths import WebPaths
+from av_perception_lab.web import app as web_app
+from av_perception_lab.web.app import create_app
+from av_perception_lab.web.paths import WebPaths
 
 VALID = yaml.safe_load((REPO / "configs/rfdetr_da3.yaml").read_text())
 PIPELINE = {k: v for k, v in VALID.items() if k not in ("source", "output")}

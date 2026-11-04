@@ -1,5 +1,5 @@
 # YOLO26-L trained on Objects365 (365 classes, "driving" preset of 21 names) + DA3METRIC-LARGE.
-# Run: det-depth-distance --config configs/yolo_o365_da3.yaml [VIDEO] [--set key=value]...
+# Run: av-perception-lab --config configs/yolo_o365_da3.yaml [VIDEO] [--set key=value]...
 device: cuda:0
 source: {video: _testbed/data/IMG_4021.MOV, start: 0.0, duration: 0.0, max_frames: 0, stride: 1}
 detectors:

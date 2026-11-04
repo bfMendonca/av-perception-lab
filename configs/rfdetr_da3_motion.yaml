@@ -13,7 +13,7 @@
 # uses constant velocity (ctrv only with ego-motion; see the commented model).
 # Validated on the GPU host (pytest -m gpu and utils/gpu_pending.sh step
 # 20-motion, 2026-10-23); the visual review of the videos is still pending.
-# Run: det-depth-distance --config configs/rfdetr_da3_motion.yaml [VIDEO] [--set key=value]...
+# Run: av-perception-lab --config configs/rfdetr_da3_motion.yaml [VIDEO] [--set key=value]...
 device: cuda:0
 source: {video: _testbed/data/IMG_4021.MOV, start: 0.0, duration: 0.0, max_frames: 0, stride: 1}
 detectors:

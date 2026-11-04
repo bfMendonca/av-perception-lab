@@ -2,8 +2,8 @@ import json
 
 import pytest
 
-from det_depth_distance.core.agreement import AgreementStats, frame_agreement
-from det_depth_distance.core.types import Instances
+from av_perception_lab.core.agreement import AgreementStats, frame_agreement
+from av_perception_lab.core.types import Instances
 
 A_BOXES = [[0, 0, 10, 10], [20, 0, 30, 10], [40, 0, 50, 10]]
 B_BOXES = [[1, 0, 11, 10], [20, 0, 30, 10], [70, 0, 80, 10]]

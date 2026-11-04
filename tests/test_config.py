@@ -3,25 +3,25 @@ from pathlib import Path
 import pytest
 import yaml
 
-from det_depth_distance.adapters.semantic.twinlitenet import TWINLITENET_CLASSES
-from det_depth_distance.config import (
+from av_perception_lab.adapters.semantic.twinlitenet import TWINLITENET_CLASSES
+from av_perception_lab.config import (
     PIPELINE_DISTANCE_KEYS,
     AgreementConfig,
     CalibrationConfig,
     apply_overrides,
     load_config,
 )
-from det_depth_distance.core import registry
-from det_depth_distance.core.options import ConfigError
-from det_depth_distance.core.pipeline import Pipeline
-from det_depth_distance.distance import DistanceConfig
-from det_depth_distance.motion import MotionConfig, build_motion
-from det_depth_distance.motion.config import (
+from av_perception_lab.core import registry
+from av_perception_lab.core.options import ConfigError
+from av_perception_lab.core.pipeline import Pipeline
+from av_perception_lab.distance import DistanceConfig
+from av_perception_lab.motion import MotionConfig, build_motion
+from av_perception_lab.motion.config import (
     CameraMount,
     MeasurementConfig,
     PredictionConfig,
 )
-from det_depth_distance.temporal import SmoothingConfig
+from av_perception_lab.temporal import SmoothingConfig
 
 REPO = Path(__file__).parents[1]
 # configs/presets.yaml is the web presets manifest, not a run config

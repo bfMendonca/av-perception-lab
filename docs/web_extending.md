@@ -3,7 +3,7 @@
 A interface web é derivada dos registros do pipeline: o catálogo
 (`GET /api/catalog`) é função de `core.registry` (adaptadores e estágios) e
 dos metadados dos campos das dataclasses; os resultados de uma execução
-(artefatos, métricas) são descobertos na pasta, não enumerados. Nada em `src/det_depth_distance/web/`
+(artefatos, métricas) são descobertos na pasta, não enumerados. Nada em `src/av_perception_lab/web/`
 nomeia um modelo ou um estágio (o teste
 `test_web_package_has_no_hardcoded_adapter_names` garante). Os testes de
 `tests/web/test_extensibility.py` provam os itens abaixo.
@@ -98,7 +98,7 @@ melhora/piora).
 ## (e) Requirements of a new model (weights, code, packages)
 
 A model's readiness is also derived from the registry, so a new model needs
-no edit under `web/` or `src/det_depth_distance/web/` to get status, card
+no edit under `web/` or `src/av_perception_lab/web/` to get status, card
 states and Prepare:
 
 1. Override the classmethod `requirements(options) -> Requirements`

@@ -1,7 +1,7 @@
 # Same as rfdetr_da3.yaml with a calibrated camera. Create the calibration file first
 # (docs/refs/protocolo_calibracao_e_referencias.md); cross_check also estimates the focal
 # (camera.estimate) to compare it with the calibrated one in metrics.json["camera"].
-# Run: det-depth-distance --config configs/rfdetr_da3_calibrated.yaml [VIDEO] [--set key=value]...
+# Run: av-perception-lab --config configs/rfdetr_da3_calibrated.yaml [VIDEO] [--set key=value]...
 device: cuda:0
 source: {video: _testbed/data/IMG_4021.MOV, start: 0.0, duration: 0.0, max_frames: 0, stride: 1}
 detectors:

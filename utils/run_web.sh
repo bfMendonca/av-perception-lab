@@ -11,8 +11,8 @@
 #   --rebuild    rebuild the front-end even if web/dist exists.
 #   --dry-run    print what would run and run nothing.
 #   -h, --help   this text.
-# Everything else goes to det-depth-distance-web (for example --port 8010;
-# `uv run --extra web det-depth-distance-web --help` lists the options).
+# Everything else goes to av-perception-lab-web (for example --port 8010;
+# `uv run --extra web av-perception-lab-web --help` lists the options).
 #
 # The front-end is built only when web/dist/index.html is missing (needs Node.js
 # 22.12 or newer). The extras are never fewer than the ones already installed:
@@ -105,7 +105,7 @@ done
 
 echo "Starting the web interface at http://$HOST:$PORT (Ctrl-C to stop)."
 if [ "$DRY" = 1 ]; then
-  echo "+ uv run ${EXTRAS[*]} det-depth-distance-web${ARGS[*]:+ ${ARGS[*]}}"
+  echo "+ uv run ${EXTRAS[*]} av-perception-lab-web${ARGS[*]:+ ${ARGS[*]}}"
 else
-  exec uv run "${EXTRAS[@]}" det-depth-distance-web ${ARGS[@]+"${ARGS[@]}"}
+  exec uv run "${EXTRAS[@]}" av-perception-lab-web ${ARGS[@]+"${ARGS[@]}"}
 fi

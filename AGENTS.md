@@ -1,4 +1,4 @@
-# AGENTS.md — det-depth-distance
+# AGENTS.md — av-perception-lab
 
 Guia autoritativo para desenvolvedores e agentes de IA que trabalham neste
 repositório. Protótipo de pesquisa em Python que executa um ou mais
@@ -41,7 +41,7 @@ uv sync
 
 # Executa o pipeline (stack de inferência: torch cu128, rfdetr, depth-anything-3, ultralytics;
 # `uv sync` sem --extra infer a removeria; ambiente isolado, ver "Notebook" abaixo)
-#   uv run --extra infer python -m det_depth_distance --config configs/rfdetr_da3.yaml _testbed/data/VIDEO.MOV
+#   uv run --extra infer python -m av_perception_lab --config configs/rfdetr_da3.yaml _testbed/data/VIDEO.MOV
 # Ajustes rápidos sem editar o YAML; lista de adaptadores e opções
 #   ... --config configs/multi_detector.yaml --set source.max_frames=300 --set render.show_stats=true
 #   ... --list-models
@@ -50,7 +50,7 @@ uv sync
 # "Execução no notebook")
 #   export UV_PROJECT_ENVIRONMENT=_testbed/venv-infer && uv sync --extra infer
 #   (com a variável exportada, todo uv run leva --extra infer; unset UV_PROJECT_ENVIRONMENT para voltar ao .venv)
-#   uv run --extra infer python -m det_depth_distance --config configs/yolo_light_da3.yaml _testbed/data/VIDEO.MOV
+#   uv run --extra infer python -m av_perception_lab --config configs/yolo_light_da3.yaml _testbed/data/VIDEO.MOV
 
 # Pesos dos refinadores SAM e do SegFormer: só com confirmação do usuário (~3,9 GB); vão para o
 # cache HF weights/hf (ignorado pelo git); a execução nunca baixa nada.
@@ -59,14 +59,14 @@ uv sync
 
 # Calibração e avaliação (ambiente leve; protocolo em
 # docs/refs/protocolo_calibracao_e_referencias.md)
-uv run det-depth-distance-calibrate board --out _testbed/board.png              # alvo para impressão
-uv run det-depth-distance-calibrate inspect _testbed/data/VIDEO.MOV             # lente, 35 mm-eq.
-uv run det-depth-distance-calibrate calibrate _testbed/data/CALIB.MOV --square-mm 25 \
+uv run av-perception-lab-calibrate board --out _testbed/board.png              # alvo para impressão
+uv run av-perception-lab-calibrate inspect _testbed/data/VIDEO.MOV             # lente, 35 mm-eq.
+uv run av-perception-lab-calibrate calibrate _testbed/data/CALIB.MOV --square-mm 25 \
     --out configs/calibration/<aparelho>_<lente>_<modo>.yaml
-uv run det-depth-distance-evaluate --refs REFS.yaml _testbed/outputs/RUN [RUN ...] [--out DIR]
+uv run av-perception-lab-evaluate --refs REFS.yaml _testbed/outputs/RUN [RUN ...] [--out DIR]
 uv sync --extra eval   # só para --plot (matplotlib); `uv sync` volta ao ambiente leve
 # Com o ambiente de inferência NUNCA `--extra eval` sozinho (removeria a stack GPU): o --extra infer já traz o matplotlib
-#   uv run --extra infer det-depth-distance-evaluate ... --plot
+#   uv run --extra infer av-perception-lab-evaluate ... --plot
 ```
 
 ## Comandos de Teste
@@ -90,7 +90,7 @@ todo teste sob `tests/gpu/` é marcado automaticamente pelo
 `tests/gpu/conftest.py`, então o `uv run pytest` local nunca roda testes de
 GPU; `-m gpu` (a última opção `-m` vence) os seleciona na máquina com GPU. A
 regressão compara 60 quadros de IMG_4021 com a referência da `task_0001`
-congelada em `_testbed/regression/` (ou `$DDD_REGRESSION_REF`).
+congelada em `_testbed/regression/` (ou `$AVPL_REGRESSION_REF`).
 
 Marcador `smoke`: todo teste sob `tests/smoke/` é marcado pelo
 `tests/smoke/conftest.py` e roda por padrão (o smoke cabe no limite de 10 s
@@ -134,7 +134,7 @@ uv run ruff format .
 - **Docstrings/comentários**: em inglês. Todo módulo tem docstring com o
   propósito e o contrato; comentários explicam o "porquê" (ex.: convenções
   de escala do modelo métrico), não o "quê".
-- **Organização**: código em `src/det_depth_distance/`: `core/` (contratos,
+- **Organização**: código em `src/av_perception_lab/`: `core/` (contratos,
   ABCs, registro, rótulos e mapas de rótulos, geometria de caixas,
   agregação/fusão, concordância, rastreamento, pipeline — sem frameworks),
   `adapters/` (um módulo por framework, registrado com `@register` e listado
@@ -142,7 +142,7 @@ uv run ruff format .
   previsão de trajetória e ego-motion opcional — numpy; modelos e provedores
   de ego-motion registrados), `io/` (vídeo, fontes, sinks, metadados QuickTime),
   `evaluation/` (avaliação contra referências de campo, sem I/O no núcleo),
-  `tools/` (CLIs auxiliares `det-depth-distance-calibrate` e
+  `tools/` (CLIs auxiliares `av-perception-lab-calibrate` e
   `-evaluate`, finas), e módulos de topo `camera.py`, `calibration.py`,
   `config.py`, `distance.py`, `temporal.py`, `render.py`, `runtime.py`,
   `cli.py`. Configurações de exemplo em `configs/` (mapas de rótulos
@@ -327,16 +327,16 @@ Commits seguem **Conventional Commits** com assunto em **inglês** (decisão de 
 
   | Escopo | Cobre |
   |--------|-------|
-  | `core` | `src/det_depth_distance/core/` (contratos, ABCs, registro, rótulos, agregação, rastreamento, pipeline) |
-  | `adapters` | `src/det_depth_distance/adapters/` (invólucros de framework) |
-  | `io` | `src/det_depth_distance/io/` (vídeo, fontes, sinks) |
-  | `distance` | `src/det_depth_distance/distance.py` (núcleo numpy de distância) e `temporal.py` (suavização temporal por trilha) |
-  | `motion` | `src/det_depth_distance/motion/` (estimação de movimento por trilha, modelos, ego-motion) |
-  | `camera` | `src/det_depth_distance/camera.py` (intrínsecos, calibração, correção de distorção) e `calibration.py` (ferramenta de calibração) |
-  | `render` | `src/det_depth_distance/render.py` |
-  | `cli` | `src/det_depth_distance/cli.py`, `__main__.py`, `__init__.py`, `config.py`, `runtime.py` (composição, configuração, ambiente) e `tools/` (CLIs auxiliares) |
-  | `eval` | `src/det_depth_distance/evaluation/` (avaliação contra referências de campo) |
-  | `web` | `src/det_depth_distance/web/` e `web/` (interface web: API, fila, front-end) |
+  | `core` | `src/av_perception_lab/core/` (contratos, ABCs, registro, rótulos, agregação, rastreamento, pipeline) |
+  | `adapters` | `src/av_perception_lab/adapters/` (invólucros de framework) |
+  | `io` | `src/av_perception_lab/io/` (vídeo, fontes, sinks) |
+  | `distance` | `src/av_perception_lab/distance.py` (núcleo numpy de distância) e `temporal.py` (suavização temporal por trilha) |
+  | `motion` | `src/av_perception_lab/motion/` (estimação de movimento por trilha, modelos, ego-motion) |
+  | `camera` | `src/av_perception_lab/camera.py` (intrínsecos, calibração, correção de distorção) e `calibration.py` (ferramenta de calibração) |
+  | `render` | `src/av_perception_lab/render.py` |
+  | `cli` | `src/av_perception_lab/cli.py`, `__main__.py`, `__init__.py`, `config.py`, `runtime.py` (composição, configuração, ambiente) e `tools/` (CLIs auxiliares) |
+  | `eval` | `src/av_perception_lab/evaluation/` (avaliação contra referências de campo) |
+  | `web` | `src/av_perception_lab/web/` e `web/` (interface web: API, fila, front-end) |
   | `configs` | `configs/` |
   | `tests` | `tests/` (inclui `tests/gpu/`) |
   | `utils` | `utils/` |
@@ -345,7 +345,7 @@ Commits seguem **Conventional Commits** com assunto em **inglês** (decisão de 
 
   Omitir o escopo quando a mudança atravessa muitos componentes; nunca
   inventar escopo fora desta lista. A task que cria uma pasta ou módulo de
-  topo novo em `src/det_depth_distance/` atualiza esta tabela na mesma
+  topo novo em `src/av_perception_lab/` atualiza esta tabela na mesma
   entrega.
 - Assunto no **imperativo** (`adicionar`, `corrigir`, `atualizar`,
   `remover`), primeira letra minúscula, sem ponto final.

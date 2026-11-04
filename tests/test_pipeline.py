@@ -5,18 +5,18 @@ import numpy as np
 import pytest
 from test_components import FakeRefiner, FakeSemantic, FakeTracker
 
-from det_depth_distance.camera import IntrinsicsProvider, IntrinsicsResult
-from det_depth_distance.config import AgreementConfig
-from det_depth_distance.core.aggregate import Concat, Nms
-from det_depth_distance.core.components import (
+from av_perception_lab.camera import IntrinsicsProvider, IntrinsicsResult
+from av_perception_lab.config import AgreementConfig
+from av_perception_lab.core.aggregate import Concat, Nms
+from av_perception_lab.core.components import (
     DepthEstimator,
     Detector,
     DetectorOptions,
 )
-from det_depth_distance.core.options import ConfigError
-from det_depth_distance.core.pipeline import Pipeline
-from det_depth_distance.core.tracking import IouTracker
-from det_depth_distance.core.types import (
+from av_perception_lab.core.options import ConfigError
+from av_perception_lab.core.pipeline import Pipeline
+from av_perception_lab.core.tracking import IouTracker
+from av_perception_lab.core.types import (
     CameraIntrinsics,
     DepthResult,
     Frame,
@@ -24,14 +24,14 @@ from det_depth_distance.core.types import (
     MapGeometry,
     Provenance,
 )
-from det_depth_distance.distance import (
+from av_perception_lab.distance import (
     DistanceConfig,
     box_depth_stats,
     map_eligibility,
 )
-from det_depth_distance.io.source import FrameSource
-from det_depth_distance.motion import MotionConfig, MotionEstimator, build_motion
-from det_depth_distance.temporal import SmoothingConfig
+from av_perception_lab.io.source import FrameSource
+from av_perception_lab.motion import MotionConfig, MotionEstimator, build_motion
+from av_perception_lab.temporal import SmoothingConfig
 
 FRAME = Frame(0, 0.0, np.zeros((100, 100, 3), np.uint8))
 GEOMETRY = MapGeometry(100, 100, 100, 100, 1.0, 1.0)

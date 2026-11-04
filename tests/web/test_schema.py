@@ -10,7 +10,7 @@ import yaml
 
 pytest.importorskip("fastapi")
 
-from det_depth_distance.web import schema
+from av_perception_lab.web import schema
 
 
 def _field(sch, name):
@@ -132,8 +132,8 @@ def test_validate_does_not_mutate_input(recommended_yaml):
 def test_server_imports_without_torch():
     code = (
         "import sys\n"
-        "import det_depth_distance.web.app as app\n"
-        "from det_depth_distance.web import schema\n"
+        "import av_perception_lab.web.app as app\n"
+        "from av_perception_lab.web import schema\n"
         "assert schema.module_catalog()['modules']['detector']\n"
         "cfg = {'detectors': [{'type': 'rfdetr'}], 'depth': {'type': 'da3'}}\n"
         "assert schema.validate_config(cfg) == [], schema.validate_config(cfg)\n"

@@ -11,9 +11,9 @@ import pytest
 
 pytest.importorskip("fastapi")
 
-from det_depth_distance.core import registry
-from det_depth_distance.core.components import Component
-from det_depth_distance.web import schema
+from av_perception_lab.core import registry
+from av_perception_lab.core.components import Component
+from av_perception_lab.web import schema
 
 WEB_SRC = Path(schema.__file__).parent
 
@@ -101,7 +101,7 @@ def test_catalog_carries_version():
 
 
 def test_builtin_stages_cover_the_run_config():
-    from det_depth_distance.config import RunConfig
+    from av_perception_lab.config import RunConfig
 
     keys = {s["yaml_key"] for s in schema.module_catalog()["stages"]}
     fields = {f.name for f in dataclasses.fields(RunConfig)}

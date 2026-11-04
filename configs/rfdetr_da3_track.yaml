@@ -8,7 +8,7 @@
 # depth noise is correlated in time, so smoothing removes jitter, not bias.
 # The raw distance stays in detections.csv (distance_m) next to the smoothed
 # one. Not yet validated on the GPU host (docs/task_0006.md, pending runs).
-# Run: det-depth-distance --config configs/rfdetr_da3_track.yaml [VIDEO] [--set key=value]...
+# Run: av-perception-lab --config configs/rfdetr_da3_track.yaml [VIDEO] [--set key=value]...
 device: cuda:0
 source: {video: _testbed/data/IMG_4021.MOV, start: 0.0, duration: 0.0, max_frames: 0, stride: 1}
 detectors:

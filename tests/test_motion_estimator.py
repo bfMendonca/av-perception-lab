@@ -7,11 +7,11 @@ import math
 import numpy as np
 import pytest
 
-from det_depth_distance.core.options import ConfigError
-from det_depth_distance.core.types import CameraIntrinsics, DepthResult, MapGeometry
-from det_depth_distance.distance import BoxDepthStats
-from det_depth_distance.motion import MotionConfig, MotionEstimator, build_motion
-from det_depth_distance.motion.config import MeasurementConfig
+from av_perception_lab.core.options import ConfigError
+from av_perception_lab.core.types import CameraIntrinsics, DepthResult, MapGeometry
+from av_perception_lab.distance import BoxDepthStats
+from av_perception_lab.motion import MotionConfig, MotionEstimator, build_motion
+from av_perception_lab.motion.config import MeasurementConfig
 
 FRAME_W, FRAME_H = 1000, 600
 GEOMETRY = MapGeometry(FRAME_W, FRAME_H, FRAME_W, FRAME_H, 1.0, 1.0)

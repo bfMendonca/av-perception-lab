@@ -6,11 +6,11 @@ from pathlib import Path
 
 import pytest
 
-from det_depth_distance.adapters._hf_hub import (
+from av_perception_lab.adapters._hf_hub import (
     download_command,
     from_pretrained_offline,
 )
-from det_depth_distance.adapters.refiners.hf_sam import (
+from av_perception_lab.adapters.refiners.hf_sam import (
     EdgeTamRefiner,
     HFSamOptions,
     HFSamRefiner,
@@ -19,8 +19,8 @@ from det_depth_distance.adapters.refiners.hf_sam import (
     SamHQRefiner,
     SamRefiner,
 )
-from det_depth_distance.core import registry
-from det_depth_distance.core.options import ConfigError
+from av_perception_lab.core import registry
+from av_perception_lab.core.options import ConfigError
 
 # type -> (class, model_class, processor_class, reshaped sizes, object score, model)
 FAMILIES = {

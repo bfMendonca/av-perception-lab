@@ -1,7 +1,7 @@
 [project]
-name = "det-depth-distance"
+name = "av-perception-lab"
 version = "0.1.0"
-description = "Per-object distance to the camera from pluggable detectors and metric depth models, rendered on video"
+description = "A perception test bed for autonomous driving: pluggable detectors, metric depth, segmentation, tracking and motion prediction, with per-object distance, camera calibration and evaluation against field references"
 readme = "README.md"
 license = "Apache-2.0"
 license-files = ["LICENSE", "NOTICE"]
@@ -26,7 +26,7 @@ infer = [
     "transformers>=5.1,<6", # SAM-family refiners and SegFormer
     "timm>=1.0.17", # EdgeTAM backbone (transformers TimmWrapper)
 ]
-# Evaluation plots only (det-depth-distance-evaluate --plot): uv sync --extra eval
+# Evaluation plots only (av-perception-lab-evaluate --plot): uv sync --extra eval
 eval = [
     "matplotlib>=3.8",
 ]
@@ -41,10 +41,10 @@ web = [
 ]
 
 [project.scripts]
-det-depth-distance = "det_depth_distance.cli:main"
-det-depth-distance-calibrate = "det_depth_distance.tools.calibrate:main"
-det-depth-distance-evaluate = "det_depth_distance.tools.evaluate:main"
-det-depth-distance-web = "det_depth_distance.web.server:main"
+av-perception-lab = "av_perception_lab.cli:main"
+av-perception-lab-calibrate = "av_perception_lab.tools.calibrate:main"
+av-perception-lab-evaluate = "av_perception_lab.tools.evaluate:main"
+av-perception-lab-web = "av_perception_lab.web.server:main"
 
 [dependency-groups]
 dev = ["pytest>=8", "ruff>=0.6"]
@@ -66,7 +66,7 @@ requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [tool.hatch.build.targets.wheel]
-packages = ["src/det_depth_distance"]
+packages = ["src/av_perception_lab"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

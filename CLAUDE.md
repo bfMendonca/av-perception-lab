@@ -1,4 +1,4 @@
-# CLAUDE.md — det-depth-distance
+# CLAUDE.md — av-perception-lab
 
 Protótipo de pesquisa que combina detectores plugáveis (RF-DETR, YOLO26) e
 profundidade métrica Depth Anything 3 (DA3) para estimar a distância de cada
@@ -32,10 +32,10 @@ uv run pytest -m smoke                    # só o smoke ponta a ponta (tests/smo
 uv run ruff check --fix . && uv run ruff format .
 uv sync --extra infer                     # stack GPU (no notebook: ver UV_PROJECT_ENVIRONMENT abaixo)
 uv run --extra infer pytest -m gpu -v
-uv run --extra infer python -m det_depth_distance --config configs/rfdetr_da3.yaml
+uv run --extra infer python -m av_perception_lab --config configs/rfdetr_da3.yaml
 utils/gpu_pending.sh {list,run} [--dry-run] [--from ID] ...   # pendências de GPU
-uv run det-depth-distance-calibrate {calibrate,board,inspect} ...   # calibração (ambiente leve)
-uv run det-depth-distance-evaluate --refs REFS.yaml RUN [RUN ...]   # erro contra referências de campo
+uv run av-perception-lab-calibrate {calibrate,board,inspect} ...   # calibração (ambiente leve)
+uv run av-perception-lab-evaluate --refs REFS.yaml RUN [RUN ...]   # erro contra referências de campo
 ```
 
 ## Arquitetura (big picture)

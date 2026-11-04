@@ -16,8 +16,8 @@ sys.path.insert(0, str(SMOKE))
 from smoke_fakes import DepthOracle, install_scene_fakes
 from smoke_scene import SCENE, scene_frames, write_scene_video
 
-from det_depth_distance.core.types import CameraIntrinsics
-from det_depth_distance.web import worker
+from av_perception_lab.core.types import CameraIntrinsics
+from av_perception_lab.web import worker
 
 pytestmark = pytest.mark.skipif(shutil.which("ffmpeg") is None, reason="needs ffmpeg")
 

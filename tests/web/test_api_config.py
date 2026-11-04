@@ -5,8 +5,8 @@ import yaml
 
 pytest.importorskip("fastapi")
 
-from det_depth_distance.config import load_config
-from det_depth_distance.web.paths import safe_join
+from av_perception_lab.config import load_config
+from av_perception_lab.web.paths import safe_join
 
 
 def test_catalog_endpoint(client):

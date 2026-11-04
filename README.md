@@ -1,11 +1,11 @@
-# det-depth-distance
+# av-perception-lab
 
 [![License: Apache-2.0](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
 [![Python 3.11](https://img.shields.io/badge/python-3.11-blue.svg)](pyproject.toml)
 [![Ruff](https://img.shields.io/badge/lint-ruff-261230.svg)](https://docs.astral.sh/ruff/)
 [![uv](https://img.shields.io/badge/packaging-uv-de5fe9.svg)](https://docs.astral.sh/uv/)
 
-Per-object distance to the camera from pluggable detectors and metric depth models, rendered on video.
+A perception test bed for autonomous driving: pluggable detectors, metric depth, segmentation, tracking and motion prediction, with per-object distance, camera calibration and evaluation against field references.
 
 ![Six seconds of a highway recording processed by the full pipeline: the annotated frame with per-object distance and relative speed, the metric depth map with its legend in meters, and a bird's-eye view inset.](docs/assets/demo-highway.gif)
 
@@ -41,7 +41,7 @@ uv run pytest -q
 The run ends with a summary such as `898 passed, 9 skipped, 48 deselected` (the counts change as tests are added). To list the detectors, depth models and other components with their options:
 
 ```bash
-uv run det-depth-distance --list-models
+uv run av-perception-lab --list-models
 ```
 
 ### 2. Open the web interface (no GPU)
@@ -71,18 +71,18 @@ In the page at <http://127.0.0.1:8000>:
 
 The annotated video, `detections.csv` and `metrics.json` appear under **Runs** and in `_testbed/outputs/<timestamp>_<video>_<detector>_<depth>/`.
 
-The script runs `(cd web && npm ci && npm run build)` when `web/dist` is missing, then `uv run --extra infer --extra web det-depth-distance-web` (only `--extra web` without the GPU stack). `utils/run_web.sh --dry-run` prints what it would run.
+The script runs `(cd web && npm ci && npm run build)` when `web/dist` is missing, then `uv run --extra infer --extra web av-perception-lab-web` (only `--extra web` without the GPU stack). `utils/run_web.sh --dry-run` prints what it would run.
 
 ### 4. The same from the command line
 
 ```bash
-uv run --extra infer det-depth-distance --config configs/rfdetr_da3.yaml --prepare
+uv run --extra infer av-perception-lab --config configs/rfdetr_da3.yaml --prepare
 ```
 
 It prints a table ending in `ready` for each model and exits with code 0. Then process the first 3 seconds of a video:
 
 ```bash
-uv run --extra infer det-depth-distance --config configs/rfdetr_da3.yaml my-video.mp4 --set source.duration=3
+uv run --extra infer av-perception-lab --config configs/rfdetr_da3.yaml my-video.mp4 --set source.duration=3
 ```
 
 The last line looks like `[done] 76 frames, 319 boxes (0 n/a) in 9.8 s -> _testbed/outputs/<folder>`.

@@ -19,8 +19,8 @@ from typing import Any
 
 import numpy as np
 
-from det_depth_distance.io.sinks import CSV_FIELDS
-from det_depth_distance.io.video import VideoInfo, probe
+from av_perception_lab.io.sinks import CSV_FIELDS
+from av_perception_lab.io.video import VideoInfo, probe
 
 # Keys every metrics.json has (io/sinks.py MetricsSink.close).
 BASE_METRICS_KEYS: frozenset[str] = frozenset(

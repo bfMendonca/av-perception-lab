@@ -14,10 +14,10 @@ from conftest import LOCAL, REPO
 from fastapi.testclient import TestClient
 from model_fakes import fake_models, gate_config, wait_prepare  # noqa: F401
 
-from det_depth_distance.core import requirements as rq
-from det_depth_distance.web import schema, security
-from det_depth_distance.web.app import create_app
-from det_depth_distance.web.paths import WebPaths
+from av_perception_lab.core import requirements as rq
+from av_perception_lab.web import schema, security
+from av_perception_lab.web.app import create_app
+from av_perception_lab.web.paths import WebPaths
 
 FAKE_WORKER = Path(__file__).with_name("fake_worker.py")
 SHIPPED = sorted(
@@ -145,12 +145,12 @@ def test_run_worker_checks_the_same_weights_root_as_the_409_gate(
 ):
     """The server's root is not the default (and the server's own env names
     another): a run that passes the 409 gate sees the same root in the worker
-    (DDD_WEIGHTS_ROOT), so the CLI gate finds the same prepared files."""
-    monkeypatch.setenv("DDD_WEIGHTS_ROOT", str(tmp_path / "stale"))
+    (AVPL_WEIGHTS_ROOT), so the CLI gate finds the same prepared files."""
+    monkeypatch.setenv("AVPL_WEIGHTS_ROOT", str(tmp_path / "stale"))
     seen = tmp_path / "seen.txt"
     code = (
         "import sys; from pathlib import Path; "
-        "from det_depth_distance.core.requirements import weights_root; "
+        "from av_perception_lab.core.requirements import weights_root; "
         "r = weights_root(); "
         f"Path({str(seen)!r}).write_text(f'{{r}}|{{(r / \"gate/a.bin\").is_file()}}')"
     )
