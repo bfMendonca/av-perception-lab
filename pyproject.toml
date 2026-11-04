@@ -3,6 +3,8 @@ name = "det-depth-distance"
 version = "0.1.0"
 description = "Per-object distance to the camera from pluggable detectors and metric depth models, rendered on video"
 readme = "README.md"
+license = "Apache-2.0"
+license-files = ["LICENSE", "NOTICE"]
 requires-python = ">=3.11,<3.12"
 dependencies = [
     "numpy<2",  # depth-anything-3 pins numpy<2

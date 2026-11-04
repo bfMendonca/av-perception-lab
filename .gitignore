@@ -14,6 +14,7 @@ dist/
 !.env.example
 
 # Runtime data: test videos, outputs, logs, downloaded weights (never versioned)
+data/
 _testbed/
 weights/
 *.pth

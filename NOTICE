@@ -1,0 +1,8 @@
+det-depth-distance
+Copyright 2026 Bruno Mendonça
+
+This product is licensed under the Apache License, Version 2.0 (see LICENSE).
+
+Model weights are not distributed with this repository. They are downloaded
+from their original sources and keep their own licences (see the License
+section of README.md).

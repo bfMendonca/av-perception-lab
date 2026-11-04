@@ -1,0 +1,10 @@
+cff-version: 1.2.0
+message: "If you use this software, please cite it using these metadata."
+title: "det-depth-distance"
+abstract: "Per-object distance to the camera from pluggable detectors and metric depth models, rendered on video."
+type: software
+authors:
+  - family-names: "Mendonça"
+    given-names: "Bruno"
+version: "0.1.0"
+license: Apache-2.0
