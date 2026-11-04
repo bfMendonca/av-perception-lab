@@ -1,5 +1,7 @@
 # Names and descriptions of the built-in presets shown in the web interface,
 # in display order. A configs/*.yaml not listed here is not offered as a preset.
+# A new config added to configs/ MUST be added here (tests/web/test_presets.py
+# fails otherwise).
 presets:
   - file: rfdetr_da3.yaml
     name: "RF-DETR + DA3"

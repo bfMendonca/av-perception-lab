@@ -354,7 +354,11 @@ comment; `source` and `output` are never stored. `GET /api/presets` ->
 `PUT /api/presets` (`{name, config, extras?, overwrite?}` -> the row; 422
 invalid name/config/unrepresentable data, 409 existing or built-in name, 413
 over 1 MiB, 404 when presets are disabled); `DELETE /api/presets/{id}` -> 204
-(403 built-in, 404 missing).
+(403 built-in, 404 missing). Front-end (`web/src/presets/`, `web/src/api/presets.ts`):
+a "Presets" popover (built-in and user groups, trash button on user rows) loads
+a preset through the store action `loadPreset` (replaces the pipeline, keeps
+the editor's `source` and `output`), and "Save as preset..." opens a name
+dialog that PUTs the current config and asks before overwriting on 409.
 
 Runs (task_0014): `POST /api/runs` (`{config, video_id?}` -> `{job_id}`; 422
 `{errors}` when invalid), `GET /api/jobs/{id}` (status queued|running|done|

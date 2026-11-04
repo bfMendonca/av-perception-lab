@@ -4,9 +4,9 @@ Todas as mudancas relevantes do det-depth-distance serao documentadas neste arqu
 
 ---
 
-## [Unreleased] Config presets: HTTP routes
+## [Unreleased] Config presets
 
-Backend of the web config presets (task_0030).
+Web config presets (task_0030): backend and front-end.
 
 ### Added
 
@@ -15,6 +15,11 @@ Backend of the web config presets (task_0030).
   `configs/presets.yaml`) plus the user's own, stored without `source`/`output`.
 - `det-depth-distance-web --presets-root` (default `_testbed/presets`) and
   `WebPaths.presets_root`; `create_app(builtin_presets_dir=...)`.
+
+- Web editor: **Presets** menu (built-in and own presets, delete for own),
+  **Save as preset...** dialog with overwrite confirmation, and the
+  `loadPreset` store action, which keeps the current video and output folder.
+- Docs: presets in README, `docs/reference.md`, `DESCRIPTION.md`.
 
 ### Fixed
 

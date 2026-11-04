@@ -50,7 +50,7 @@ uv run det-depth-distance --list-models
 utils/run_web.sh
 ```
 
-The first run builds the interface (needs Node.js 22.12 or newer, about a minute) and installs the `web` extra, then starts the server. Open <http://127.0.0.1:8000>. Stop it with Ctrl-C; add `--port 8010` to change the port. Click **Open YAML** and choose `configs/rfdetr_da3.yaml`. Every model shows **Not ready**, because PyTorch is not installed in this environment. Step 3 fixes that.
+The first run builds the interface (needs Node.js 22.12 or newer, about a minute) and installs the `web` extra, then starts the server. Open <http://127.0.0.1:8000>. Stop it with Ctrl-C; add `--port 8010` to change the port. Click **Open YAML** and choose `configs/rfdetr_da3.yaml`. Every model shows **Not ready**, because PyTorch is not installed in this environment. Step 3 fixes that. The **Presets** button lists ready-made pipelines (the files in `configs/`) and your own saved ones: loading a preset keeps the selected video and output folder, and **Save as preset...** stores the current pipeline on the server (default folder `_testbed/presets/`, option `--presets-root`).
 
 ### 3. Process a video (NVIDIA GPU)
 

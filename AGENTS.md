@@ -147,7 +147,7 @@ uv run ruff format .
   `config.py`, `distance.py`, `temporal.py`, `render.py`, `runtime.py`,
   `cli.py`. Configurações de exemplo em `configs/` (mapas de rótulos
   versionados em `configs/labels/`, modelo de referências em
-  `configs/references/`, calibrações em `configs/calibration/`). Scripts
+  `configs/references/`, manifesto de presets da web em `configs/presets.yaml`, calibrações em `configs/calibration/`). Scripts
   utilitários bash em `utils/`.
 - **Testes**: pytest em `tests/`, espelhando os módulos
   (`distance.py` → `tests/test_distance.py`). Testes unitários não dependem
