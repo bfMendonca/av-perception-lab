@@ -144,10 +144,11 @@ The user picked A.
   `builtin` or `user`; ids are `builtin:<file stem>` / `user:<slug>`.
 - `GET /api/presets/{id}` → `{config, extras}` in the shape of
   `/api/config/parse`, with `source` and `output` removed.
-- `PUT /api/presets/user:<slug>` with `{name, config, extras, overwrite}` →
+- `PUT /api/presets` with `{name, config, extras, overwrite}` →
   validates, strips `source`/`output`, writes atomically. Answers 409 if the
-  slug exists and `overwrite` is false, 422 for an invalid config or name,
-  and 409 if the slug collides with a built-in id.
+  slug exists and `overwrite` is false, and 422 for an invalid config or name,
+  including a name that collides with a built-in (it can never be overwritten,
+  so it must not look like the 409 case; changed during implementation).
 - `DELETE /api/presets/user:<slug>` → 204; `builtin:` ids answer 403.
 
 ### Frontend
