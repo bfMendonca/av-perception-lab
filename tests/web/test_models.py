@@ -80,6 +80,8 @@ app = create_app(WebPaths(tmp / "out", tmp / "lib", (tmp / "data",)))
 out = {}
 with TestClient(base_url="http://127.0.0.1", app=app) as client:
     for path in sorted(Path("configs").glob("*.yaml")):
+        if path.name == "presets.yaml":  # the presets manifest, not a run config
+            continue
         cfg = yaml.safe_load(path.read_text())
         resp = client.post("/api/models/status", json={"config": cfg})
         out[path.name] = [resp.status_code, resp.json()]
@@ -102,7 +104,8 @@ def test_status_for_fresh_config_lists_missing_models_without_torch(tmp_path):
     )
     result = json.loads(out.stdout.strip().splitlines()[-1])
     assert result["torch"] is False
-    assert len(result["configs"]) == len(list((REPO / "configs").glob("*.yaml")))
+    shipped = [p for p in (REPO / "configs").glob("*.yaml") if p.name != "presets.yaml"]
+    assert len(result["configs"]) == len(shipped)
     for name, (code, report) in result["configs"].items():
         assert code == 200, (name, report)
         rows = by_key(report)

@@ -1,0 +1,53 @@
+# Names and descriptions of the built-in presets shown in the web interface,
+# in display order. A configs/*.yaml not listed here is not offered as a preset.
+# A new config added to configs/ MUST be added here (tests/web/test_presets.py
+# fails otherwise).
+presets:
+  - file: rfdetr_da3.yaml
+    name: "RF-DETR + DA3"
+    description: "Boxes from RF-DETR, metric depth from DA3. The base pipeline."
+  - file: rfdetr_da3_track.yaml
+    name: "RF-DETR + DA3 + tracking"
+    description: "Adds IoU tracking and Kalman smoothing of the distance."
+  - file: rfdetr_da3_motion.yaml
+    name: "RF-DETR + DA3 + motion"
+    description: "Tracking plus 2D motion and trajectory prediction."
+  - file: rfdetr_da3_calibrated.yaml
+    name: "RF-DETR + DA3, calibrated camera"
+    description: "Uses a camera calibration file you provide."
+  - file: rfdetr_seg_da3.yaml
+    name: "RF-DETR Seg + DA3"
+    description: "Distance over instance masks."
+  - file: rfdetr_sam2_da3.yaml
+    name: "RF-DETR + SAM 2 + DA3"
+    description: "Boxes refined into masks by SAM 2.1."
+  - file: rfdetr_semantic_da3.yaml
+    name: "RF-DETR + DA3 + scene map"
+    description: "Excludes sky and road surface using SegFormer."
+  - file: rfdetr_lanes_scene_da3.yaml
+    name: "RF-DETR + DA3 + lanes and scene"
+    description: "Adds lane lines and the scene map."
+  - file: rfdetr_sam2_lanes_motion_da3.yaml
+    name: "Full stack"
+    description: "RF-DETR, SAM 2, lanes, tracking and motion. Needs a large GPU."
+  - file: yolo_o365_da3.yaml
+    name: "YOLO Objects365 + DA3"
+    description: "YOLO26-L with 365 classes."
+  - file: yolo_o365_sam2_da3.yaml
+    name: "YOLO Objects365 + SAM 2 + DA3"
+    description: "YOLO boxes refined into masks."
+  - file: yolo_o365_seg_da3.yaml
+    name: "YOLO Objects365 Seg + DA3"
+    description: "Instance masks, Objects365 vocabulary."
+  - file: yolo_seg_da3.yaml
+    name: "YOLO Seg (COCO) + DA3"
+    description: "YOLO26-L instance masks."
+  - file: yolo_light_da3.yaml
+    name: "Light (4 GB GPU)"
+    description: "YOLO26s-seg, tracking and smoothing, for small GPUs."
+  - file: multi_detector.yaml
+    name: "RF-DETR + YOLO, all boxes"
+    description: "Both detectors, every box kept and tagged."
+  - file: multi_detector_fused.yaml
+    name: "RF-DETR + YOLO, fused"
+    description: "Both detectors, boxes of one object merged."

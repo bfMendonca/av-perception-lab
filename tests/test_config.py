@@ -24,7 +24,10 @@ from det_depth_distance.motion.config import (
 from det_depth_distance.temporal import SmoothingConfig
 
 REPO = Path(__file__).parents[1]
-CONFIGS = sorted((REPO / "configs").glob("*.yaml"))
+# configs/presets.yaml is the web presets manifest, not a run config
+CONFIGS = [
+    p for p in sorted((REPO / "configs").glob("*.yaml")) if p.name != "presets.yaml"
+]
 FUSED = REPO / "configs" / "multi_detector_fused.yaml"
 MINIMAL = {"detectors": [{"type": "rfdetr"}], "depth": {"type": "da3"}}
 

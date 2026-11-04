@@ -99,7 +99,7 @@ det-depth-distance/
 │   ├── calibration.py       # TargetSpec, CalibrationTarget (ChessboardTarget, CharucoTarget), detect_views, select_views, coverage, calibrate_views, focal_px_from_35mm
 │   ├── evaluation/          # references.py (ReferenceSet), run_data.py (RunData, load_run), matching.py, stats.py (ErrorStats, summarize), evaluate.py, report.py
 │   ├── tools/               # calibrate.py (det-depth-distance-calibrate), evaluate.py (det-depth-distance-evaluate)
-│   ├── web/                 # web backend (extra `web`, torch-free): paths.py (WebPaths, safe_join), stages.py (stage list from core.registry), schema.py (options_schema, module_catalog, validate_config), app.py (create_app), jobs.py (JobQueue), worker.py, history.py (scan_runs, load_run, job_data), compare.py (run_summary, distance_series, config_diff, compare_runs, list_artifacts, effective_config), gpu.py (free_memory_mib), library.py (Library, VideoRecord, probe, .h264 remux, background preview), uploads.py (streaming multipart reader, bounded headers/parts/fields), security.py (Host/Origin/body-size middlewares, path policy, weights-root overlap check, served-file headers), models.py (model status rows, PrepareQueue), server.py (det-depth-distance-web: --allowed-host, --dev-origin, --asset-root, --weights-root); app.py also serves web/dist at / with an SPA fallback
+│   ├── web/                 # web backend (extra `web`, torch-free): paths.py (WebPaths, safe_join), stages.py (stage list from core.registry), schema.py (options_schema, module_catalog, validate_config), app.py (create_app), jobs.py (JobQueue), worker.py, history.py (scan_runs, load_run, job_data), compare.py (run_summary, distance_series, config_diff, compare_runs, list_artifacts, effective_config), gpu.py (free_memory_mib), library.py (Library, VideoRecord, probe, .h264 remux, background preview), uploads.py (streaming multipart reader, bounded headers/parts/fields), security.py (Host/Origin/body-size middlewares, path policy, weights-root overlap check, served-file headers), models.py (model status rows, PrepareQueue), presets.py (built-in + user config presets), server.py (det-depth-distance-web: --allowed-host, --dev-origin, --asset-root, --weights-root, --presets-root); app.py also serves web/dist at / with an SPA fallback
 │   ├── config.py            # RunConfig + sections, load_config, config_from_mapping, apply_overrides (--set); registers the built-in pipeline stages
 │   ├── distance.py          # pure numpy: box -> map pixels -> robust stats -> distance
 │   ├── temporal.py          # pure numpy: SmoothingConfig, distance_sigma, white_accel_cov, KalmanFilter1D / EmaFilter / MedianFilter (FILTERS), TrackSmoother
@@ -343,6 +343,22 @@ keys are kept as extras) and `POST /api/config/dump` (`{config, extras?}` ->
 `{yaml}`). Models and stages are never listed in `web/`: a new adapter
 (`@register`) or stage (`core.registry.register_stage`) appears by itself
 (`docs/web_extending.md`).
+
+Config presets (task_0030): `configs/presets.yaml` is the manifest of built-in
+presets (display order, name, description of the `configs/*.yaml` run configs;
+not itself a run config). User presets are `<--presets-root>/<slug>.yaml`
+(default `_testbed/presets`) with the typed name in a first-line `# name:`
+comment; `source` and `output` are never stored. `GET /api/presets` ->
+`[{id, name, description, kind}]` (`builtin:<stem>` / `user:<slug>`);
+`GET /api/presets/{id}` -> `{config, extras}` (404 unknown, 422 invalid file);
+`PUT /api/presets` (`{name, config, extras?, overwrite?}` -> the row; 422
+invalid name/config/unrepresentable data, 409 existing name (overwritable), 422 built-in name, 413
+over 1 MiB, 404 when presets are disabled); `DELETE /api/presets/{id}` -> 204
+(403 built-in, 404 missing). Front-end (`web/src/presets/`, `web/src/api/presets.ts`):
+a "Presets" popover (built-in and user groups, trash button on user rows) loads
+a preset through the store action `loadPreset` (replaces the pipeline, keeps
+the editor's `source` and `output`), and "Save as preset..." opens a name
+dialog that PUTs the current config and asks before overwriting on 409.
 
 Runs (task_0014): `POST /api/runs` (`{config, video_id?}` -> `{job_id}`; 422
 `{errors}` when invalid), `GET /api/jobs/{id}` (status queued|running|done|

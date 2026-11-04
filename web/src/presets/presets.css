@@ -1,0 +1,81 @@
+.presets-menu {
+  width: min(420px, 80vw);
+}
+
+.presets-menu__group + .presets-menu__group {
+  margin-top: 6px;
+}
+
+.presets-menu__title {
+  margin: 6px 10px 4px;
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.presets-menu__row {
+  display: flex;
+  align-items: stretch;
+  gap: 2px;
+}
+
+.presets-menu__pick {
+  flex: 1;
+  min-width: 0;
+  display: grid;
+  gap: 2px;
+  text-align: left;
+  padding: 8px 10px;
+  border: 0;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--text);
+  cursor: pointer;
+}
+
+.presets-menu__row .icon-btn {
+  width: 30px;
+  padding: 0;
+  display: inline-grid;
+  flex: none;
+  align-self: center;
+}
+
+.presets-menu__pick:hover,
+.presets-menu__pick:focus-visible {
+  background: var(--panel-3);
+}
+
+.presets-menu__desc,
+.presets-menu__empty {
+  color: var(--text-2);
+  font-size: 12.5px;
+}
+
+.presets-menu__empty {
+  margin: 4px 10px 8px;
+}
+
+.presets-menu__error {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 4px 10px 8px;
+  color: var(--bad);
+  font-size: 12.5px;
+}
+
+.preset-dialog__error {
+  margin: 8px 0 0;
+  color: var(--bad);
+  font-size: 12.5px;
+  white-space: pre-line;
+}
+
+.preset-dialog__hint {
+  margin: 8px 0 0;
+  color: var(--muted);
+  font-size: 12.5px;
+}

@@ -4,6 +4,28 @@ Todas as mudancas relevantes do det-depth-distance serao documentadas neste arqu
 
 ---
 
+## [Unreleased] Config presets
+
+Web config presets (task_0030): backend and front-end.
+
+### Added
+
+- `GET /api/presets`, `GET /api/presets/{id}`, `PUT /api/presets` and
+  `DELETE /api/presets/{id}`: built-in presets from `configs/` (manifest
+  `configs/presets.yaml`) plus the user's own, stored without `source`/`output`.
+- `det-depth-distance-web --presets-root` (default `_testbed/presets`) and
+  `WebPaths.presets_root`; `create_app(builtin_presets_dir=...)`.
+- Web editor: **Presets** menu (built-in and own presets, delete for own),
+  **Save as preset...** dialog with overwrite confirmation, and the
+  `loadPreset` store action, which keeps the current video and output folder.
+- Preset names with U+2028/U+2029 are refused (they would break the `# name:`
+  comment); a dump failure of the saved data is a 422, not a 500. A built-in
+  name clash is a 422 (only an existing user preset is a 409 and can be
+  overwritten).
+- Docs: presets in README, `docs/reference.md`, `DESCRIPTION.md`.
+
+---
+
 ## [2026-11-03] One command to start the web interface
 
 `utils/run_web.sh` checks the prerequisites, builds the front-end when

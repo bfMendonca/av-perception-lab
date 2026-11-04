@@ -965,6 +965,18 @@ O editor:
   primeira vez, avisa que comentários e ordem das chaves se perdem. O painel
   **Changes** mostra o diff contra o último YAML aberto ou salvo. O rascunho
   fica no `localStorage` do navegador entre recarregamentos.
+- **Presets** (`task_0030`): o botão **Presets** lista as configurações
+  prontas (`configs/*.yaml`, nomes e descrições em `configs/presets.yaml`,
+  na ordem de exibição; um YAML novo em `configs/` precisa entrar ali, e um
+  teste confere) e as do usuário. Carregar um preset troca o pipeline mas
+  mantém `source` e `output` do editor; `device` faz parte do preset.
+  **Save as preset...** grava o pipeline atual como
+  `<--presets-root>/<slug>.yaml` (padrão `_testbed/presets/`), com o nome
+  digitado num comentário `# name:` na primeira linha; `source` e `output`
+  nunca são gravados. Nome já usado pede confirmação para sobrescrever (409
+  sem `overwrite`); os embutidos são somente leitura (apagar dá 403). Rotas:
+  `GET /api/presets`, `GET /api/presets/{id}`, `PUT /api/presets`,
+  `DELETE /api/presets/{id}`.
 - **Process** roda o trecho escolhido no painel de vídeo (próxima seção).
 
 À prova de futuro: nada em `web/src` nomeia estágio, modelo ou campo; um

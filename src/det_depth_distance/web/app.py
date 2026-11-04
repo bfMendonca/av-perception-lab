@@ -9,6 +9,11 @@ config on disk, `/api/models/prepare` queues their download (one at a time,
 independent from the GPU job queue; with `packages: true` it installs a
 model's per-model extra after a clean dry-run, never the base stack), and a
 run whose models are not all ready is refused with 409 before it is queued.
+
+Config presets (`web.presets`): `/api/presets` lists the built-in setups of
+`configs/` and the user's own (`--presets-root`), reads one as `{config,
+extras}`, saves (PUT) and deletes user presets; `source` and `output` are
+never stored.
 """
 
 import asyncio
@@ -23,7 +28,7 @@ from typing import Any, Literal
 
 import yaml
 from fastapi import FastAPI, HTTPException, Request
-from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
+from fastapi.responses import FileResponse, JSONResponse, Response, StreamingResponse
 from pydantic import BaseModel, ConfigDict
 from starlette.concurrency import run_in_threadpool
 from starlette.middleware.trustedhost import TrustedHostMiddleware
@@ -37,6 +42,7 @@ from det_depth_distance.web import (
     gpu,
     history,
     models,
+    presets,
     schema,
     security,
     uploads,
@@ -79,6 +85,14 @@ class ImportBody(BaseModel):
 
 # Model bodies refuse unknown fields: a client cannot add a URL or a path to
 # a download (sources and targets come from the adapters' code).
+class SaveBody(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    name: str
+    config: dict[str, Any]
+    extras: dict[str, Any] = {}
+    overwrite: bool = False
+
+
 class StatusBody(BaseModel):
     model_config = ConfigDict(extra="forbid")
     config: dict[str, Any]
@@ -144,6 +158,15 @@ def yaml_expanded_nodes(text: str) -> int:
     return 0 if root is None else size(root)
 
 
+def _split_config(data: dict[str, Any]) -> dict[str, dict]:
+    """`{config, extras}`: the known top-level keys and the rest."""
+    known = _known_keys()
+    return {
+        "config": {k: v for k, v in data.items() if k in known},
+        "extras": {k: v for k, v in data.items() if k not in known},
+    }
+
+
 def _free_bytes(path: Path) -> int:
     """Free space of the disk `path` (or its nearest existing parent) is on."""
     for folder in (path, *path.resolve().parents):
@@ -178,6 +201,7 @@ def create_app(
     static_dir: Path = DEFAULT_STATIC_DIR,
     allowed_hosts: Sequence[str] = security.LOOPBACK_HOSTS,
     dev_origins: Collection[str] = (),
+    builtin_presets_dir: Path = presets.BUILTIN_DIR,
 ) -> FastAPI:
     """Build the application: catalog, config, videos, runs, jobs and history.
 
@@ -188,6 +212,7 @@ def create_app(
     `allowed_hosts` are the `Host` names answered (`security.allowed_hosts`);
     `dev_origins` are other origins whose state-changing requests pass (the
     Vite dev server).
+    `builtin_presets_dir` holds the read-only built-in presets (`configs/`).
     The weights root is `core.requirements.weights_root()` at creation (the
     server sets it from `--weights-root`); it may not overlap the library or
     out_root (ValueError).
@@ -328,16 +353,85 @@ def create_app(
             raise HTTPException(422, f"unsupported YAML: {exc}") from None
         if not isinstance(data, dict):
             raise HTTPException(422, "the top level must be a mapping")
-        known = _known_keys()
-        return {
-            "config": {k: v for k, v in data.items() if k in known},
-            "extras": {k: v for k, v in data.items() if k not in known},
-        }
+        return _split_config(data)
 
     @app.post("/api/config/dump")
     def dump(body: DumpBody) -> dict[str, str]:
         merged = {**body.config, **body.extras}
         return {"yaml": yaml.safe_dump(merged, sort_keys=False, allow_unicode=True)}
+
+    def _preset_dict(info: presets.PresetInfo) -> dict[str, str]:
+        return dataclasses.asdict(info)
+
+    @app.get("/api/presets")
+    def list_presets() -> list[dict[str, str]]:
+        return [
+            _preset_dict(i)
+            for i in presets.list_presets(builtin_presets_dir, paths.presets_root)
+        ]
+
+    @app.get("/api/presets/{preset_id}")
+    def get_preset(preset_id: str) -> dict[str, dict]:
+        try:
+            data = presets.read_preset(
+                preset_id, builtin_presets_dir, paths.presets_root
+            )
+        except presets.PresetNotFound as exc:
+            raise HTTPException(404, str(exc)) from None
+        except presets.PresetInvalid as exc:
+            raise HTTPException(422, str(exc)) from None
+        return _split_config(data)
+
+    @app.put("/api/presets")
+    def save_preset(body: SaveBody) -> dict[str, str]:
+        if paths.presets_root is None:
+            raise HTTPException(404, "saving presets is disabled (no --presets-root)")
+        data = {
+            k: v
+            for k, v in {**body.config, **body.extras}.items()
+            if k not in presets.EXCLUDED_KEYS
+        }
+        try:
+            text = yaml.safe_dump(data, sort_keys=False, allow_unicode=True)
+        except yaml.YAMLError as exc:  # RepresenterError: not plain data
+            raise HTTPException(
+                422, f"the preset cannot be written as YAML: {exc}"
+            ) from None
+        if len(text) > MAX_YAML_CHARS:
+            raise HTTPException(413, f"YAML longer than {MAX_YAML_CHARS >> 10} KiB")
+        known = _known_keys()
+        errors = schema.validate_config({k: v for k, v in data.items() if k in known})
+        if errors:
+            raise HTTPException(422, errors)
+        try:
+            info = presets.save_preset(
+                paths.presets_root,
+                builtin_presets_dir,
+                body.name,
+                data,
+                body.overwrite,
+            )
+        except (
+            presets.PresetExists
+        ) as exc:  # 409 = overwritable; a built-in name is a 422
+            raise HTTPException(409, str(exc)) from None
+        except presets.PresetInvalid as exc:
+            raise HTTPException(422, str(exc)) from None
+        except yaml.YAMLError as exc:
+            raise HTTPException(
+                422, f"the preset cannot be written as YAML: {exc}"
+            ) from None
+        return _preset_dict(info)
+
+    @app.delete("/api/presets/{preset_id}", status_code=204)
+    def delete_preset(preset_id: str) -> Response:
+        try:
+            presets.delete_preset(preset_id, paths.presets_root)
+        except presets.PresetNotFound as exc:
+            raise HTTPException(404, str(exc)) from None
+        except presets.PresetReadOnly as exc:
+            raise HTTPException(403, str(exc)) from None
+        return Response(status_code=204)
 
     @app.get("/api/videos")
     def list_videos() -> list[dict[str, Any]]:

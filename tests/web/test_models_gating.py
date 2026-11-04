@@ -20,7 +20,9 @@ from det_depth_distance.web.app import create_app
 from det_depth_distance.web.paths import WebPaths
 
 FAKE_WORKER = Path(__file__).with_name("fake_worker.py")
-SHIPPED = sorted((REPO / "configs").glob("*.yaml"))
+SHIPPED = sorted(
+    p for p in (REPO / "configs").glob("*.yaml") if p.name != "presets.yaml"
+)
 
 
 @pytest.fixture
