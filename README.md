@@ -22,7 +22,7 @@ A research prototype for studying how detection, depth, segmentation and trackin
 | [uv](https://docs.astral.sh/uv/) | `uv --version` | everything; it installs Python 3.11 and the packages |
 | git | `git --version` | cloning; Prepare also clones a pinned copy of TwinLiteNet+ |
 | ffmpeg and ffprobe | `ffmpeg -version` | decoding and writing video |
-| Node.js 22.12 or newer, with npm | `node --version` | building the web interface once |
+| Node.js 22.12 or newer, with npm | `node --version` | building the web interface once (`utils/run_web.sh`) |
 | NVIDIA GPU and a driver for CUDA 12.8 | `nvidia-smi` | running the models (steps 3 and 4 below) |
 
 The repository has no sample video. Use any MP4, MOV or MKV that ffmpeg can decode.
@@ -46,35 +46,21 @@ uv run det-depth-distance --list-models
 
 ### 2. Open the web interface (no GPU)
 
-Build the interface once, install the web extra and start the server:
-
 ```bash
-(cd web && npm ci && npm run build)
+utils/run_web.sh
 ```
 
-```bash
-uv sync --extra web
-```
-
-```bash
-uv run --extra web det-depth-distance-web
-```
-
-Open <http://127.0.0.1:8000>. Click **Open YAML** and choose `configs/rfdetr_da3.yaml`. Every model shows **Not ready**, because PyTorch is not installed in this environment. Step 3 fixes that.
+The first run builds the interface (needs Node.js 22.12 or newer, about a minute) and installs the `web` extra, then starts the server. Open <http://127.0.0.1:8000>. Stop it with Ctrl-C; add `--port 8010` to change the port. Click **Open YAML** and choose `configs/rfdetr_da3.yaml`. Every model shows **Not ready**, because PyTorch is not installed in this environment. Step 3 fixes that.
 
 ### 3. Process a video (NVIDIA GPU)
 
-Install the GPU stack. This downloads about 9 GB of Python packages and replaces the environment of step 2:
+With a GPU, skip step 2 and start the interface like this:
 
 ```bash
-uv sync --extra infer --extra web
+utils/run_web.sh --gpu
 ```
 
-From now on, always pass `--extra infer --extra web` to `uv sync` and `uv run`. A plain `uv sync` removes the GPU stack.
-
-```bash
-uv run --extra infer --extra web det-depth-distance-web
-```
+The first run also installs the GPU stack: about 9 GB of Python packages. Later runs find it and keep it, so `--gpu` is only needed once. If you run `uv` yourself afterwards, always pass `--extra infer --extra web`: a plain `uv sync` removes the GPU stack.
 
 In the page at <http://127.0.0.1:8000>:
 
@@ -84,6 +70,8 @@ In the page at <http://127.0.0.1:8000>:
 4. Click **Process**. A 3-second clip takes about 12 seconds on an RTX 3070 (1296x972, 25 fps), including model loading.
 
 The annotated video, `detections.csv` and `metrics.json` appear under **Runs** and in `_testbed/outputs/<timestamp>_<video>_<detector>_<depth>/`.
+
+The script runs `(cd web && npm ci && npm run build)` when `web/dist` is missing, then `uv run --extra infer --extra web det-depth-distance-web` (only `--extra web` without the GPU stack). `utils/run_web.sh --dry-run` prints what it would run.
 
 ### 4. The same from the command line
 
@@ -102,7 +90,8 @@ The last line looks like `[done] 76 frames, 319 boxes (0 n/a) in 9.8 s -> _testb
 ### If it fails
 
 - `error: 3 model(s) not ready under the weights root` (exit code 2): the weights are not downloaded. Run the `--prepare` command above, or use **Prepare all** in the interface.
-- `package torch is not installed (extra 'infer')` in a model's status: you installed only the `web` extra. Run step 3.
+- `package torch is not installed (extra 'infer')` in a model's status: you started the interface without the GPU stack. Run `utils/run_web.sh --gpu`.
+- `error: building the web interface needs Node.js 22.12 or newer`: install Node.js from <https://nodejs.org/> and run the script again.
 - `400 Bad Request` when opening the page from another computer: the server only accepts requests addressed to localhost. Start it with `--host 0.0.0.0 --allowed-host <the address you type in the browser>` and read the security notes in [the web interface reference](docs/reference.md#interface-web-segurança-rede-local-e-desligamento) first: the interface has no authentication.
 
 ## Documentation

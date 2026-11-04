@@ -77,6 +77,8 @@ uv run pytest -m smoke             # só o smoke ponta a ponta (tests/smoke/, ~1
 uv run pytest -m "not gpu and not smoke"   # ciclo rápido: só os unitários (~10 s; um -m substitui o do addopts)
 # GPU: contratos dos adaptadores + regressão + smoke gpu (precisa de --extra infer e pesos)
 uv run --extra infer pytest -m gpu -v
+# interface web: um comando (faz o build do front-end se faltar; --gpu instala a stack GPU)
+utils/run_web.sh [--gpu]
 # GPU: todas as pendências das tasks 0002-0009, em ordem, com logs
 utils/gpu_pending.sh list                           # passos
 utils/gpu_pending.sh run --dry-run                  # só imprime os comandos

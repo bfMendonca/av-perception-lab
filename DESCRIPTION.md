@@ -109,6 +109,7 @@ det-depth-distance/
 │   └── __main__.py          # python -m det_depth_distance
 ├── tests/                   # pytest without GPU; tests/smoke/ (auto-marked "smoke", end-to-end); tests/gpu/ (auto-marked "gpu") runs on a machine with a GPU
 ├── utils/gpu_pending.sh     # pending GPU steps of the tasks, in order, with logs
+├── utils/run_web.sh         # one command: build the front-end if needed and start the web interface
 ├── docs/                    # task files (docs/task_DDDD.md) + template; refs/ (diagrams, calibration and field-reference protocol); web_extending.md (adding models/stages/views, incl. model requirements); model_environments.md (model recipe, weights root and locations, readiness states, Prepare in CLI/web, packages layer, the five dependency-conflict resolution paths: only detection is implemented)
 └── _testbed/                # git-ignored: test videos, outputs, regression reference, ultralytics settings
 ```

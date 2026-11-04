@@ -4,6 +4,23 @@ Todas as mudancas relevantes do det-depth-distance serao documentadas neste arqu
 
 ---
 
+## [2026-11-03] One command to start the web interface
+
+`utils/run_web.sh` checks the prerequisites, builds the front-end when
+`web/dist` is missing, picks the extras and starts `det-depth-distance-web`
+(task_0029).
+
+### Added
+
+- `utils/run_web.sh [--gpu] [--rebuild] [--dry-run] [SERVER OPTIONS...]`: needs
+  `uv` and, only to build, Node.js 22.12 or newer. It never selects fewer extras
+  than the environment already has (an installed PyTorch keeps `infer`, because
+  `uv run` syncs exactly); `--gpu` installs the GPU stack on the first run.
+  Other arguments go to the server (`--port 8010`).
+- `tests/test_run_web_script.py`: dry runs with fake `uv`, `node` and `npm`.
+
+---
+
 ## [2026-11-01] Google Drive source: TwinLiteNet+ weights are prepared automatically
 
 Prepare (CLI `--prepare` and the web "Prepare model") now downloads the
