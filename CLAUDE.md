@@ -15,7 +15,9 @@ completas de processo: veja o `AGENTS.md`.
 - **`DESCRIPTION.md`** — descrição do projeto para LLMs externos.
   **DEVE ser atualizado no mesmo commit** quando mudarem modelos, endpoints,
   dependências, middleware, auth ou seções principais da UI.
-- **`README.md`** — documentação humana completa em pt-BR.
+- **`README.md`** — visão geral concisa em inglês (instalação e execução);
+  a referência detalhada (YAML, calibração, avaliação, saídas) está em
+  `docs/reference.md`, ainda em pt-BR.
 - **`CHANGELOG.md`** — changelog homogêneo da casa; toda entrega relevante
   ganha entrada.
 - **`docs/task_DDDD.md`** — toda implementação exige um arquivo de tarefa
