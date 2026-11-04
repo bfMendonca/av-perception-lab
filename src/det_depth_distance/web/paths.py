@@ -27,6 +27,8 @@ class WebPaths:
     # resolve inside one of them (empty = anywhere outside the client-writable
     # library and out_root).
     asset_roots: tuple[Path, ...] = ()
+    # --presets-root: the user's config presets (None = saving is disabled).
+    presets_root: Path | None = None
 
 
 def safe_join(root: Path, rel: str) -> Path:

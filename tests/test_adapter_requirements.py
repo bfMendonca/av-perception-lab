@@ -40,7 +40,10 @@ from det_depth_distance.core.requirements import (
 )
 
 REPO = Path(__file__).parents[1]
-CONFIGS = sorted((REPO / "configs").glob("*.yaml"))
+# configs/presets.yaml is the web presets manifest, not a run config
+CONFIGS = [
+    p for p in sorted((REPO / "configs").glob("*.yaml")) if p.name != "presets.yaml"
+]
 CTX = LoadContext("cpu", (100, 50), None)
 
 # Minimal options for the types that have a required option.

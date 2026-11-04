@@ -57,6 +57,13 @@ def main(argv: Sequence[str] | None = None) -> None:
         "anywhere outside the library and out-root)",
     )
     parser.add_argument(
+        "--presets-root",
+        type=Path,
+        default=Path("_testbed/presets"),
+        help="folder of the user's config presets, written by the web "
+        "interface's Save as preset (built-in presets come from configs/)",
+    )
+    parser.add_argument(
         "--weights-root",
         type=Path,
         default=None,
@@ -74,7 +81,11 @@ def main(argv: Sequence[str] | None = None) -> None:
 
     data_roots = tuple(args.data_root) or (Path("data"),)
     paths = WebPaths(
-        args.out_root, args.library_root, data_roots, tuple(args.asset_root)
+        args.out_root,
+        args.library_root,
+        data_roots,
+        tuple(args.asset_root),
+        presets_root=args.presets_root,
     )
     if args.weights_root is not None:
         set_weights_root(args.weights_root.expanduser())

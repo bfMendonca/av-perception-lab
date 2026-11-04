@@ -219,3 +219,9 @@ def test_repo_manifest_lists_every_config_and_every_file_exists():
         data = read_preset(info.id, REPO_CONFIGS, None)
         assert "detectors" in data
         assert "source" not in data and "output" not in data
+
+
+@pytest.mark.parametrize("sep", [" ", " "])
+def test_slugify_rejects_unicode_line_separators(sep):
+    with pytest.raises(PresetInvalid):
+        slugify(f"a{sep}b")

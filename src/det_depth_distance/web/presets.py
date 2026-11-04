@@ -59,13 +59,23 @@ class PresetInvalid(ValueError):
     """Bad name, bad id or unreadable file; the message is shown to the user."""
 
 
+class PresetReserved(PresetInvalid):
+    """The name is that of a built-in preset."""
+
+
 def slugify(name: str) -> str:
     """File-name slug of a preset name: ascii, lowercase, `-` between runs."""
     if len(name) > MAX_NAME_CHARS:
         raise PresetInvalid(
             f"The name is too long (at most {MAX_NAME_CHARS} characters)."
         )
-    if any(unicodedata.category(c).startswith("C") for c in name):
+    # C*: controls; Zl/Zp: U+2028/U+2029 are line breaks for PyYAML and would
+    # split the `# name:` comment.
+    if any(
+        unicodedata.category(c).startswith("C")
+        or unicodedata.category(c) in ("Zl", "Zp")
+        for c in name
+    ):
         raise PresetInvalid("The name has control characters.")
     folded = unicodedata.normalize("NFKD", name).encode("ascii", "ignore").decode()
     slug = (
@@ -230,7 +240,7 @@ def save_preset(
     name = name.strip()
     slug = slugify(name)
     if slug in _reserved_slugs(builtin_dir):
-        raise PresetInvalid(
+        raise PresetReserved(
             f"{name!r} is the name of a built-in preset; choose another name."
         )
     user_root.mkdir(parents=True, exist_ok=True)

@@ -4,6 +4,26 @@ Todas as mudancas relevantes do det-depth-distance serao documentadas neste arqu
 
 ---
 
+## [Unreleased] Config presets: HTTP routes
+
+Backend of the web config presets (task_0030).
+
+### Added
+
+- `GET /api/presets`, `GET /api/presets/{id}`, `PUT /api/presets` and
+  `DELETE /api/presets/{id}`: built-in presets from `configs/` (manifest
+  `configs/presets.yaml`) plus the user's own, stored without `source`/`output`.
+- `det-depth-distance-web --presets-root` (default `_testbed/presets`) and
+  `WebPaths.presets_root`; `create_app(builtin_presets_dir=...)`.
+
+### Fixed
+
+- Preset names with U+2028/U+2029 are refused (they would break the `# name:`
+  comment); a dump failure of the saved data is a 422, not a 500.
+- Tests that globbed `configs/*.yaml` skip the manifest `presets.yaml`.
+
+---
+
 ## [2026-11-03] One command to start the web interface
 
 `utils/run_web.sh` checks the prerequisites, builds the front-end when
