@@ -5,6 +5,8 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import type { ApiClient } from "./api/client";
 import type { Catalog, ValidationError } from "./api/types";
 import { createModelsApi, type ModelsApi } from "./api/models";
+import { ApiError } from "./api/client";
+import { createPresetsApi, type PresetsApi } from "./api/presets";
 import { createVideoApi, type VideoApi } from "./api/video";
 import { SUPPORTED_CATALOG_VERSION, stageByKey } from "./editor/catalog";
 import { EditorView } from "./editor/EditorView";
@@ -14,6 +16,9 @@ import { Dialog } from "./ui/Dialog";
 import { Icon } from "./ui/icons";
 import { useHashRoute } from "./ui/route";
 import { Shell } from "./ui/Shell";
+import { PresetsMenu } from "./presets/PresetsMenu";
+import { SavePresetDialog } from "./presets/SavePresetDialog";
+import { usePresets } from "./presets/usePresets";
 import { RunsView } from "./runs/RunsView";
 import { createRunsApi, type RunsApi } from "./api/runs";
 import type { RunRecord } from "./api/video";
@@ -51,6 +56,8 @@ export interface AppProps {
   runsApi?: RunsApi;
   /** Model status and Prepare routes (default: the HTTP client). */
   modelsApi?: ModelsApi;
+  /** Built-in and user presets routes (default: the HTTP client). */
+  presetsApi?: PresetsApi;
   store?: EditorStore;
   /** Keep the working pipeline in localStorage across reloads (off in tests). */
   persistDraft?: boolean;
@@ -58,11 +65,12 @@ export interface AppProps {
 
 type CatalogState = { status: "loading" } | { status: "error"; message: string } | { status: "ready"; catalog: Catalog };
 
-export function App({ client, videoApi, runsApi, modelsApi, store: given, persistDraft = false }: AppProps) {
+export function App({ client, videoApi, runsApi, modelsApi, presetsApi, store: given, persistDraft = false }: AppProps) {
   const [store] = useState(() => given ?? createEditorStore(client));
   const [video] = useState(() => videoApi ?? createVideoApi());
   const [runs] = useState(() => runsApi ?? createRunsApi());
   const [models] = useState(() => modelsApi ?? createModelsApi());
+  const [presets] = useState(() => presetsApi ?? createPresetsApi());
   const [catalog, setCatalog] = useState<CatalogState>({ status: "loading" });
   const [attempt, setAttempt] = useState(0);
 
@@ -107,12 +115,12 @@ export function App({ client, videoApi, runsApi, modelsApi, store: given, persis
 
   return (
     <EditorProvider store={store}>
-      <Studio client={client} video={video} runs={runs} models={models} remember={persistDraft} catalog={catalog} onRetry={() => setAttempt((n) => n + 1)} />
+      <Studio client={client} video={video} runs={runs} models={models} presets={presets} remember={persistDraft} catalog={catalog} onRetry={() => setAttempt((n) => n + 1)} />
     </EditorProvider>
   );
 }
 
-function Studio({ client, video, runs, models, remember, catalog, onRetry }: { client: ApiClient; video: VideoApi; runs: RunsApi; models: ModelsApi; remember: boolean; catalog: CatalogState; onRetry: () => void }) {
+function Studio({ client, video, runs, models, presets: presetsApi, remember, catalog, onRetry }: { client: ApiClient; video: VideoApi; runs: RunsApi; models: ModelsApi; presets: PresetsApi; remember: boolean; catalog: CatalogState; onRetry: () => void }) {
   const editor = useEditor();
   const [route, navigate] = useHashRoute();
   const session = useVideoSession(video, { remember });
@@ -120,6 +128,10 @@ function Studio({ client, video, runs, models, remember, catalog, onRetry }: { c
   const readiness = useModelStatus(editor.loaded && catalog.status === "ready" ? editor.toConfig() : null, { api: models, debounceMs: editor.debounceMs, notify: editor.notify });
   const process = useProcess(video, session, jobs, editor, readiness);
   const fileInput = useRef<HTMLInputElement>(null);
+  const presets = usePresets(presetsApi);
+  const [presetsOpen, setPresetsOpen] = useState(false);
+  const [presetDialog, setPresetDialog] = useState(false);
+  const presetsWrap = useRef<HTMLDivElement>(null);
   const [saveDialog, setSaveDialog] = useState(false);
   const [saving, setSaving] = useState(false);
   const [dragging, setDragging] = useState(false);
@@ -136,6 +148,60 @@ function Studio({ client, video, runs, models, remember, catalog, onRetry }: { c
     },
     [editor],
   );
+
+  const openPreset = useCallback(
+    async (id: string) => {
+      const info = presets.presets.find((p) => p.id === id);
+      const name = info?.name ?? id;
+      if (editor.dirty && !window.confirm(`Discard the unsaved changes and open preset ${name}?`)) return;
+      setPresetsOpen(false);
+      try {
+        editor.loadPreset(await presetsApi.get(id));
+      } catch (exc) {
+        editor.notify({ tone: "error", text: `Could not open preset ${name}: ${exc instanceof Error ? exc.message : String(exc)}` });
+      }
+    },
+    [editor, presets.presets, presetsApi],
+  );
+
+  const deletePreset = useCallback(
+    async (id: string) => {
+      const name = presets.presets.find((p) => p.id === id)?.name ?? id;
+      if (!window.confirm(`Delete the preset ${name}?`)) return;
+      try {
+        await presetsApi.remove(id);
+      } catch (exc) {
+        // 404: already gone (another tab, a hand edit): the refresh below is the answer
+        if (!(exc instanceof ApiError && exc.status === 404)) editor.notify({ tone: "error", text: `Could not delete preset ${name}: ${exc instanceof Error ? exc.message : String(exc)}` });
+      }
+      await presets.refresh();
+    },
+    [editor, presets, presetsApi],
+  );
+
+  const savePreset = useCallback(
+    async (name: string, overwrite: boolean) => {
+      await presetsApi.save(name, editor.state.pipeline.config, editor.state.pipeline.extras, overwrite); // errors stay in the dialog
+      setPresetDialog(false);
+      editor.notify({ tone: "info", text: `Saved preset ${name}.` });
+      await presets.refresh();
+    },
+    [editor, presets, presetsApi],
+  );
+
+  useEffect(() => {
+    if (!presetsOpen) return;
+    const onDown = (e: MouseEvent) => {
+      if (presetsWrap.current && !presetsWrap.current.contains(e.target as Node)) setPresetsOpen(false);
+    };
+    const onEsc = (e: KeyboardEvent) => e.key === "Escape" && setPresetsOpen(false);
+    document.addEventListener("mousedown", onDown);
+    document.addEventListener("keydown", onEsc);
+    return () => {
+      document.removeEventListener("mousedown", onDown);
+      document.removeEventListener("keydown", onEsc);
+    };
+  }, [presetsOpen]);
 
   const save = useCallback(async () => {
     setSaving(true);
@@ -309,8 +375,17 @@ function Studio({ client, video, runs, models, remember, catalog, onRetry }: { c
               <button type="button" className="btn" disabled={!ready} onClick={() => fileInput.current?.click()} title="Open YAML (Ctrl+O)">
                 <Icon name="upload" size={15} /> Open YAML
               </button>
+              <div className="chip-wrap" ref={presetsWrap}>
+                <button type="button" className="btn" disabled={!ready} aria-expanded={presetsOpen} aria-haspopup="dialog" onClick={() => setPresetsOpen((o) => !o)} title="Load a preset pipeline">
+                  <Icon name="layers" size={15} /> Presets
+                </button>
+                {presetsOpen ? <PresetsMenu presets={presets.presets} status={presets.status} error={presets.error} onPick={(id) => void openPreset(id)} onDelete={(id) => void deletePreset(id)} onRetry={() => void presets.refresh()} /> : null}
+              </div>
               <button type="button" className="btn" disabled={!editor.loaded || saving} onClick={requestSave} title="Save YAML (Ctrl+S)">
                 <Icon name="save" size={15} /> {saving ? "Saving…" : "Save YAML"}
+              </button>
+              <button type="button" className="btn" disabled={!editor.loaded} onClick={() => setPresetDialog(true)} title="Save the pipeline as a preset">
+                <Icon name="save" size={15} /> Save as preset…
               </button>
               <button
                 type="button"
@@ -372,6 +447,7 @@ function Studio({ client, video, runs, models, remember, catalog, onRetry }: { c
           </div>
         ) : null}
         {process.dialog}
+        <SavePresetDialog open={presetDialog} existingNames={presets.presets.filter((p) => p.kind === "user").map((p) => p.name)} onSave={savePreset} onCancel={() => setPresetDialog(false)} />
         <Dialog
           open={saveDialog}
           title="Save as regenerated YAML"
