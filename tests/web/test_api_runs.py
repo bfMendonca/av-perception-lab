@@ -147,3 +147,93 @@ def test_free_memory_probe_subprocess(monkeypatch):
     assert gpu.free_memory_mib() is None
     monkeypatch.setattr(gpu, "_PROBE", "print('not a number')")
     assert gpu.free_memory_mib() is None
+
+
+def _make_run(web_paths, name="run_a"):
+    from run_folders import NEW_HEADER, make_run
+
+    return make_run(web_paths.out_root, name, NEW_HEADER, [])
+
+
+def test_size_route(api, web_paths):
+    run = _make_run(web_paths)
+    resp = api.get("/api/runs/run_a/size")
+    assert resp.status_code == 200
+    expected = sum(p.stat().st_size for p in run.rglob("*") if p.is_file())
+    assert resp.json() == {"bytes": expected}
+    assert api.get("/api/runs/nope/size").status_code == 404
+    assert api.get("/api/runs/..%2Fx/size").status_code == 404
+
+
+def test_delete_route_removes_run(api, web_paths):
+    run = _make_run(web_paths)
+    assert api.delete("/api/runs/run_a").status_code == 204
+    assert not run.exists()
+    assert api.get("/api/runs/run_a").status_code == 404
+    assert "run_a" not in [r["id"] for r in api.get("/api/runs").json()]
+
+
+def test_delete_traversal_404(api, web_paths):
+    _make_run(web_paths)
+    sibling = web_paths.out_root.parent / "keep.txt"
+    sibling.write_text("x")
+    (web_paths.out_root / ".web_jobs").mkdir(exist_ok=True)
+    for rid in (".web_jobs", "%2e%2e", "job-%2e%2e"):
+        assert api.delete(f"/api/runs/{rid}").status_code == 404
+    # The client collapses a literal `..`: the request never reaches the route.
+    for rid in ("..%2Fx", "x%2f..%2f..%2fkeep.txt"):
+        assert api.delete(f"/api/runs/{rid}").status_code in (404, 405)
+    assert sibling.exists() and (web_paths.out_root / ".web_jobs").exists()
+
+
+def test_delete_active_run_409(web_paths):
+    app = create_app(
+        web_paths, lambda p: [sys.executable, str(FAKE), "--mode", "sleep", str(p)]
+    )
+    with TestClient(base_url=LOCAL, app=app) as api:
+        job_id = api.post("/api/runs", json={"config": VALID}).json()["job_id"]
+        job = api.app.state.jobs.get(job_id)
+        deadline = time.monotonic() + 15
+        while job.frames < 1:
+            assert time.monotonic() < deadline, "the worker never started"
+            time.sleep(0.02)
+        resp = api.delete(f"/api/runs/{Path(job.run_dir).name}")
+        assert resp.status_code == 409
+        assert resp.json()["detail"] == "run is still queued or running"
+        assert Path(job.run_dir).exists()
+        api.delete(f"/api/jobs/{job_id}")
+
+
+def test_delete_job_entry(web_paths):
+    app = create_app(
+        web_paths,
+        lambda p: [sys.executable, str(FAKE), "--mode", "crash_early", str(p)],
+    )
+    with TestClient(base_url=LOCAL, app=app) as api:
+        job_id = api.post("/api/runs", json={"config": VALID}).json()["job_id"]
+        events_of(api, job_id)
+        entry = f"job-{job_id}"
+        assert entry in [r["id"] for r in api.get("/api/runs").json()]
+        assert api.delete(f"/api/runs/{entry}").status_code == 204
+        assert entry not in [r["id"] for r in api.get("/api/runs").json()]
+
+
+def test_delete_route_refuses_non_run_folder(api, web_paths):
+    folder = web_paths.out_root / "library"
+    folder.mkdir(parents=True)
+    (folder / "x.yaml").write_text("a: 1\n")
+    assert api.delete("/api/runs/library").status_code == 404
+    assert api.get("/api/runs/library/size").status_code == 404
+    assert folder.exists()
+
+
+def test_delete_route_reports_os_error(api, web_paths, monkeypatch):
+    _make_run(web_paths)
+
+    def boom(*_a, **_k):
+        raise PermissionError("denied")
+
+    monkeypatch.setattr("av_perception_lab.web.history.delete_run", boom)
+    resp = api.delete("/api/runs/run_a")
+    assert resp.status_code == 500
+    assert resp.json()["detail"].startswith("could not delete: ")

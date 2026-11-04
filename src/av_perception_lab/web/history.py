@@ -9,6 +9,8 @@ Run ids are folder names and only ever resolved through `safe_join`.
 
 import csv
 import json
+import os
+import shutil
 from dataclasses import asdict, dataclass, field
 from datetime import datetime
 from pathlib import Path
@@ -141,6 +143,19 @@ def _job_record(path: Path, out_root: Path) -> RunRecord | None:
     )
 
 
+def _is_run(folder: Path) -> bool:
+    """Whether `folder` holds a run (any marker file): what `scan_runs` lists."""
+    return any((folder / m).exists() for m in _MARKERS)
+
+
+def _listed_folder(out_root: Path, run_id: str) -> Path:
+    """`run_folder`, but only for folders `scan_runs` lists."""
+    folder = run_folder(out_root, run_id)
+    if not _is_run(folder):
+        raise FileNotFoundError(run_id)
+    return folder
+
+
 def scan_runs(out_root: Path) -> list[RunRecord]:
     """Every run folder under `out_root` plus failed jobs without one, newest first."""
     if not out_root.is_dir():
@@ -148,9 +163,7 @@ def scan_runs(out_root: Path) -> list[RunRecord]:
     folders = [
         p
         for p in out_root.iterdir()
-        if p.is_dir()
-        and not p.name.startswith(".")
-        and any((p / m).exists() for m in _MARKERS)
+        if p.is_dir() and not p.name.startswith(".") and _is_run(p)
     ]
     records = [_record(p) for p in folders]
     jobs = out_root / JOBS_DIR
@@ -196,3 +209,47 @@ def load_run(out_root: Path, run_id: str) -> RunRecord:
             raise FileNotFoundError(run_id)
         return record
     return _record(run_folder(out_root, run_id))
+
+
+def _job_path(out_root: Path, run_id: str) -> Path:
+    """Record file of a listed `job-<id>` entry (errors as in `load_run`)."""
+    if not run_id[4:].isalnum():
+        raise ValueError(f"invalid run id {run_id!r}")
+    path = out_root / JOBS_DIR / f"{run_id[4:]}.json"
+    if _job_record(path, out_root) is None:
+        raise FileNotFoundError(run_id)
+    return path
+
+
+def run_size(out_root: Path, run_id: str) -> int:
+    """Bytes a run uses: regular files only, symlinks neither followed nor
+    counted; for `job-<id>` the size of its record file (errors as in
+    `load_run`)."""
+    if run_id.startswith("job-"):
+        return _job_path(out_root, run_id).stat().st_size
+    total = 0
+    for root, _dirs, files in os.walk(_listed_folder(out_root, run_id)):
+        for name in files:
+            path = Path(root) / name
+            if not path.is_symlink():
+                try:
+                    total += path.stat().st_size
+                except OSError:
+                    pass  # vanished while walking
+    return total
+
+
+def delete_run(out_root: Path, run_id: str) -> None:
+    """Permanently remove a run folder (symlinks inside are unlinked, never
+    followed) and the job records pointing at it or, for `job-<id>`, its record
+    (errors as in `load_run`; a folder `scan_runs` does not list is not found)."""
+    if run_id.startswith("job-"):
+        _job_path(out_root, run_id).unlink()
+        return
+    folder = _listed_folder(out_root, run_id)
+    shutil.rmtree(folder)
+    # A failed/cancelled job record would resurface as a `job-<id>` entry.
+    for record in (out_root / JOBS_DIR).glob("*.json"):
+        run_dir = _read_json(record).get("run_dir")
+        if isinstance(run_dir, str) and Path(run_dir).name == folder.name:
+            record.unlink(missing_ok=True)

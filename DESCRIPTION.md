@@ -590,6 +590,7 @@ boxes, tracks; detections.csv is read by `evaluation.run_data.read_columns`
 (columns frame, t, track_id, distance_m, distance_smooth_m, class_name;
 cached per file version); missing files/columns give null plus `notes`.
 `job-<id>` entries answer 404 "has no files" on every file route.
+
 `RunRecord` gained `video_id` and `log_tail`; `has_config` also counts the
 config in metrics.json. Front-end runs view (`#/runs/<id>/vs/<id>`, ids
 URI-encoded): filterable history (selected run in teal, comparison in
@@ -602,6 +603,14 @@ discovered artifacts with inline views from `registerArtifactView(match,
 view)` (built-ins: JSON tree, image, MP4) and `metrics.json` as a generic
 collapsible tree; Reopen in editor and Rerun (the job joins the job
 panel).
+
+Delete a run (task_0032): `GET /api/runs/{id}/size` (`{bytes}`, symlinks not
+followed) and `DELETE /api/runs/{id}` (204; 404 unknown/unsafe id; 409 while
+`JobQueue.holds_run` says the run's job is queued or running). A `job-<id>`
+entry deletes its job record. Front end: trash button in `RunList` rows and
+`RunDetail`, `DeleteRunDialog` fetches the size before confirming. Only
+folders `scan_runs` lists (with a marker file) can be sized or deleted;
+deleting a folder also removes the job records pointing at it.
 
 Front-end (task_0015, `web/`, English, dark theme only): a pipeline editor
 built entirely from `/api/catalog`. Lanes follow `stages` (non-general) in

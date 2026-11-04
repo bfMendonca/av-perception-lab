@@ -2708,7 +2708,7 @@ textarea {
   width: 100%;
   display: grid;
   gap: 2px;
-  padding: 9px 38px 9px 10px;
+  padding: 9px 70px 9px 10px;
   border: 0;
   background: transparent;
   text-align: left;
@@ -2783,6 +2783,14 @@ textarea {
 .runitem__cmp--on {
   color: var(--accent-2);
   border-color: var(--accent-2);
+}
+
+.runitem__del {
+  right: 38px;
+}
+
+.runitem__del:hover {
+  color: var(--bad);
 }
 
 .runs__detail {

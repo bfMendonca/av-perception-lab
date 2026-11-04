@@ -6,6 +6,7 @@ import type { RunsApi } from "../api/runs";
 import type { RunRecord, VideoApi } from "../api/video";
 import { Icon } from "../ui/icons";
 import { RunDetail } from "./RunDetail";
+import { DeleteRunDialog } from "./DeleteRunDialog";
 import { RunList } from "./RunList";
 
 export interface RunsViewProps {
@@ -24,6 +25,7 @@ export function RunsView({ videoApi, api, runId, compareId, onRoute, onReopen, o
   const [runs, setRuns] = useState<RunRecord[] | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [tick, setTick] = useState(0);
+  const [pendingDelete, setPendingDelete] = useState<RunRecord | null>(null);
 
   useEffect(() => {
     let live = true;
@@ -54,6 +56,7 @@ export function RunsView({ videoApi, api, runId, compareId, onRoute, onReopen, o
         onSelect={(id) => onRoute(id, id === compareId ? null : compareId)}
         onCompare={(id) => onRoute(runId, id)}
         onRefresh={refresh}
+        onDelete={setPendingDelete}
       />
       <section className="runs__detail" aria-label="Run">
         {!runId ? (
@@ -71,6 +74,7 @@ export function RunsView({ videoApi, api, runId, compareId, onRoute, onReopen, o
             onCompare={(id) => onRoute(runId, id)}
             onReopen={onReopen}
             onRerun={onRerun}
+            onDelete={setPendingDelete}
           />
         ) : runs ? (
           <div className="state-panel" role="alert">
@@ -84,6 +88,21 @@ export function RunsView({ videoApi, api, runId, compareId, onRoute, onReopen, o
           <p className="muted runs__loading">Loading…</p>
         )}
       </section>
+      {pendingDelete ? (
+        <DeleteRunDialog
+          open
+          run={pendingDelete}
+          api={api}
+          onCancel={() => setPendingDelete(null)}
+          onDeleted={() => {
+            const gone = pendingDelete.id;
+            setPendingDelete(null);
+            if (gone === runId) onRoute(null, null);
+            else if (gone === compareId) onRoute(runId, null);
+            refresh();
+          }}
+        />
+      ) : null}
     </div>
   );
 }

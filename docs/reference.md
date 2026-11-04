@@ -1074,7 +1074,12 @@ suavizadas aparecem com `n/a` e uma nota. Rotas: `GET /api/runs/{id}/summary`,
 `GET /api/compare?a=ID&b=ID` (deltas `b − a`), `GET
 /api/runs/{id}/series?track=N` (≤ 1500 pontos, redução min/máx),
 `GET /api/runs/{id}/artifacts`, `GET /api/runs/{id}/files/{caminho}`,
-`POST /api/runs/{id}/reopen` e `POST /api/runs/{id}/rerun`.
+`POST /api/runs/{id}/reopen`, `POST /api/runs/{id}/rerun`,
+`GET /api/runs/{id}/size` (`{bytes}`) e `DELETE /api/runs/{id}` (204; 404 se
+não for uma execução listada; 409 enquanto a execução está na fila ou rodando).
+Na vista de execuções, o botão de lixeira (na lista e no detalhe) abre um
+diálogo que mostra o espaço liberado e, ao confirmar, apaga a pasta da
+execução de forma permanente; uma entrada `job-<id>` apaga só o registro do job.
 
 ### Model weights
 

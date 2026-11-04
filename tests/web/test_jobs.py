@@ -368,3 +368,20 @@ def test_worker_gets_the_absolute_weights_root(tmp_path, monkeypatch):
 
     assert asyncio.run(scenario()) == "done"
     assert env_file.read_text() == str((tmp_path / "custom-weights").resolve())
+
+
+def test_holds_run(tmp_path):
+    async def scenario():
+        queue = make_queue(tmp_path)
+        try:
+            job = queue.submit({"fake": {"name": "h", "seconds": 0.3}})
+            await wait_for(lambda: job.run_dir is not None)
+            folder = Path(job.run_dir)
+            held = queue.holds_run(folder)
+            other = queue.holds_run(tmp_path / "out" / "elsewhere")
+            await collect(queue, job.id)
+            return held, other, queue.holds_run(folder)
+        finally:
+            await queue.aclose()
+
+    assert asyncio.run(scenario()) == (True, False, False)

@@ -57,6 +57,8 @@ function fakeApi(): RunsApi & { seriesCalls: [string, number | null | undefined]
     fetchJson: async () => ({}),
     reopen: async () => ({ config: {}, extras: {}, origin: "config.yaml", file_name: "x.yaml" }),
     rerun: async () => "job",
+    size: async () => 0,
+    remove: async () => undefined,
   };
 }
 
@@ -65,7 +67,7 @@ const noop = async () => undefined;
 describe("RunDetail track ids", () => {
   it("in compare mode labels shared ids without claiming the same object, notes it, and picks the overlapping track", async () => {
     const api = fakeApi();
-    render(<RunDetail run={run("B")} against={run("A")} runs={[run("A"), run("B")]} api={api} onCompare={() => undefined} onReopen={noop} onRerun={noop} />);
+    render(<RunDetail run={run("B")} against={run("A")} runs={[run("A"), run("B")]} api={api} onCompare={() => undefined} onReopen={noop} onRerun={noop} onDelete={() => undefined} />);
     const select = (await screen.findByRole("combobox", { name: "Track" })) as HTMLSelectElement;
     await waitFor(() => expect(select.value).toBe("3"));
     const option3 = within(select).getByRole("option", { name: new RegExp(`^#3 .*${SHARED_ID_LABEL}$`) });
@@ -77,7 +79,7 @@ describe("RunDetail track ids", () => {
   });
 
   it("shows no track-id note and no shared label without a comparison run", async () => {
-    render(<RunDetail run={run("B")} against={null} runs={[run("B")]} api={fakeApi()} onCompare={() => undefined} onReopen={noop} onRerun={noop} />);
+    render(<RunDetail run={run("B")} against={null} runs={[run("B")]} api={fakeApi()} onCompare={() => undefined} onReopen={noop} onRerun={noop} onDelete={() => undefined} />);
     const select = (await screen.findByRole("combobox", { name: "Track" })) as HTMLSelectElement;
     expect(select.value).toBe("7"); // B's own default: its longest track
     expect(select.textContent).not.toContain(SHARED_ID_LABEL);

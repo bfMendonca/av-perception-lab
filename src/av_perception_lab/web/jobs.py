@@ -159,6 +159,16 @@ class JobQueue:
         """A run is queued or running (Install packages waits for it)."""
         return any(j.status not in TERMINAL for j in self._jobs.values())
 
+    def holds_run(self, folder: Path) -> bool:
+        """A queued or running job writes into `folder` (it cannot be deleted)."""
+        target = folder.resolve()
+        return any(
+            j.status not in TERMINAL
+            and j.run_dir is not None
+            and Path(j.run_dir).resolve() == target
+            for j in self._jobs.values()
+        )
+
     def position(self, job: Job) -> int | None:
         """Place in the waiting line (0 = starts next); None once started."""
         return self._waiting.index(job) if job in self._waiting else None

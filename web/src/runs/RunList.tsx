@@ -13,6 +13,7 @@ export interface RunListProps {
   onSelect: (id: string) => void;
   onCompare: (id: string | null) => void;
   onRefresh: () => void;
+  onDelete: (run: RunRecord) => void;
 }
 
 /** Runs with a folder (a `job-<id>` entry is a failed job that left none). */
@@ -22,7 +23,7 @@ export function runTitle(r: RunRecord): string {
   return r.video ?? r.id;
 }
 
-export function RunList({ runs, error, selected, compareId, onSelect, onCompare, onRefresh }: RunListProps) {
+export function RunList({ runs, error, selected, compareId, onSelect, onCompare, onRefresh, onDelete }: RunListProps) {
   const [query, setQuery] = useState("");
   const visible = useMemo(() => {
     const q = query.trim().toLowerCase();
@@ -83,6 +84,9 @@ export function RunList({ runs, error, selected, compareId, onSelect, onCompare,
                   <Icon name="compare" size={14} />
                 </button>
               ) : null}
+              <button type="button" className="runitem__cmp runitem__del" aria-label={`Delete ${runTitle(r)}`} title="Delete this run" onClick={() => onDelete(r)}>
+                <Icon name="trash" size={14} />
+              </button>
             </li>
           );
         })}

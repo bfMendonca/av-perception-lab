@@ -4,6 +4,24 @@ Todas as mudancas relevantes do av-perception-lab serao documentadas neste arqui
 
 ---
 
+## [Unreleased] Delete a run
+
+Delete a run from the web history (task_0032).
+
+### Added
+
+- `GET /api/runs/{id}/size` (`{bytes}`) and `DELETE /api/runs/{id}` (204; 404
+  for an unknown or unsafe id, 409 while the run's job is queued or running).
+  A `job-<id>` record (failed job without a folder) is deleted by removing its
+  job record. Symlinks are never followed.
+- Web runs view: trash button in the history rows and in the run detail, with
+  a confirmation dialog that shows the space the run uses. Deleting closes the
+  run if it is open and drops it from the compare selection; a 409 shows an
+  inline message.
+- `JobQueue.holds_run(folder)`, `history.run_size` and `history.delete_run`.
+
+---
+
 ## [Unreleased] Rename to av-perception-lab
 
 Project renamed (task_0031): it is now a perception test bed for autonomous

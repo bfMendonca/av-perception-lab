@@ -96,6 +96,10 @@ export interface RunsApi {
   reopen(runId: string): Promise<Reopened>;
   /** Queue the run again; resolves the job id. */
   rerun(runId: string): Promise<string>;
+  /** Bytes the run folder occupies. */
+  size(runId: string): Promise<number>;
+  /** Delete the run folder; rejects `ApiError` (409 while the run is queued or running). */
+  remove(runId: string): Promise<void>;
 }
 
 type NotReadyRow = { stage: string; index: number | null; name: string; state: string };
@@ -135,5 +139,10 @@ export function createRunsApi(base = "", fetchImpl: typeof fetch = (...a) => fet
     fetchJson: (url) => call<unknown>(url),
     reopen: (id) => call<Reopened>(`/api/runs/${enc(id)}/reopen`, post),
     rerun: async (id) => (await call<{ job_id: string }>(`/api/runs/${enc(id)}/rerun`, post)).job_id,
+    size: async (id) => (await call<{ bytes: number }>(`/api/runs/${enc(id)}/size`)).bytes,
+    remove: async (id) => {
+      const response = await fetchImpl(`${base}/api/runs/${enc(id)}`, { method: "DELETE" });
+      if (!response.ok) throw await errorOf(response);
+    },
   };
 }

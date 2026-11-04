@@ -652,6 +652,31 @@ def create_app(
         except (ValueError, FileNotFoundError):
             raise HTTPException(404, f"unknown run {run_id!r}") from None
 
+    @app.get("/api/runs/{run_id}/size")
+    def run_size(run_id: str) -> dict[str, int]:
+        try:
+            return {"bytes": history.run_size(paths.out_root, run_id)}
+        except (ValueError, FileNotFoundError):
+            raise HTTPException(404, f"unknown run {run_id!r}") from None
+
+    @app.delete("/api/runs/{run_id}", status_code=204)
+    def delete_run(run_id: str) -> Response:
+        try:
+            folder = history.run_folder(paths.out_root, run_id)
+        except FileNotFoundError:
+            folder = None  # a `job-<id>` record has no folder
+        except ValueError:
+            raise HTTPException(404, f"unknown run {run_id!r}") from None
+        if folder is not None and jobs.holds_run(folder):
+            raise HTTPException(409, "run is still queued or running")
+        try:
+            history.delete_run(paths.out_root, run_id)
+        except (ValueError, FileNotFoundError):
+            raise HTTPException(404, f"unknown run {run_id!r}") from None
+        except OSError as exc:
+            raise HTTPException(500, f"could not delete: {exc}") from None
+        return Response(status_code=204)
+
     # Results and comparison (web.compare). Declared before the
     # /api/runs/{run_id}/{name} file route, which would match their names.
     @app.get("/api/compare")

@@ -22,6 +22,7 @@ export interface RunDetailProps {
   onCompare: (id: string | null) => void;
   onReopen: (run: RunRecord) => Promise<void>;
   onRerun: (run: RunRecord) => Promise<void>;
+  onDelete: (run: RunRecord) => void;
 }
 
 type Load<T> = { status: "loading" } | { status: "error"; message: string } | { status: "ready"; value: T };
@@ -63,7 +64,7 @@ export function pickDefaultTrack(tracksB: TrackInfo[], tracksA: TrackInfo[]): nu
   return tracksB.find((t) => byId.has(t.id))?.id ?? null;
 }
 
-function Actions({ run, onReopen, onRerun }: Pick<RunDetailProps, "run" | "onReopen" | "onRerun">) {
+function Actions({ run, onReopen, onRerun, onDelete }: Pick<RunDetailProps, "run" | "onReopen" | "onRerun" | "onDelete">) {
   const [busy, setBusy] = useState<"reopen" | "rerun" | null>(null);
   const act = async (kind: "reopen" | "rerun") => {
     setBusy(kind);
@@ -81,6 +82,9 @@ function Actions({ run, onReopen, onRerun }: Pick<RunDetailProps, "run" | "onReo
       </button>
       <button type="button" className="btn btn--primary" disabled={!run.has_config || busy !== null} title={why ?? "Queue the same configuration and video again"} onClick={() => void act("rerun")}>
         <Icon name="reset" size={14} /> {busy === "rerun" ? "Queueing…" : "Rerun"}
+      </button>
+      <button type="button" className="icon-btn" aria-label={`Delete ${runTitle(run)}`} title="Delete this run" onClick={() => onDelete(run)}>
+        <Icon name="trash" size={14} />
       </button>
     </div>
   );
@@ -115,7 +119,7 @@ export function RunDetail(props: RunDetailProps) {
     return (
       <div className="runs__detail-inner">
         <Header run={run}>
-          <Actions run={run} onReopen={props.onReopen} onRerun={props.onRerun} />
+          <Actions run={run} onReopen={props.onReopen} onRerun={props.onRerun} onDelete={props.onDelete} />
         </Header>
         <section className="rcard rcard--failure" aria-label="Why the job failed">
           <h3>
@@ -136,7 +140,7 @@ export function RunDetail(props: RunDetailProps) {
   return <RunResults {...props} key={run.id} against={against && hasFiles(against) ? against : null} />;
 }
 
-function RunResults({ run, against, runs, api, onCompare, onReopen, onRerun }: RunDetailProps) {
+function RunResults({ run, against, runs, api, onCompare, onReopen, onRerun, onDelete }: RunDetailProps) {
   const video = useRef<HTMLVideoElement>(null);
   const [playhead, setPlayhead] = useState<number | null>(null);
   const [track, setTrack] = useState<number | null>(null);
@@ -183,7 +187,7 @@ function RunResults({ run, against, runs, api, onCompare, onReopen, onRerun }: R
   return (
     <div className="runs__detail-inner">
       <Header run={run}>
-        <Actions run={run} onReopen={onReopen} onRerun={onRerun} />
+        <Actions run={run} onReopen={onReopen} onRerun={onRerun} onDelete={onDelete} />
       </Header>
       <div className="runs__grid">
         <section className="rcard rcard--video" aria-label="Annotated video">
