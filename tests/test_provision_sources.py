@@ -568,7 +568,7 @@ def _hf_asset(**kw) -> HuggingFaceAsset:
 
 
 def test_hf_source_passes_allow_patterns_and_cache_dir(tmp_path, monkeypatch):
-    import huggingface_hub
+    huggingface_hub = pytest.importorskip("huggingface_hub")
 
     calls = []
 
@@ -604,7 +604,7 @@ def test_hf_source_passes_allow_patterns_and_cache_dir(tmp_path, monkeypatch):
 
 
 def test_hf_cancel_through_progress_bar(tmp_path, monkeypatch):
-    import huggingface_hub
+    huggingface_hub = pytest.importorskip("huggingface_hub")
 
     cancel = threading.Event()
 
@@ -623,7 +623,7 @@ def test_hf_cancel_through_progress_bar(tmp_path, monkeypatch):
 
 
 def _hub_error(name: str, message: str = "boom", status: int = 404):
-    from huggingface_hub import errors
+    errors = pytest.importorskip("huggingface_hub.errors")
 
     cls = getattr(errors, name)
     if not issubclass(cls, errors.HfHubHTTPError):
@@ -635,7 +635,7 @@ def _hub_error(name: str, message: str = "boom", status: int = 404):
 
 
 def test_gated_error_message_names_licence_and_hf_token(tmp_path, monkeypatch):
-    import huggingface_hub
+    huggingface_hub = pytest.importorskip("huggingface_hub")
 
     def gated(repo_id, **kwargs):
         raise _hub_error("GatedRepoError", "401 Client Error", 401)
@@ -662,7 +662,7 @@ def test_gated_error_message_names_licence_and_hf_token(tmp_path, monkeypatch):
     ],
 )
 def test_hf_errors_are_readable(tmp_path, monkeypatch, error, expected):
-    import huggingface_hub
+    huggingface_hub = pytest.importorskip("huggingface_hub")
 
     def failing(repo_id, **kwargs):
         raise _hub_error(error)
@@ -676,7 +676,7 @@ def test_hf_errors_are_readable(tmp_path, monkeypatch, error, expected):
 
 
 def test_hf_download_that_misses_declared_files_is_failed(tmp_path, monkeypatch):
-    import huggingface_hub
+    huggingface_hub = pytest.importorskip("huggingface_hub")
 
     def empty(repo_id, **kwargs):
         snap = Path(kwargs["cache_dir"]) / "models--org--model" / "snapshots" / "abc"
