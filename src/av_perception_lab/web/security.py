@@ -39,8 +39,9 @@ WILDCARD_HOSTS = ("0.0.0.0", "::", "")  # bind-all: not a name a client sends
 UNSAFE_METHODS = frozenset({"POST", "PUT", "PATCH", "DELETE"})
 MAX_BODY_BYTES = 1 << 20
 # Run-contract paths the server checks or sets itself (submit_run binds and
-# contains source.video, JobQueue.submit forces output.out_root).
-SERVER_CHECKED_PATHS = frozenset({"source.video", "output.out_root"})
+# contains source.video and source.mcap, JobQueue.submit forces
+# output.out_root).
+SERVER_CHECKED_PATHS = frozenset({"source.video", "source.mcap", "output.out_root"})
 # Media types a served file may be shown inline with (anything else, e.g.
 # HTML/SVG/JS a future sink might write, is a download).
 INLINE_MEDIA = frozenset(

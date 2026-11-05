@@ -82,9 +82,11 @@ class Job:
         }
 
     def video_name(self) -> str | None:
-        """Base name of the run's source.video (None when it has none)."""
+        """Base name of the run's source.video or source.mcap (None when it
+        has neither)."""
         source = self.config.get("source")
-        video = source.get("video") if isinstance(source, dict) else None
+        source = source if isinstance(source, dict) else {}
+        video = source.get("video") or source.get("mcap")
         return Path(video).name if isinstance(video, str) and video else None
 
 

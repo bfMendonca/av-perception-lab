@@ -260,3 +260,30 @@ def test_read_camera_info_first_message(tmp_path):
     assert info.binning == 2
     with pytest.raises(McapError, match="/other"):
         read_camera_info(path, "/other")
+
+
+@pytest.mark.parametrize(
+    ("compressed", "fmt", "expected"),
+    [
+        ("jpeg", "rgb8; jpeg compressed bgr8", "jpeg"),
+        ("png", "bgr8; png compressed bgr8", "png"),
+        ("jpeg", "JPEG", "jpeg"),
+        ("png", "png", "png"),
+    ],
+)
+def test_probe_reports_codec_of_image_transport_format(
+    tmp_path, compressed, fmt, expected
+):
+    path = write_mcap(
+        tmp_path / "a.mcap",
+        images=[
+            ImageSpec(
+                topic="/c/image_raw/compressed",
+                frames=_frames(1),
+                times_ns=[1],
+                compressed=compressed,
+                format=fmt,
+            )
+        ],
+    )
+    assert probe_mcap(path).images[0].encoding == expected

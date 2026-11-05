@@ -70,6 +70,7 @@ class ImageSpec:
     times_ns: Sequence[int]
     encoding: str = "rgb8"
     compressed: str | None = None  # "jpeg" or "png"
+    format: str | None = None  # CompressedImage.format (default: `compressed`)
     header_ns: Sequence[int] | None = None  # None: stamp = time
     step_pad: int = 0  # extra bytes per row
 
@@ -118,7 +119,8 @@ def _image_message(spec: ImageSpec, frame: np.ndarray, stamp_ns: int) -> dict:
         ext = {"jpeg": ".jpg", "png": ".png"}[spec.compressed]
         ok, buf = cv2.imencode(ext, np.ascontiguousarray(frame[..., ::-1]))
         assert ok
-        return {"header": header, "format": spec.compressed, "data": buf.tobytes()}
+        fmt = spec.format if spec.format is not None else spec.compressed
+        return {"header": header, "format": fmt, "data": buf.tobytes()}
     channels, convert = _RAW[spec.encoding]
     arr = np.ascontiguousarray(convert(frame), dtype=np.uint8)
     height, width = arr.shape[:2]

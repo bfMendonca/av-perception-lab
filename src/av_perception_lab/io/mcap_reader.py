@@ -179,6 +179,17 @@ def _rate(count: int, first_ns: int, last_ns: int) -> float:
     return (count - 1) / ((last_ns - first_ns) / 1e9)
 
 
+def compressed_codec(fmt: str) -> str:
+    """Codec of a `CompressedImage.format`: plain (`jpeg`, `png`) or the
+    image_transport form (`rgb8; jpeg compressed bgr8`, whose first part is
+    the original encoding, not the codec)."""
+    text = fmt.strip().lower()
+    for codec, names in (("jpeg", ("jpeg", "jpg")), ("png", ("png",))):
+        if any(name in text for name in names):
+            return codec
+    return text.split(";")[0].strip()
+
+
 def _first_decoded(path: Path, topic: str) -> tuple[str, Any]:
     for schema, _channel, _message, decoded in _messages(path, [topic]):
         return schema.name, decoded
@@ -214,7 +225,7 @@ def probe_mcap(path: Path) -> McapInfo:
             if schema == COMPRESSED_SCHEMA:
                 frame = _decode_compressed(msg)
                 height, width = frame.shape[:2]
-                encoding = str(msg.format).split(";")[0].strip().lower()
+                encoding = compressed_codec(str(msg.format))
             else:
                 width, height, encoding = (
                     int(msg.width),

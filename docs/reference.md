@@ -1030,6 +1030,13 @@ Rotas: `GET /api/videos`, `GET /api/videos/roots`, `POST /api/videos`
 (com `Range`). `POST /api/runs` recusa (422) um `video_id` que não está na
 biblioteca ou cujo arquivo sumiu, e com `video_id` o `source.video` é sempre
 o original do vídeo (o do cliente é sobrescrito).
+Um `.mcap` (ROS 2) entra na biblioteca como `kind: "mcap"` (validado com
+`probe_mcap`; sem tópico de imagem, corrompido ou truncado → 422), e
+`GET /api/videos/{id}/topics` devolve os tópicos de imagem (resolução, taxa,
+contagem, `CameraInfo` pareado, `has_distortion`); com esse `video_id` o
+`POST /api/runs` define `source.mcap`, exige `source.topic` entre os tópicos
+de imagem e recusa (422) `rectify.enabled`/`camera.calibration.from_source`
+num tópico sem `CameraInfo` utilizável (task_0033).
 
 ### Interface web: execuções e comparação
 
