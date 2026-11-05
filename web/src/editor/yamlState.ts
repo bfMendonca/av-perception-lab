@@ -291,6 +291,12 @@ export function createEditorStore(client: ApiClient, options: StoreOptions = {})
       commit(setIn(state.pipeline.config, path, value) as ConfigDict);
     },
 
+    /** Replace the config with `update(config)` in one change (nothing happens when it is equal). */
+    updateConfig(update: (config: ConfigDict) => ConfigDict) {
+      const next = update(state.pipeline.config);
+      if (next !== state.pipeline.config && !deepEqual(next, state.pipeline.config)) commit(next);
+    },
+
     /** Set (or remove, with `undefined`) a top-level extra key. */
     setExtra(key: string, value: unknown) {
       commit(state.pipeline.config, setIn(state.pipeline.extras, [key], value) as ConfigDict);

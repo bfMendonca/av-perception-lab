@@ -1,30 +1,34 @@
-// Getting a video in: drop it anywhere on the page, browse for it, paste a
-// path on the server, or pick one already in the library.
+// Getting an input in (a video or a ROS 2 MCAP): drop it anywhere on the page,
+// browse for it, paste a path on the server, or pick one already in the library.
 import { useRef, useState } from "react";
 import type { VideoRecord } from "../api/video";
 import { Icon } from "../ui/icons";
 
 const VIDEO_EXT = /\.(mp4|m4v|mov|mkv|webm|avi|mts|m2ts|ts|h264|264|hevc|h265)$/i;
+const MCAP_EXT = /\.mcap$/i;
 const YAML_EXT = /\.ya?ml$/i;
 const META_EXT = /\.meta\.json$/i;
 
 export interface DroppedFiles {
   yaml?: File;
+  /** The input: a video or a ROS 2 `.mcap`. */
   video?: File;
   /** The `.meta.json` dropped with a raw `.h264` (sensor timestamps). */
   meta?: File;
 }
 
-/** Sort a drop into a pipeline YAML, a video and its companion `.meta.json`. */
+/** Sort a drop into a pipeline YAML, an input (video or MCAP) and a raw video's companion `.meta.json`. */
 export function classifyFiles(files: Iterable<File>): DroppedFiles {
   const out: DroppedFiles = {};
   for (const file of files) {
     if (META_EXT.test(file.name)) out.meta ??= file;
     else if (YAML_EXT.test(file.name)) out.yaml ??= file;
-    else if (file.type.startsWith("video/") || VIDEO_EXT.test(file.name)) out.video ??= file;
+    else if (file.type.startsWith("video/") || VIDEO_EXT.test(file.name) || MCAP_EXT.test(file.name)) out.video ??= file;
   }
   return out;
 }
+
+export const isMcapName = (name: string): boolean => MCAP_EXT.test(name);
 
 export function isRawH264(name: string): boolean {
   return /\.(h264|264)$/i.test(name);
@@ -73,7 +77,7 @@ export interface DropZoneProps {
   roots: string[];
   /** The server's working directory (relative paths start there). */
   cwd: string;
-  /** A path from the open pipeline (source.video) offered for import. */
+  /** A path from the open pipeline (source.video or source.mcap) offered for import. */
   suggestedPath?: string | null;
   busy: boolean;
   onFiles: (files: DroppedFiles) => void;
@@ -91,9 +95,9 @@ export function DropZone({ videos, roots, cwd, suggestedPath, busy, onFiles, onI
           <Icon name="film" size={26} />
         </div>
         <div className="intake__text">
-          <h2>Drop a video anywhere</h2>
+          <h2>Drop a video or an MCAP anywhere</h2>
           <p>
-            MP4, MOV or MKV play right away. A Raspberry Pi <code>.h264</code> goes in together with its <code>.meta.json</code> and is converted with the sensor timestamps.
+            MP4, MOV or MKV play right away. A Raspberry Pi <code>.h264</code> goes in together with its <code>.meta.json</code> and is converted with the sensor timestamps. A ROS 2 <code>.mcap</code> lists its image topics to pick from; large recordings are better imported by path.
           </p>
         </div>
         <input
@@ -101,7 +105,7 @@ export function DropZone({ videos, roots, cwd, suggestedPath, busy, onFiles, onI
           type="file"
           multiple
           hidden
-          accept="video/*,.mkv,.h264,.264,.meta.json,.json"
+          accept="video/*,.mkv,.h264,.264,.meta.json,.json,.mcap"
           data-testid="video-input"
           onChange={(e) => {
             const files = classifyFiles(Array.from(e.target.files ?? []));
@@ -110,7 +114,7 @@ export function DropZone({ videos, roots, cwd, suggestedPath, busy, onFiles, onI
           }}
         />
         <button type="button" className="btn btn--primary" disabled={busy} onClick={() => input.current?.click()}>
-          <Icon name="upload" size={15} /> Choose video
+          <Icon name="upload" size={15} /> Choose file
         </button>
       </div>
       <form
@@ -172,7 +176,7 @@ export function DropZone({ videos, roots, cwd, suggestedPath, busy, onFiles, onI
                   {v.missing ? <span className="libitem__missing">File missing</span> : null}
                   <span className="libitem__name">{v.name}</span>
                   <span className="libitem__meta">
-                    {v.width}×{v.height} · {Math.round(v.duration_s)} s
+                    {v.kind === "mcap" ? `MCAP · ${v.mcap?.images.length ?? 0} image topic${v.mcap?.images.length === 1 ? "" : "s"}` : `${v.width}×${v.height} · ${Math.round(v.duration_s)} s`}
                   </span>
                 </button>
               </li>

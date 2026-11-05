@@ -2,7 +2,8 @@
 // the UI code never refers to them.
 import type { ApiClient } from "../api/client";
 import type { ModelKey, ModelStatus, ModelsApi, PrepareEvent, PrepareJob } from "../api/models";
-import type { Catalog, ConfigDict, Field, ParsedConfig, ValidationError } from "../api/types";
+import type { Catalog, ConfigDict, Field, McapTopics, ParsedConfig, ValidationError } from "../api/types";
+import type { VideoApi, VideoRecord } from "../api/video";
 
 export const thresholdField: Field = {
   name: "threshold",
@@ -164,6 +165,121 @@ export function fakeModelsApi(rows: ModelStatus[] = []): FakeModelsApi {
       listeners.set(id, onEvent);
       return () => listeners.delete(id);
     },
+  };
+  return api;
+}
+
+// ---------- MCAP inputs (GET /api/videos/{id}/topics, already camelCase) ----------
+
+/** The image topics of the test MCAP (Task 9's fixture plus an unsupported depth topic). */
+export const mcapTopics: McapTopics = {
+  durationS: 1,
+  cameraInfoTopics: ["/cam/camera_info", "/rect/camera_info"],
+  images: [
+    { name: "/cam/depth/image_raw", schema: "sensor_msgs/msg/Image", width: 16, height: 12, encoding: "16UC1", rateHz: 10, count: 2, durationS: 0.1, cameraInfoTopic: null, hasCameraInfo: false, hasDistortion: false, cameraInfoError: null, supported: false, unsupportedReason: "unsupported image encoding '16UC1'; supported: rgb8, bgr8, rgba8, bgra8, mono8, jpeg, png" },
+    { name: "/cam/image_raw", schema: "sensor_msgs/msg/Image", width: 16, height: 12, encoding: "rgb8", rateHz: 2, count: 3, durationS: 1, cameraInfoTopic: "/cam/camera_info", hasCameraInfo: true, hasDistortion: true, cameraInfoError: null, supported: true, unsupportedReason: null },
+    { name: "/front/image_raw/compressed", schema: "sensor_msgs/msg/CompressedImage", width: 12, height: 8, encoding: "jpeg", rateHz: 4, count: 2, durationS: 0.25, cameraInfoTopic: null, hasCameraInfo: false, hasDistortion: false, cameraInfoError: null, supported: true, unsupportedReason: null },
+    { name: "/rect/image_raw", schema: "sensor_msgs/msg/Image", width: 16, height: 12, encoding: "bgr8", rateHz: 10, count: 2, durationS: 0.1, cameraInfoTopic: "/rect/camera_info", hasCameraInfo: true, hasDistortion: false, cameraInfoError: null, supported: true, unsupportedReason: null },
+  ],
+};
+
+export const videoRecord: VideoRecord = {
+  id: "0123456789ab",
+  name: "road.mkv",
+  width: 1296,
+  height: 972,
+  fps: 25,
+  duration_s: 10,
+  size_bytes: 87_000_000,
+  original: "/srv/library/0123456789ab/original.mkv",
+  preview: null,
+  thumb: "/srv/library/0123456789ab/thumb.jpg",
+  preview_status: "ready",
+  created: "2026-10-31T10:00:00",
+  origin: "upload",
+  kind: "video",
+  mcap: null,
+  urls: { file: "/api/videos/0123456789ab/file", preview: "/api/videos/0123456789ab/preview", thumb: "/api/videos/0123456789ab/thumb" },
+};
+
+export const mcapRecord: VideoRecord = {
+  id: "fedcba987654",
+  name: "drive.mcap",
+  width: 16,
+  height: 12,
+  fps: 2,
+  duration_s: 1,
+  size_bytes: 12_345,
+  original: "/srv/library/fedcba987654/original.mcap",
+  preview: null,
+  thumb: "/srv/library/fedcba987654/thumb.jpg",
+  preview_status: "ready",
+  created: "2026-11-04T10:00:00",
+  origin: "upload",
+  kind: "mcap",
+  mcap: mcapTopics,
+  urls: {
+    file: "/api/videos/fedcba987654/file",
+    preview: "/api/videos/fedcba987654/preview",
+    thumb: "/api/videos/fedcba987654/thumb",
+    topics: "/api/videos/fedcba987654/topics",
+  },
+};
+
+/** The test catalog plus the MCAP-related sections: source.mcap/topic, the Rectification stage and the camera. */
+export function mcapCatalog(): Catalog {
+  const base = makeCatalog();
+  const field = (name: string, type: string, def: unknown, nullable = true): Field => ({ name, type, nullable, default: def, required: false, hint: {} });
+  return makeCatalog({
+    stages: [
+      ...base.stages.slice(0, 1),
+      { yaml_key: "rectify", title: "Rectification", kind: null, multiple: false, optional: true, order: 15, general: false, has_section: true },
+      ...base.stages.slice(1),
+      { yaml_key: "camera", title: "Camera", kind: null, multiple: false, optional: true, order: 120, general: true, has_section: true },
+    ],
+    sections: {
+      ...base.sections,
+      source: { schema: { fields: [field("video", "path", null), field("mcap", "path", null), field("topic", "str", null), { ...field("stride", "int", 1, false) }] } },
+      rectify: { schema: { fields: [field("enabled", "bool", false, false), field("alpha", "float", 0, false)] } },
+      camera: { schema: { fields: [field("focal_px", "float", null), field("calibration", "any", null)] } },
+    },
+  });
+}
+
+export interface FakeVideoApi extends VideoApi {
+  submitted: { config: ConfigDict; videoId?: string }[];
+  uploaded: File[];
+  records: VideoRecord[];
+}
+
+/** A video API over `records` (upload answers the record named like the file, else the first). */
+export function fakeVideoApi(records: VideoRecord[] = [videoRecord, mcapRecord]): FakeVideoApi {
+  const byName = (name: string) => api.records.find((r) => r.name === name) ?? api.records[0];
+  const api: FakeVideoApi = {
+    submitted: [],
+    uploaded: [],
+    records,
+    listVideos: async () => api.records,
+    getVideo: async (id) => api.records.find((r) => r.id === id) ?? Promise.reject(new Error("unknown")),
+    fetchTopics: async (id) => api.records.find((r) => r.id === id)?.mcap ?? Promise.reject(new Error("not an MCAP")),
+    importRoots: async () => ({ roots: ["/srv/data"], cwd: "/srv" }),
+    upload: async (file) => {
+      api.uploaded.push(file);
+      return byName(file.name);
+    },
+    importPath: async (path) => byName(path.split("/").pop() ?? path),
+    gpuFreeMiB: async () => 20000,
+    submitRun: async (config, videoId) => {
+      api.submitted.push({ config, videoId });
+      return `job${api.submitted.length}`;
+    },
+    getJob: async (id) => ({ id, status: "queued", position: 0, error: null, run_id: null, frames: 0, log_tail: [] }),
+    listJobs: async () => [],
+    cancelJob: async (id) => ({ id, status: "cancelled", position: null, error: null, run_id: null, frames: 0, log_tail: [] }),
+    jobEvents: () => () => undefined,
+    listRuns: async () => [],
+    getRun: async (id) => ({ id, created: "", video: null, detectors: [], depth: null, frames: null, wall_s: null, status: "done", complete: true, has_config: true, error: null }),
+    runFileUrl: (runId, name) => `/api/runs/${runId}/${name}`,
   };
   return api;
 }

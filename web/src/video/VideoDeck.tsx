@@ -1,13 +1,17 @@
 // The video deck above the pipeline editor: intake (drop / browse / server
-// path / library), the player, the segment bar with Process, and the jobs.
+// path / library), the player (for an MCAP: its thumbnail and the topic
+// picker), the segment bar with Process, and the jobs.
 import { useRef, useState } from "react";
-import type { VideoRecord } from "../api/video";
+import type { McapTopic } from "../api/types";
+import { isMcap, type VideoRecord } from "../api/video";
 import { useEditor } from "../editor/yamlState";
 import { Icon } from "../ui/icons";
-import { DropZone, formatBytes, type DroppedFiles } from "./DropZone";
+import { DropZone, formatBytes, isMcapName, type DroppedFiles } from "./DropZone";
+import { bindMcap, formatRate, formatResolution, inputTiming, setUseCameraInfo, sourceTopic, topicsOf, usesCameraInfo } from "./mcapCamera";
 import { JobPanel } from "./JobPanel";
 import { Player, type PlayerHandle } from "./Player";
 import { SegmentBar } from "./SegmentBar";
+import { TopicPicker } from "./TopicPicker";
 import { formatDuration, formatTime, SOURCE_KEY } from "./segment";
 import type { Jobs } from "./useJobs";
 import type { Process } from "./useProcess";
@@ -47,8 +51,13 @@ export function VideoDeck({ session, jobs, process, previewUrl, onFiles, onOpenR
     }
   };
 
-  const source = editor.state.pipeline.config[SOURCE_KEY];
-  const pipelineVideo = source && typeof source === "object" && !Array.isArray(source) ? (source as Record<string, unknown>).video : null;
+  const config = editor.state.pipeline.config;
+  const source = config[SOURCE_KEY];
+  const sourceRecord = source && typeof source === "object" && !Array.isArray(source) ? (source as Record<string, unknown>) : {};
+  const pipelineInput = typeof sourceRecord.video === "string" ? sourceRecord.video : sourceRecord.mcap;
+  const mcap = video !== null && isMcap(video);
+  const topic = process.topic;
+  const timing = video ? inputTiming(video, topic) : null;
   const segmentPlan = process.plan(false);
   const entirePlan = process.plan(true);
 
@@ -70,7 +79,9 @@ export function VideoDeck({ session, jobs, process, previewUrl, onFiles, onOpenR
         <span className="muted">
           {session.upload.phase === "uploading"
             ? `Uploading ${formatBytes(session.upload.loaded)} of ${formatBytes(session.upload.total)}`
-            : "Checking the video…"}
+            : isMcapName(session.upload.name)
+              ? "Reading the topics…"
+              : "Checking the video…"}
         </span>
         {session.upload.phase === "uploading" ? (
           <button type="button" className="btn btn--xs btn--ghost" onClick={session.cancelUpload}>
@@ -103,7 +114,7 @@ export function VideoDeck({ session, jobs, process, previewUrl, onFiles, onOpenR
           title={process.blocked ?? (entirePlan ? `${entirePlan.frames} frames, ${formatDuration(entirePlan.seconds)}` : undefined)}
           onClick={() => void process.process(true)}
         >
-          Process entire video
+          {mcap ? "Process entire topic" : "Process entire video"}
           {entirePlan ? <span className="btn__aside">{formatDuration(entirePlan.seconds)}</span> : null}
         </button>
       ) : null}
@@ -141,24 +152,38 @@ export function VideoDeck({ session, jobs, process, previewUrl, onFiles, onOpenR
       {video ? (
         <>
           <div className="deck__media">
-            <Player
-              ref={player}
-              video={video}
-              loopRange={{ start: session.segment.start, end: session.segment.start + session.segment.length }}
-              onTime={setPlayhead}
-            />
+            {mcap ? (
+              <McapStill video={video} topic={topic} />
+            ) : (
+              <Player
+                ref={player}
+                video={video}
+                loopRange={{ start: session.segment.start, end: session.segment.start + session.segment.length }}
+                onTime={setPlayhead}
+              />
+            )}
           </div>
           <div className="deck__controls">
             {banner}
             {uploading}
-            <VideoHeader video={video} onChange={() => session.select(null)} />
+            <VideoHeader video={video} topic={topic} onChange={() => session.select(null)} />
+            {mcap ? (
+              <TopicPicker
+                topics={topicsOf(video)}
+                value={sourceTopic(config)}
+                onChange={(name) => editor.updateConfig((c) => bindMcap(c, video, name))}
+                useCameraInfo={usesCameraInfo(config)}
+                onUseCameraInfo={(on) => editor.updateConfig((c) => setUseCameraInfo(c, on))}
+              />
+            ) : null}
             <SegmentBar
-              duration={video.duration_s}
-              fps={video.fps}
+              duration={timing?.durationS ?? 0}
+              fps={timing?.fps ?? 0}
+              count={timing?.count ?? 0}
               segment={session.segment}
               stride={session.stride}
               playhead={playhead}
-              onChange={session.setSegment}
+              onChange={(seg) => session.setSegment(seg, timing?.durationS ?? 0)}
               onStride={session.setStride}
               onSeek={(t) => {
                 player.current?.seek(t);
@@ -176,7 +201,7 @@ export function VideoDeck({ session, jobs, process, previewUrl, onFiles, onOpenR
             videos={session.videos}
             roots={session.roots}
             cwd={session.cwd}
-            suggestedPath={typeof pipelineVideo === "string" ? pipelineVideo : null}
+            suggestedPath={typeof pipelineInput === "string" ? pipelineInput : null}
             busy={Boolean(session.upload)}
             onFiles={onFiles}
             onImport={(p) => void session.importPath(p)}
@@ -192,8 +217,36 @@ export function VideoDeck({ session, jobs, process, previewUrl, onFiles, onOpenR
   );
 }
 
-function VideoHeader({ video, onChange }: { video: VideoRecord; onChange: () => void }) {
-  const fps = Number.isInteger(video.fps) ? String(video.fps) : video.fps.toFixed(2);
+/** An MCAP has no preview video: its first frame, with the selected topic. */
+function McapStill({ video, topic }: { video: VideoRecord; topic: McapTopic | null }) {
+  return (
+    <figure className="player mcap-still">
+      <img className="player__video" src={video.urls.thumb} alt={`Thumbnail of ${video.name}`} />
+      <figcaption className="mcap-still__caption">
+        <span className="player__badge mcap-still__badge">MCAP</span>
+        {topic ? (
+          <>
+            <code>{topic.name}</code>
+            <span>
+              {formatResolution(topic.width, topic.height)} · {formatRate(topic.rateHz, topic.count)}
+            </span>
+          </>
+        ) : (
+          <span>Pick an image topic</span>
+        )}
+      </figcaption>
+    </figure>
+  );
+}
+
+function VideoHeader({ video, topic, onChange }: { video: VideoRecord; topic: McapTopic | null; onChange: () => void }) {
+  const mcap = isMcap(video);
+  const fps = !(video.fps > 0) ? "0" : Number.isInteger(video.fps) ? String(video.fps) : video.fps.toFixed(2);
+  const details = mcap
+    ? topic
+      ? `${formatResolution(topic.width, topic.height)} · ${formatRate(topic.rateHz, topic.count)} · ${formatTime(topic.durationS)}`
+      : `${topicsOf(video).length} image topics`
+    : `${video.width}×${video.height} · ${fps} fps · ${formatTime(video.duration_s)}`;
   return (
     <header className="deck__head">
       <div className="deck__titles">
@@ -206,12 +259,13 @@ function VideoHeader({ video, onChange }: { video: VideoRecord; onChange: () => 
           ) : null}
         </h2>
         <p>
-          {video.width}×{video.height} · {fps} fps · {formatTime(video.duration_s)} · {formatBytes(video.size_bytes)}
-          {video.preview_status === "pending" ? <span className="deck__pending"> · preparing preview</span> : null}
+          {mcap ? "MCAP · " : ""}
+          {details} · {formatBytes(video.size_bytes)}
+          {!mcap && video.preview_status === "pending" ? <span className="deck__pending"> · preparing preview</span> : null}
         </p>
       </div>
       <button type="button" className="btn btn--sm" onClick={onChange}>
-        <Icon name="film" size={14} /> Change video
+        <Icon name="film" size={14} /> {mcap ? "Change input" : "Change video"}
       </button>
     </header>
   );

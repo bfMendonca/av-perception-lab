@@ -33,9 +33,14 @@ export function segmentToSource(start: number, duration: number, stride: number,
   return { start: ms(s), duration: ms(d), stride: Math.max(1, Math.round(Number.isFinite(stride) ? stride : 1)) };
 }
 
-/** Frames the run processes: every `stride`-th frame of `durationS` seconds at `fps`. */
-export function expectedFrames(durationS: number, fps: number, stride: number): number {
-  if (!(durationS > 0) || !(fps > 0)) return 0;
+/**
+ * Frames the run processes: every `stride`-th frame of `durationS` seconds at
+ * `fps`. Without a rate (an MCAP topic with a single message) `count`, the
+ * number of frames there are, gives it.
+ */
+export function expectedFrames(durationS: number, fps: number, stride: number, count = 0): number {
+  if (!(fps > 0)) return count > 0 ? Math.max(1, Math.ceil(count / Math.max(1, Math.round(stride)))) : 0;
+  if (!(durationS > 0)) return 0;
   return Math.max(1, Math.ceil((durationS * fps) / Math.max(1, Math.round(stride))));
 }
 
@@ -62,14 +67,17 @@ export function formatDuration(seconds: number): string {
 }
 
 /**
- * The pipeline config of the editor with the video and the segment filled in.
- * `output` is left as it is: the server sets the run folder and its tag.
+ * The pipeline config of the editor with the input and the segment filled in:
+ * `source.video` for a video, `source.mcap` (next to `source.topic`) for an
+ * MCAP; the other kind's keys leave. `output` is left as it is: the server
+ * sets the run folder and its tag.
  */
-export function buildRunConfig(config: ConfigDict, videoPath: string, segment: SourceSegment): ConfigDict {
+export function buildRunConfig(config: ConfigDict, path: string, segment: SourceSegment, kind: "video" | "mcap" = "video"): ConfigDict {
   const source = config[SOURCE_KEY];
   const asRecord = (v: unknown) => (v && typeof v === "object" && !Array.isArray(v) ? (v as ConfigDict) : {});
+  const rest = Object.fromEntries(Object.entries(asRecord(source)).filter(([k]) => (kind === "mcap" ? k !== "video" : k !== "mcap" && k !== "topic")));
   return {
     ...config,
-    [SOURCE_KEY]: { ...asRecord(source), video: videoPath, start: segment.start, duration: segment.duration, stride: segment.stride },
+    [SOURCE_KEY]: { ...rest, [kind === "mcap" ? "mcap" : "video"]: path, start: segment.start, duration: segment.duration, stride: segment.stride },
   };
 }

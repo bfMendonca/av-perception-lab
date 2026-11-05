@@ -1,6 +1,6 @@
 // Client of the video library, run queue and GPU routes
 // (src/av_perception_lab/web/app.py); injected so tests can fake it.
-import type { ConfigDict, ValidationError } from "./types";
+import type { ConfigDict, McapTopic, McapTopics, ValidationError } from "./types";
 import { ApiError } from "./client";
 import type { ModelStatus } from "./models";
 
@@ -13,7 +13,7 @@ export interface VideoRecord {
   fps: number;
   duration_s: number;
   size_bytes: number;
-  /** Absolute path of the original on the server (what source.video gets). */
+  /** Absolute path of the original on the server (what source.video, or source.mcap, gets). */
   original: string;
   /** Path of the browser-playable MP4, null until the background encode ends. */
   preview: string | null;
@@ -23,7 +23,52 @@ export interface VideoRecord {
   origin: string;
   /** The original is gone, or a referenced import changed since it was added. */
   missing?: boolean;
-  urls: { file: string; preview: string; thumb: string };
+  /** A video, or a ROS 2 MCAP (no preview video; its frames come from an image topic). Absent on older servers: a video. */
+  kind?: "video" | "mcap";
+  /** The probed image topics of an MCAP (null for a video). */
+  mcap?: McapTopics | null;
+  urls: { file: string; preview: string; thumb: string; topics?: string };
+}
+
+export const isMcap = (record: VideoRecord | null | undefined): boolean => record?.kind === "mcap";
+
+// The server answers snake_case; the topic types are camelCase.
+type RawTopic = Record<string, unknown>;
+type RawTopics = { duration_s?: unknown; camera_info_topics?: unknown; images?: unknown };
+
+const num = (v: unknown) => (typeof v === "number" && Number.isFinite(v) ? v : 0);
+const strOrNull = (v: unknown) => (typeof v === "string" ? v : null);
+
+function toTopic(t: RawTopic): McapTopic {
+  return {
+    name: String(t.name ?? ""),
+    schema: String(t.schema ?? ""),
+    width: num(t.width),
+    height: num(t.height),
+    encoding: String(t.encoding ?? ""),
+    rateHz: num(t.rate_hz),
+    count: num(t.count),
+    durationS: num(t.duration_s),
+    cameraInfoTopic: strOrNull(t.camera_info_topic),
+    hasCameraInfo: t.has_camera_info === true,
+    hasDistortion: t.has_distortion === true,
+    cameraInfoError: strOrNull(t.camera_info_error),
+    supported: t.supported !== false, // older records have no flag: supported
+    unsupportedReason: strOrNull(t.unsupported_reason),
+  };
+}
+
+export function toTopics(raw: RawTopics): McapTopics {
+  return {
+    durationS: num(raw.duration_s),
+    cameraInfoTopics: Array.isArray(raw.camera_info_topics) ? raw.camera_info_topics.map(String) : [],
+    images: Array.isArray(raw.images) ? raw.images.map((t) => toTopic(t as RawTopic)) : [],
+  };
+}
+
+function toRecord(raw: VideoRecord): VideoRecord {
+  const mcap = raw.mcap as unknown as RawTopics | null | undefined;
+  return { ...raw, mcap: mcap ? toTopics(mcap) : null };
 }
 
 export type JobStatus = "queued" | "running" | "done" | "failed" | "cancelled" | (string & {});
@@ -101,6 +146,8 @@ export interface ImportRoots {
 export interface VideoApi {
   listVideos(): Promise<VideoRecord[]>;
   getVideo(id: string): Promise<VideoRecord>;
+  /** The image topics of an MCAP entry (the same object as its record's `mcap`). */
+  fetchTopics(videoId: string): Promise<McapTopics>;
   /** Server folders a path may be imported from, and where relative paths start. */
   importRoots(): Promise<ImportRoots>;
   upload(file: File, options?: UploadOptions): Promise<VideoRecord>;
@@ -141,10 +188,11 @@ export function createVideoApi(base = "", fetchImpl: typeof fetch = (...a) => fe
   const enc = encodeURIComponent;
 
   return {
-    listVideos: () => call<VideoRecord[]>("/api/videos"),
-    getVideo: (id) => call<VideoRecord>(`/api/videos/${enc(id)}`),
+    listVideos: async () => (await call<VideoRecord[]>("/api/videos")).map(toRecord),
+    getVideo: async (id) => toRecord(await call<VideoRecord>(`/api/videos/${enc(id)}`)),
+    fetchTopics: async (id) => toTopics(await call<RawTopics>(`/api/videos/${enc(id)}/topics`)),
     importRoots: () => call<ImportRoots>("/api/videos/roots"),
-    importPath: (path) => call<VideoRecord>("/api/videos/import", post({ path })),
+    importPath: async (path) => toRecord(await call<VideoRecord>("/api/videos/import", post({ path }))),
     upload: (file, options = {}) =>
       // XMLHttpRequest: fetch has no upload progress. The server streams the
       // body to disk, so a large file never sits in its memory.
@@ -157,7 +205,7 @@ export function createVideoApi(base = "", fetchImpl: typeof fetch = (...a) => fe
         xhr.responseType = "json";
         xhr.upload.onprogress = (e) => options.onProgress?.(e.loaded, e.lengthComputable ? e.total : file.size);
         xhr.onload = () => {
-          if (xhr.status >= 200 && xhr.status < 300) resolve(xhr.response as VideoRecord);
+          if (xhr.status >= 200 && xhr.status < 300) resolve(toRecord(xhr.response as VideoRecord));
           else {
             const detail = (xhr.response as { detail?: unknown } | null)?.detail;
             reject(new ApiError(typeof detail === "string" ? detail : `${xhr.status} ${xhr.statusText}`, xhr.status));

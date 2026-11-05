@@ -95,3 +95,34 @@ export interface ParsedConfig {
   config: ConfigDict;
   extras: ConfigDict;
 }
+
+/** One image topic of an MCAP (`GET /api/videos/{id}/topics`, mapped to camelCase). */
+export interface McapTopic {
+  name: string;
+  schema: string;
+  /** 0 when unknown (a compressed topic whose first frame does not decode). */
+  width: number;
+  height: number;
+  encoding: string;
+  /** Median message rate; 0 with fewer than two messages. */
+  rateHz: number;
+  count: number;
+  durationS: number;
+  /** The paired `CameraInfo` topic, or null. */
+  cameraInfoTopic: string | null;
+  hasCameraInfo: boolean;
+  /** The CameraInfo has a non-zero D (false for a rectified one). */
+  hasDistortion: boolean;
+  /** The paired CameraInfo exists but cannot be used (then `hasDistortion` is false). */
+  cameraInfoError: string | null;
+  /** False for encodings the reader cannot decode (depth, for one). */
+  supported: boolean;
+  unsupportedReason: string | null;
+}
+
+/** What the server probed in an MCAP: its image topics sorted by name. */
+export interface McapTopics {
+  durationS: number;
+  cameraInfoTopics: string[];
+  images: McapTopic[];
+}

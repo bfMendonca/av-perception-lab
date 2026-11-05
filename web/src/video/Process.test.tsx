@@ -41,6 +41,7 @@ function fakeVideoApi(): FakeVideoApi {
     emit: (id, event) => listeners.get(id)?.(event),
     listVideos: async () => [record],
     getVideo: async () => record,
+    fetchTopics: async () => Promise.reject(new Error("not an MCAP")),
     importRoots: async () => ({ roots: ["/srv/data"], cwd: "/srv" }),
     upload: async () => record,
     importPath: async () => record,

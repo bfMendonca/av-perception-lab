@@ -1,7 +1,7 @@
 // Stage lanes in catalog order. Each stage renders through a registered view
 // when there is one, otherwise through the generic lane: adapter stages get a
 // card per spec, section stages a single card, anything else a raw card.
-import { useEffect, useRef, useState } from "react";
+import { useContext, useEffect, useRef, useState } from "react";
 import type { Catalog, StageInfo, ValidationError } from "../api/types";
 import { cardReadiness } from "../models/cardReadiness";
 import { useReadiness } from "../models/useModelStatus";
@@ -9,12 +9,16 @@ import { Icon } from "../ui/icons";
 import { laneUnits, moduleInfo, moduleTypes, sectionFields, slotPath, slotsOf, summarize } from "./catalog";
 import { EmptySlot, ModuleCard } from "./ModuleCard";
 import { isRecord, isUnder, toDotted } from "./paths";
-import { stageViewFor } from "./registry";
+import { StageContext, stageHidden, stageViewFor } from "./registry";
 import { useEditor, type Selection } from "./yamlState";
 
 export function Lanes() {
   const { catalog, pipeline, errors, selection, select } = useEditor();
+  const context = useContext(StageContext);
   if (!catalog) return null;
+  const units = laneUnits(catalog)
+    .map((unit) => ({ ...unit, stages: unit.stages.filter((s) => !stageHidden(s.yaml_key, pipeline.config[s.yaml_key], context)) }))
+    .filter((unit) => unit.stages.length > 0);
   const stage = (s: StageInfo, nested: boolean) => {
     const View = stageViewFor(s.yaml_key);
     const props = {
@@ -29,7 +33,7 @@ export function Lanes() {
   };
   return (
     <div className="lanes" role="list" aria-label="Pipeline stages">
-      {laneUnits(catalog).map((unit, i) => (
+      {units.map((unit, i) => (
         <div className="lanes__item" role="listitem" key={unit.key}>
           {i > 0 ? (
             <div className="lanes__arrow" aria-hidden="true">
