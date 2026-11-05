@@ -145,3 +145,19 @@ def test_undistorted_run_with_inconsistent_record_exits_2(
     run = fake_run_dir([row(0, BOX)], {"camera": camera})
     assert main(["--refs", str(refs), "--out", str(tmp_path / "e"), str(run)]) == 2
     assert "camera.calibration/undistort unusable" in capsys.readouterr().err
+
+
+def test_mcap_run_with_start_is_refused(fake_run_dir, refs, capsys):
+    run = fake_run_dir(
+        [row(f, BOX, 8.8) for f in range(10)],
+        {
+            "video": {"path": "/d.mcap", "nominal_fps": 10.0, "time_base": "header"},
+            "config": {
+                "source": {"start": 2.0, "stride": 1, "max_frames": 0, "duration": 0},
+                "distance": {"distance_type": "z"},
+            },
+        },
+    )
+    assert main(["--refs", str(refs), str(run)]) == 2
+    err = capsys.readouterr().err
+    assert "MCAP runs with source.start > 0 is not supported yet" in err

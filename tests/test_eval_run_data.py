@@ -119,6 +119,32 @@ def test_mcap_run_uses_the_recorded_frame_times(fake_run_dir):
     assert run.frame_times(frames) == pytest.approx([0.0, 0.125, 0.25, 0.31, 0.41])
 
 
+def test_mcap_frames_before_the_first_row(fake_run_dir):
+    rows = [{**ROWS[0], "frame": 2, "t": 0.3}, {**ROWS[1], "frame": 3, "t": 0.42}]
+    metrics = {
+        "video": {"path": "/d.mcap", "nominal_fps": 10.0, "time_base": "log"},
+        "frames_processed": 4,
+    }
+    run = load_run(fake_run_dir(rows, metrics))
+    frames = run.processed_frames()
+    assert run.frame_times(frames) == pytest.approx([0.1, 0.2, 0.3, 0.42])
+
+
+def test_mcap_run_with_start_is_refused(fake_run_dir):
+    config = {
+        "source": {"start": 1.5, "stride": 1, "max_frames": 0, "duration": 0.0},
+        "distance": {"distance_type": "z"},
+    }
+    metrics = {
+        "video": {"path": "/d.mcap", "nominal_fps": 10.0, "time_base": "header"},
+        "config": config,
+    }
+    run = fake_run_dir(ROWS, metrics)
+    with pytest.raises(ConfigError, match="MCAP runs with source.start > 0") as exc:
+        load_run(run)
+    assert run.name in str(exc.value)
+
+
 def test_load_errors(fake_run_dir, tmp_path):
     with pytest.raises(ConfigError, match="detections.csv not found"):
         load_run(tmp_path)

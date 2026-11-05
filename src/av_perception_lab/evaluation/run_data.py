@@ -176,8 +176,7 @@ class RunData:
     def processed_frames(self) -> np.ndarray:
         """Source frame indices of every processed frame:
         round(start * fps) + stride * k for k < frames_processed (as io.video.read_frames).
-        For an MCAP `start` selects by message time, so with start > 0 the
-        first index is estimated at the nominal rate."""
+        MCAP runs always have start = 0 here (load_run refuses start > 0)."""
         src = self.metrics["config"]["source"]
         first = round(src["start"] * self.fps)
         return first + src["stride"] * np.arange(self.metrics["frames_processed"])
@@ -186,8 +185,11 @@ class RunData:
         """Frame.t (s) of source frame indices.
 
         With real frame times (MCAP) they are the CSV `t` of the frames with
-        rows, interpolated between them and extrapolated at the nominal rate
-        outside; otherwise start + frame offset / fps.
+        rows; frames without rows get a time linearly interpolated in frame
+        index between their neighbours with rows, or extrapolated at the
+        nominal rate before the first and after the last, so with irregular
+        message gaps those are approximations. Otherwise
+        start + frame offset / fps.
         """
         src = self.metrics["config"]["source"]
         fps = self.fps
@@ -201,6 +203,8 @@ class RunData:
             return np.where(
                 frames < known[0], before, np.where(frames > known[-1], after, inside)
             )
+        # Constant rate, or an MCAP run without any row (nothing recorded the
+        # real times): index / nominal rate.
         return src["start"] + (frames - round(src["start"] * fps)) / fps
 
     def __len__(self) -> int:
@@ -281,6 +285,13 @@ def load_run(run_dir: Path) -> RunData:
                     f"{metrics_path}: missing {'.'.join(keys)} (run older than task_0002?)"
                 )
             node = node[key]
+    if "time_base" in metrics["video"] and metrics["config"]["source"]["start"] > 0:
+        # MCAP: start selects by message time and Frame.t counts from the
+        # first selected message, so frame indices and times would be shifted.
+        raise ConfigError(
+            "evaluation of MCAP runs with source.start > 0 is not supported "
+            f"yet: {run_dir.name}"
+        )
     if not {"fps", "nominal_fps"} & set(metrics["video"]):
         raise ConfigError(
             f"{metrics_path}: missing video.fps or video.nominal_fps "
