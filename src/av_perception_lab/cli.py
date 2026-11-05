@@ -57,7 +57,7 @@ from av_perception_lab.io.sinks import (
     VideoSink,
     make_run_dir,
 )
-from av_perception_lab.io.source import VideoSource
+from av_perception_lab.io.source import FrameSource, McapSource, VideoSource
 from av_perception_lab.motion import build_motion
 from av_perception_lab.runtime import DeviceMonitor
 
@@ -170,7 +170,12 @@ def run(
         if cfg.motion is not None
         else None
     )
-    camera = build_camera(cfg.camera, VideoSource(cfg.source))
+    input_source: FrameSource = (
+        McapSource(cfg.source)
+        if cfg.source.mcap is not None
+        else VideoSource(cfg.source)
+    )
+    camera = build_camera(cfg.camera, input_source)
     source = camera.source
     pipeline = Pipeline(
         detectors,
@@ -209,7 +214,8 @@ def run(
         )
         g = depth.geometry
         print(
-            f"[run] {source.info.width}x{source.info.height} @ {source.info.fps:.2f} fps"
+            f"[run] {source.frame_size[0]}x{source.frame_size[1]}"
+            f" @ {source.nominal_fps:.2f} fps"
             f" | {', '.join(names)} | {depth.name} ({g.map_w}x{g.map_h}) -> {run_dir}",
             flush=True,
         )
@@ -237,7 +243,7 @@ def run(
                 print(f"  {metrics.n_frames} frames in {elapsed:.1f} s", flush=True)
         if metrics.n_frames == 0:
             raise ConfigError(
-                f"no frames decoded from {source.info.path} "
+                f"no frames decoded from {source.input_name} "
                 "(is source.start past the end of the video?)"
             )
     wall = time.perf_counter() - t_start

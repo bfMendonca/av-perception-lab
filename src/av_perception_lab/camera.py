@@ -36,7 +36,7 @@ from av_perception_lab.config import (
 )
 from av_perception_lab.core.options import ConfigError
 from av_perception_lab.core.types import CameraIntrinsics
-from av_perception_lab.io.source import FrameSource, FrameTransform, VideoSource
+from av_perception_lab.io.source import FrameSource, FrameTransform
 
 # Valid lengths of an OpenCV distortion vector (k1 k2 p1 p2 [k3 [k4 k5 k6 [s1..s4 [tx ty]]]]).
 DIST_COUNTS: frozenset[int] = frozenset({4, 5, 8, 12, 14})
@@ -542,12 +542,12 @@ class CalibratedIntrinsics(IntrinsicsProvider):
 class CameraSetup:
     """What the camera configuration contributes to a run."""
 
-    source: VideoSource  # with the undistortion transform, if any
+    source: FrameSource  # with the undistortion transform, if any
     intrinsics: IntrinsicsProvider | None
     details: Mapping[str, Any]  # metrics.json["camera"]
 
 
-def build_camera(cfg: CameraConfig, source: VideoSource) -> CameraSetup:
+def build_camera(cfg: CameraConfig, source: FrameSource) -> CameraSetup:
     """Compose the camera of a run (composition root of `camera.*`).
 
     Without `camera.calibration` the source is unchanged and the provider is

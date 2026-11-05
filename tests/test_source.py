@@ -81,3 +81,12 @@ def test_transform_applies_to_frames_and_samples(clip):
     assert source.describe()["transform"] == {"type": "invert"}
     with pytest.raises(ContractError, match=r"Crop returned \(47, 64, 3\)"):
         list(VideoSource(SourceConfig(video=clip), transform=Crop()))
+
+
+@pytest.mark.skipif(shutil.which("ffmpeg") is None, reason="needs ffmpeg/ffprobe")
+def test_video_source_generic_members(clip):
+    source = VideoSource(SourceConfig(video=clip))
+    assert source.nominal_fps == 10.0 and source.n_frames_total == 10
+    assert source.input_name == str(clip)
+    assert source.audio_from() is None  # whole video, but no audio track
+    assert source.camera_info() is None and source.frame_times_known is False

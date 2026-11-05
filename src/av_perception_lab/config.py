@@ -33,15 +33,21 @@ from av_perception_lab.temporal import SmoothingConfig
 
 @dataclass(frozen=True, slots=True)
 class SourceConfig:
-    """Input video and the processed segment."""
+    """Input (a video, or an image topic of a ROS 2 MCAP) and the processed segment."""
 
     video: Path | None = None
+    mcap: Path | None = None  # exclusive with video; needs topic
+    topic: str | None = None  # image topic of the MCAP
     start: float = 0.0  # s
     duration: float = 0.0  # s, 0 = to the end
     max_frames: int = 0  # 0 = all
-    stride: int = 1  # process every N-th frame
+    stride: int = 1  # process every N-th frame (MCAP: every N-th message)
 
     def __post_init__(self) -> None:
+        if self.video is not None and self.mcap is not None:
+            raise ValueError("video and mcap are mutually exclusive")
+        if self.mcap is not None and not self.topic:
+            raise ValueError("mcap needs a topic (the image topic to read)")
         if self.stride < 1:
             raise ValueError("stride must be >= 1")
         if self.max_frames < 0:

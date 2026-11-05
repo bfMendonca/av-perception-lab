@@ -28,6 +28,12 @@ from av_perception_lab.io.source import FrameSource
 class StillSource(FrameSource):
     frame_size = (1920, 1080)
     name = "still"
+    input_name = "stub"
+    nominal_fps = 30.0
+    n_frames_total = None
+
+    def with_transform(self, transform):
+        return self
 
     def __iter__(self):
         return iter(())
