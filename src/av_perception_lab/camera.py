@@ -613,6 +613,10 @@ def build_camera(cfg: CameraConfig, source: FrameSource) -> CameraSetup:
     if cfg.calibration is None:
         return CameraSetup(source, build_intrinsics_provider(cfg), {})
     c: CalibrationConfig = cfg.calibration
+    if c.path is None:
+        raise ConfigError(
+            "camera.calibration.from_source: not supported by build_camera yet"
+        )
     loaded = load_calibration(c.path)
     calibration = loaded.scaled_to(*source.frame_size)
     details: dict[str, Any] = {

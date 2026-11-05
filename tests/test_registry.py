@@ -123,6 +123,7 @@ def test_builtin_stages_are_registered_in_order():
     keys = [s.yaml_key for s in stages if not s.general]
     assert keys == [
         "source",
+        "rectify",
         "detectors",
         "aggregation",
         "refiners",
