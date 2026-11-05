@@ -70,9 +70,18 @@ describe("MCAP input", () => {
 
     expect(within(topicRadio("/rect/image_raw").closest("li") as HTMLElement).getByText("CameraInfo · rectified")).toBeInTheDocument();
 
+    // the unsupported topic is listed first (sorted by name), still with its
+    // CameraInfo badge, but disabled with its reason; /cam/image_raw was preselected
     const depth = topicRadio("/cam/depth/image_raw");
+    expect(within(group).getAllByRole("radio")[0]).toBe(depth);
     expect(depth).toBeDisabled();
+    expect(depth).not.toBeChecked();
     expect(depth.closest("li")).toHaveTextContent("unsupported image encoding '16UC1'");
+    expect(within(depth.closest("li") as HTMLElement).getByText("CameraInfo")).toBeInTheDocument();
+    await userEvent.click(depth);
+    expect(depth).not.toBeChecked();
+    expect(cam).toBeChecked();
+    expect(within(screen.getByRole("region", { name: "Rectification" })).getByRole("switch", { name: "Rectify the images" })).toBeEnabled(); // still /cam/image_raw's
 
     // the still image stands in for the player: there is no preview video of an MCAP
     expect(within(deck()).queryByLabelText(/^Video /)).not.toBeInTheDocument();

@@ -78,7 +78,9 @@ export function needsBinding(config: ConfigDict, record: VideoRecord | null | un
  */
 export function bindMcap(config: ConfigDict, record: VideoRecord, topicName?: string): ConfigDict {
   const current = findTopic(record, sourceTopic(config));
-  const topic = topicName !== undefined ? findTopic(record, topicName) : current?.supported ? current : firstSupported(record);
+  const named = topicName !== undefined ? findTopic(record, topicName) : null;
+  // an unsupported topic is never bound, even when named explicitly
+  const topic = topicName !== undefined ? (named?.supported ? named : null) : current?.supported ? current : firstSupported(record);
   if (!topic) return config;
   const source = { ...without(asRecord(config[SOURCE_KEY]), "video"), mcap: record.original, topic: topic.name };
   let next: ConfigDict = { ...config, [SOURCE_KEY]: source };

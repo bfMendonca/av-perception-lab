@@ -171,12 +171,12 @@ export function fakeModelsApi(rows: ModelStatus[] = []): FakeModelsApi {
 
 // ---------- MCAP inputs (GET /api/videos/{id}/topics, already camelCase) ----------
 
-/** The image topics of the test MCAP (Task 9's fixture plus an unsupported depth topic). */
+/** The image topics of the test MCAP (Task 9's fixture plus an unsupported depth topic, paired with /cam/camera_info as the backend pairs it). */
 export const mcapTopics: McapTopics = {
   durationS: 1,
   cameraInfoTopics: ["/cam/camera_info", "/rect/camera_info"],
   images: [
-    { name: "/cam/depth/image_raw", schema: "sensor_msgs/msg/Image", width: 16, height: 12, encoding: "16UC1", rateHz: 10, count: 2, durationS: 0.1, cameraInfoTopic: null, hasCameraInfo: false, hasDistortion: false, cameraInfoError: null, supported: false, unsupportedReason: "unsupported image encoding '16UC1'; supported: rgb8, bgr8, rgba8, bgra8, mono8, jpeg, png" },
+    { name: "/cam/depth/image_raw", schema: "sensor_msgs/msg/Image", width: 16, height: 12, encoding: "16UC1", rateHz: 10, count: 2, durationS: 0.1, cameraInfoTopic: "/cam/camera_info", hasCameraInfo: true, hasDistortion: true, cameraInfoError: null, supported: false, unsupportedReason: "unsupported image encoding '16UC1'; supported: rgb8, bgr8, rgba8, bgra8, mono8, jpeg, png" },
     { name: "/cam/image_raw", schema: "sensor_msgs/msg/Image", width: 16, height: 12, encoding: "rgb8", rateHz: 2, count: 3, durationS: 1, cameraInfoTopic: "/cam/camera_info", hasCameraInfo: true, hasDistortion: true, cameraInfoError: null, supported: true, unsupportedReason: null },
     { name: "/front/image_raw/compressed", schema: "sensor_msgs/msg/CompressedImage", width: 12, height: 8, encoding: "jpeg", rateHz: 4, count: 2, durationS: 0.25, cameraInfoTopic: null, hasCameraInfo: false, hasDistortion: false, cameraInfoError: null, supported: true, unsupportedReason: null },
     { name: "/rect/image_raw", schema: "sensor_msgs/msg/Image", width: 16, height: 12, encoding: "bgr8", rateHz: 10, count: 2, durationS: 0.1, cameraInfoTopic: "/rect/camera_info", hasCameraInfo: true, hasDistortion: false, cameraInfoError: null, supported: true, unsupportedReason: null },

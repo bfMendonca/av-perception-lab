@@ -40,6 +40,16 @@ describe("mcapCamera", () => {
     expect(bindMcap({ source: { topic: depth.name } }, mcapRecord).source).toEqual({ mcap: mcapRecord.original, topic: cam.name });
   });
 
+  it("bindMcap never binds an unsupported topic, even named explicitly", () => {
+    const bound = bindMcap({ source: { stride: 1 } }, mcapRecord, cam.name);
+    expect(bindMcap(bound, mcapRecord, depth.name)).toBe(bound);
+    expect(bindMcap({ source: {} }, mcapRecord, depth.name)).toEqual({ source: {} });
+    // the depth topic carries a CameraInfo with distortion, yet cannot be used
+    expect(depth.hasCameraInfo && depth.hasDistortion).toBe(true);
+    expect(rectifyAvailability(depth).state).toBe("unsupported");
+    expect(cameraInfoAvailability(depth).available).toBe(false);
+  });
+
   it("unbindMcap clears the MCAP-only keys", () => {
     const cfg: ConfigDict = { source: { mcap: "/x.mcap", topic: "/t", stride: 1 }, camera: { focal_px: null, calibration: { from_source: true, cross_check: true } }, rectify: { enabled: true } };
     expect(unbindMcap(cfg)).toEqual({ source: { stride: 1 }, camera: { focal_px: null } });

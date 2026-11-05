@@ -63,6 +63,32 @@ registerStageView("planners", PlannerLane);
 O registro mais recente vence; ambas as funções devolvem a função que
 desfaz o registro. Sem registro, valem os padrões genéricos.
 
+Uma pista que depende do estado do app (não só da configuração) lê o
+`StageContext` do registro: o app o preenche (hoje com `{input}`, a entrada
+atual do deck, vídeo ou MCAP) e o editor só o repassa, sem olhar dentro. A
+opção `hidden(value, context)` de `registerStageView` tira o estágio do
+canvas (a pista e a seta) quando devolve `true`. É assim que a pista
+Rectification (`web/src/video/RectifyLane.tsx`) some com uma fonte de vídeo:
+
+```ts
+import { useContext } from "react";
+import { registerStageView, StageContext } from "./editor/registry";
+
+function RectifyLane(props: StageViewProps) {
+  const input = useContext(StageContext).input as VideoRecord | null;
+  // ...
+}
+
+// oferecida só para MCAP; continua visível se o YAML já a ligou
+registerStageView("rectify", RectifyLane, {
+  hidden: (value, context) => !isMcap(context.input as VideoRecord | null) && !(isRecord(value) && value.enabled === true),
+});
+```
+
+O app fornece o contexto em volta do editor
+(`<StageContext.Provider value={{ input }}>`, ver `App.tsx`); sem provedor o
+contexto é `{}`.
+
 ## (d) Novo artefato ou nova seção de métricas
 
 A vista de execuções (`#/runs/<id>`) não enumera arquivos: `GET
