@@ -11,6 +11,9 @@ dependencies = [
     "opencv-python",
     "pillow",
     "pyyaml>=6",
+    "mcap",  # MCAP (ROS 2) input, pure Python
+    "mcap-ros2-support",
+    "av",  # .h264 remux with sensor timestamps; MCAP variable-frame-rate output
 ]
 
 [project.optional-dependencies]
@@ -37,7 +40,6 @@ web = [
     "uvicorn",
     "python-multipart",
     "httpx",  # TestClient
-    "av",  # .h264 + meta.json remux with sensor timestamps (library)
 ]
 
 [project.scripts]

@@ -33,15 +33,21 @@ from av_perception_lab.temporal import SmoothingConfig
 
 @dataclass(frozen=True, slots=True)
 class SourceConfig:
-    """Input video and the processed segment."""
+    """Input (a video, or an image topic of a ROS 2 MCAP) and the processed segment."""
 
     video: Path | None = None
+    mcap: Path | None = None  # exclusive with video; needs topic
+    topic: str | None = None  # image topic of the MCAP
     start: float = 0.0  # s
     duration: float = 0.0  # s, 0 = to the end
     max_frames: int = 0  # 0 = all
-    stride: int = 1  # process every N-th frame
+    stride: int = 1  # process every N-th frame (MCAP: every N-th message)
 
     def __post_init__(self) -> None:
+        if self.video is not None and self.mcap is not None:
+            raise ValueError("video and mcap are mutually exclusive")
+        if self.mcap is not None and not self.topic:
+            raise ValueError("mcap needs a topic (the image topic to read)")
         if self.stride < 1:
             raise ValueError("stride must be >= 1")
         if self.max_frames < 0:
@@ -79,13 +85,37 @@ class CalibrationConfig:
     so configurations can be validated without it.
     """
 
-    path: Path  # OpenCV FileStorage YAML/JSON (camera.load_calibration)
+    # OpenCV FileStorage YAML/JSON (camera.load_calibration); exclusive with
+    # from_source (intrinsics from the MCAP's CameraInfo).
+    path: Path | None = None
+    from_source: bool = False
     undistort: bool = False  # remove lens distortion from every frame
     alpha: float = 0.0  # getOptimalNewCameraMatrix, [0, 1]; only with undistort
     check_lens: LensCheck = "error"  # recording camera vs the video's metadata
     cross_check: bool = (
         False  # also estimate the focal (camera.estimate) and report both
     )
+
+    def __post_init__(self) -> None:
+        if self.from_source and self.path is not None:
+            raise ValueError("from_source and path are exclusive: set only one")
+        if not self.from_source and self.path is None:
+            raise ValueError("set path or from_source")
+        if self.from_source and self.undistort:
+            raise ValueError(
+                "undistort is not available with from_source: use the rectify section"
+            )
+        if not 0.0 <= self.alpha <= 1.0:
+            raise ValueError(f"alpha must be in [0, 1], got {self.alpha}")
+
+
+@dataclass(frozen=True, slots=True)
+class RectifyConfig:
+    """Lens-distortion removal with the MCAP's CameraInfo (first stage after
+    the source, so every later stage sees rectified pixels)."""
+
+    enabled: bool = False
+    alpha: float = 0.0  # getOptimalNewCameraMatrix, [0, 1]
 
     def __post_init__(self) -> None:
         if not 0.0 <= self.alpha <= 1.0:
@@ -202,6 +232,7 @@ class RunConfig:
     depth: Mapping[str, Any]
     source: SourceConfig = field(default_factory=SourceConfig)
     camera: CameraConfig = field(default_factory=CameraConfig)
+    rectify: RectifyConfig = field(default_factory=RectifyConfig)
     # Flat spec {type, **options}, validated by registry.build("aggregator", ...).
     aggregation: Mapping[str, Any] = field(default_factory=lambda: {"type": "concat"})
     # Mask refiner specs {type, name?, **options}, applied in order.
@@ -258,6 +289,31 @@ class RunConfig:
                 f"render.semantic_overlay: unknown semantic map {unknown[0]!r}; "
                 f"configured: {', '.join(names) or 'none'}"
             )
+        if self.source.mcap is None:
+            cal = self.camera.calibration
+            if cal is not None and cal.from_source:
+                raise ValueError(
+                    "camera.calibration.from_source: needs source.mcap "
+                    "(a video has no CameraInfo)"
+                )
+            if self.rectify.enabled:
+                raise ValueError(
+                    "rectify.enabled: needs source.mcap (a video has no CameraInfo)"
+                )
+        if self.rectify.enabled:
+            # rectify takes K from the CameraInfo: another intrinsics source
+            # would be dropped (from_source is the same source, so it is allowed).
+            if self.camera.focal_px is not None:
+                raise ValueError(
+                    "rectify.enabled: camera.focal_px is exclusive with it "
+                    "(rectify uses the CameraInfo K); remove camera.focal_px"
+                )
+            cal = self.camera.calibration
+            if cal is not None and cal.path is not None:
+                raise ValueError(
+                    "rectify.enabled: camera.calibration.path is exclusive with it "
+                    "(rectify uses the CameraInfo); remove camera.calibration"
+                )
         if self.render.bev_inset and self.motion is None:
             raise ValueError("render.bev_inset: needs the motion section")
 
@@ -408,6 +464,12 @@ def motion_spec_errors(cfg: RunConfig) -> list[ConfigError]:
 # `order` leave room for stages registered later.
 for _stage in (
     Stage(yaml_key="source", title="Source", order=10, config_cls=SourceConfig),
+    Stage(
+        yaml_key="rectify",
+        title="Rectification",
+        order=15,
+        config_cls=RectifyConfig,
+    ),
     Stage(
         yaml_key="detectors",
         title="Detectors",

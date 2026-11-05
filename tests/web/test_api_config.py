@@ -84,3 +84,8 @@ def test_safe_join_rejects_traversal(tmp_path):
         with pytest.raises(ValueError):
             safe_join(root, rel)
     assert os.path.exists(outside)
+
+
+def test_catalog_lists_rectify_between_source_and_detectors(client):
+    keys = [s["yaml_key"] for s in client.get("/api/catalog").json()["stages"]]
+    assert keys.index("source") < keys.index("rectify") < keys.index("detectors")

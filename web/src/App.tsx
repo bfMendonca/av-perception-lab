@@ -1,7 +1,7 @@
 // Composition root of the UI: loads the catalog, wires the editor store to the
 // shell (open/save YAML, validation status, banners), the video deck (library,
 // segment, Process, jobs) and the screens (editor, runs) behind hash routes.
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { ApiClient } from "./api/client";
 import type { Catalog, ValidationError } from "./api/types";
 import { createModelsApi, type ModelsApi } from "./api/models";
@@ -10,6 +10,7 @@ import { createPresetsApi, type PresetsApi } from "./api/presets";
 import { createVideoApi, type VideoApi } from "./api/video";
 import { SUPPORTED_CATALOG_VERSION, stageByKey } from "./editor/catalog";
 import { EditorView } from "./editor/EditorView";
+import { StageContext } from "./editor/registry";
 import { ReadinessProvider, useModelStatus } from "./models/useModelStatus";
 import { createEditorStore, EditorProvider, useEditor, type Draft, type EditorStore, type Selection } from "./editor/yamlState";
 import { Dialog } from "./ui/Dialog";
@@ -23,7 +24,9 @@ import { RunsView } from "./runs/RunsView";
 import { createRunsApi, type RunsApi } from "./api/runs";
 import type { RunRecord } from "./api/video";
 import { classifyFiles, isRawH264, type DroppedFiles } from "./video/DropZone";
+import { INPUT_CONTEXT_KEY } from "./video/RectifyLane"; // also registers the Rectification lane
 import { useJobs } from "./video/useJobs";
+import { useMcapBinding } from "./video/useMcapBinding";
 import { useProcess } from "./video/useProcess";
 import { useVideoSession } from "./video/useVideoSession";
 import { VideoDeck } from "./video/VideoDeck";
@@ -127,6 +130,8 @@ function Studio({ client, video, runs, models, presets: presetsApi, remember, ca
   const jobs = useJobs(video, { onDone: (runId) => navigate({ view: "runs", runId }) });
   const readiness = useModelStatus(editor.loaded && catalog.status === "ready" ? editor.toConfig() : null, { api: models, debounceMs: editor.debounceMs, notify: editor.notify });
   const process = useProcess(video, session, jobs, editor, readiness);
+  useMcapBinding(session.current, editor);
+  const stageContext = useMemo(() => ({ [INPUT_CONTEXT_KEY]: session.current }), [session.current]);
   const fileInput = useRef<HTMLInputElement>(null);
   const presets = usePresets(presetsApi);
   const [presetsOpen, setPresetsOpen] = useState(false);
@@ -342,7 +347,7 @@ function Studio({ client, video, runs, models, presets: presetsApi, remember, ca
             if (route.view !== "editor") navigate({ view: "editor" });
             addVideo(files);
           } else if (files.yaml && ready) void openFile(files.yaml);
-          else if (e.dataTransfer.files.length) editor.notify({ tone: "warn", text: "Drop a video (MP4, MOV, MKV, .h264 with its .meta.json) or a pipeline YAML." });
+          else if (e.dataTransfer.files.length) editor.notify({ tone: "warn", text: "Drop a video (MP4, MOV, MKV, .h264 with its .meta.json), a ROS 2 .mcap or a pipeline YAML." });
         }}
       >
         <Shell
@@ -438,7 +443,11 @@ function Studio({ client, video, runs, models, presets: presetsApi, remember, ca
                   </button>
                 </div>
               ) : null}
-              {ready ? <EditorView onOpen={() => fileInput.current?.click()} /> : null}
+              {ready ? (
+                <StageContext.Provider value={stageContext}>
+                  <EditorView onOpen={() => fileInput.current?.click()} />
+                </StageContext.Provider>
+              ) : null}
             </div>
           )}
         </Shell>
@@ -446,7 +455,7 @@ function Studio({ client, video, runs, models, presets: presetsApi, remember, ca
           <div className="dropzone" aria-hidden="true">
             <div>
               <Icon name="film" size={28} />
-              <p>Drop a video to load it, or a pipeline YAML to open it</p>
+              <p>Drop a video or an MCAP to load it, or a pipeline YAML to open it</p>
             </div>
           </div>
         ) : null}

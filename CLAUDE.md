@@ -54,7 +54,7 @@ Código em camadas: `core/` (contratos `Instances`/`DepthResult`/`SemanticMap`/
 por trilha e prevê trajetórias (modelos `cv`/`ctrv` e ego-motion `csv` no
 registro); `adapters/` envolve cada framework (refinadores: `MaskRefiner` → `BoxPromptRefiner` → `HFSamRefiner` →
 famílias finas, + `UltralyticsSamRefiner`); `io/` (vídeo, fonte, sinks,
-metadados QuickTime); `cli.py` é só a raiz de composição (a câmera —
+metadados QuickTime, `mcap_reader.py` para entrada MCAP); `cli.py` é só a raiz de composição (a câmera —
 calibração, conferência da lente, correção de distorção — é composta por
 `camera.build_camera`). Calibração (`calibration.py`, `tools/calibrate.py`)
 e avaliação contra referências (`evaluation/`, `tools/evaluate.py`) rodam
@@ -217,6 +217,28 @@ no ambiente leve; só os gráficos pedem o extra `eval` (matplotlib).
   Com ego-motion o filtro roda no mundo (REP-103) e as saídas voltam à
   câmera do quadro atual. Padrões do Passo 0: `rel_floor` 0,02 (o ruído do
   DA3 longe tem cauda pesada) e `nis_gate` 30, não 13,8.
+- Entrada MCAP (`task_0033`, `io/mcap_reader.py`, `McapSource`): `Frame.t` usa
+  `header.stamp` só se as 50 primeiras mensagens têm carimbo > 0 e não
+  decrescente (senão `log_time`); mensagens com tempo não maior que o da última
+  mantida são descartadas (`duplicates_dropped`; aviso `[warn]` no stderr ao
+  fim da execução, com `stamp_regression_at` se o carimbo reinicia no meio).
+  Só as mensagens selecionadas são decodificadas: os tempos vêm dos bytes CDR
+  crus (`cdr_stamp_ns`); quadro > `MAX_IMAGE_PIXELS` (2^27) é recusado pelo
+  cabeçalho PNG/JPEG antes do `imdecode`; bomba de descompressão de chunk é
+  risco aceito (documentado). ROI cheio `(0, 0, h, w)` = sem ROI. `t` conta a partir da primeira
+  mensagem **selecionada** (o `t` de vídeo inclui o `start`): por isso a
+  avaliação recusa execução MCAP com `source.start > 0`. A descrição da fonte
+  fica em `metrics.json["video"]` (`time_base`, `nominal_fps`), não em `source`.
+- Vídeo de execução MCAP é de taxa variável (`TimestampedVideoWriter`, PyAV,
+  base 1/90000; recusa tamanho ímpar); PyAV é dependência base agora.
+- `rectify` (CameraInfo com distorção, só MCAP) ≠ `camera.calibration.undistort`
+  (arquivo de calibração): `rectify` é recusado com `camera.focal_px` e
+  `calibration.path`, `from_source` é exclusivo com `path` e `undistort`.
+  `ImageTopic.supported` é falso para 16UC1/compressedDepth: o tópico é listado
+  mas não selecionável. `source.mcap` está em `SERVER_CHECKED_PATHS`.
+- Testes de MCAP usam `tests/mcap_fixture.py` (import nu, `tests/` está no
+  `sys.path`); o escritor não indexado usa atributos privados do
+  mcap-ros2-support 0.6.0 (`_writer`, `_encoders`, `_channel_ids`, `_finished`).
 - Coluna de texto nova no CSV entra em `evaluation/run_data.TEXT_COLUMNS`
   (a avaliação lê o resto como float) e `tests/run_outputs.py` fixa o
   número de colunas (61 desde a `task_0009`).

@@ -4,11 +4,12 @@
 // the pipeline is not ready; a 409 from the server lists the models.
 import { useCallback, useState } from "react";
 import type { ModelStatus } from "../api/models";
-import { ModelsNotReady, RunRejected, type VideoApi } from "../api/video";
+import { isMcap, ModelsNotReady, RunRejected, type VideoApi } from "../api/video";
 import type { useEditor } from "../editor/yamlState";
 import { plural, preparable, stateLabel, where } from "../models/readiness";
 import type { Readiness } from "../models/useModelStatus";
 import { Dialog } from "../ui/Dialog";
+import { findTopic, inputTiming, sourceTopic } from "./mcapCamera";
 import { buildRunConfig, estimateSeconds, expectedFrames, formatDuration, formatTime, segmentToSource, type SourceSegment } from "./segment";
 import type { Jobs } from "./useJobs";
 import type { VideoSession } from "./useVideoSession";
@@ -39,11 +40,18 @@ export function useProcess(api: VideoApi, session: VideoSession, jobs: Jobs, edi
   const [refused, setRefused] = useState<ModelStatus[] | null>(null);
   const [busy, setBusy] = useState(false);
   const video = session.current;
+  const mcap = isMcap(video);
+  // An MCAP runs the topic the config names (the deck's picker writes it).
+  const topic = mcap ? findTopic(video, sourceTopic(editor.state.pipeline.config)) : null;
 
   const blocked: string | null = !video
     ? "Load a video first."
     : video.missing
-      ? "The video file is missing or changed on the server: import it again."
+      ? `The ${mcap ? "MCAP" : "video"} file is missing or changed on the server: import it again.`
+      : mcap && !topic
+        ? "Pick an image topic of the MCAP first."
+        : mcap && !topic?.supported
+          ? `${topic?.name} cannot be read: pick another topic.`
       : !editor.loaded
       ? "Open or start a pipeline first."
       : editor.validation === "invalid"
@@ -55,20 +63,21 @@ export function useProcess(api: VideoApi, session: VideoSession, jobs: Jobs, edi
   const plan = useCallback(
     (entire: boolean): ProcessPlan | null => {
       if (!video) return null;
+      const timing = inputTiming(video, topic);
       const segment = entire
-        ? segmentToSource(0, 0, session.stride, video.duration_s)
-        : segmentToSource(session.segment.start, session.segment.length, session.stride, video.duration_s);
-      const length = segment.duration > 0 ? segment.duration : video.duration_s - segment.start;
-      const frames = expectedFrames(length, video.fps, segment.stride);
-      const range = entire ? "entire video" : `${formatTime(segment.start)}–${formatTime(segment.start + length)}`;
+        ? segmentToSource(0, 0, session.stride, timing.durationS)
+        : segmentToSource(session.segment.start, session.segment.length, session.stride, timing.durationS);
+      const length = segment.duration > 0 ? segment.duration : Math.max(timing.durationS - segment.start, 0);
+      const frames = expectedFrames(length, timing.fps, segment.stride, timing.count);
+      const range = entire ? (mcap ? "entire topic" : "entire video") : `${formatTime(segment.start)}–${formatTime(segment.start + length)}`;
       return {
         segment,
         frames,
         seconds: estimateSeconds(frames),
-        label: `${video.name} · ${range}${segment.stride > 1 ? ` · stride ${segment.stride}` : ""}`,
+        label: `${video.name}${topic ? ` · ${topic.name}` : ""} · ${range}${segment.stride > 1 ? ` · stride ${segment.stride}` : ""}`,
       };
     },
-    [session.segment, session.stride, video],
+    [mcap, session.segment, session.stride, topic, video],
   );
 
   const submit = useCallback(
@@ -77,7 +86,7 @@ export function useProcess(api: VideoApi, session: VideoSession, jobs: Jobs, edi
       if (!p || !video) return;
       setBusy(true);
       try {
-        const config = buildRunConfig(editor.toConfig(), video.original, p.segment);
+        const config = buildRunConfig(editor.toConfig(), video.original, p.segment, mcap ? "mcap" : "video");
         await jobs.submit(config, video.id, { label: p.label, expected: p.frames });
       } catch (exc) {
         if (exc instanceof ModelsNotReady) {
@@ -94,7 +103,7 @@ export function useProcess(api: VideoApi, session: VideoSession, jobs: Jobs, edi
         setBusy(false);
       }
     },
-    [editor, jobs, plan, readiness, video],
+    [editor, jobs, mcap, plan, readiness, video],
   );
 
   const process = useCallback(
@@ -199,7 +208,7 @@ export function useProcess(api: VideoApi, session: VideoSession, jobs: Jobs, edi
     </>
   );
 
-  return { process, plan, blocked, busy, dialog };
+  return { process, plan, blocked, busy, dialog, topic };
 }
 
 export type Process = ReturnType<typeof useProcess>;

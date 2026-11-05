@@ -115,6 +115,12 @@ class SpyConcat(Concat):
 class Source(FrameSource):
     frame_size = (100, 100)
     name = "src"
+    input_name = "stub"
+    nominal_fps = 30.0
+    n_frames_total = None
+
+    def with_transform(self, transform):
+        return self
 
     def __iter__(self):
         return iter([FRAME])

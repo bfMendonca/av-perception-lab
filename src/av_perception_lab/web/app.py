@@ -126,6 +126,73 @@ VIDEO_OUTSIDE_ROOTS = (
 )
 
 
+def mcap_topic_problems(
+    config: dict[str, Any], mcap: dict[str, Any]
+) -> list[dict[str, str]]:
+    """Early, UI-friendly errors of a run on an MCAP library entry (`mcap` is
+    its summary): `source.topic` must be one of its image topics, and
+    `rectify.enabled` / `camera.calibration.from_source` need that topic's
+    CameraInfo (rectify also needs its distortion). `load_config` and
+    `build_camera` stay the authority; these name the topic's state."""
+    images = {t["name"]: t for t in mcap.get("images") or []}
+    choices = ", ".join(images) or "none"
+    source = config.get("source")
+    topic = source.get("topic") if isinstance(source, dict) else None
+    if not isinstance(topic, str) or not topic:
+        return [
+            {
+                "path": "source.topic",
+                "message": f"choose an image topic of the MCAP ({choices})",
+            }
+        ]
+    entry = images.get(topic)
+    if entry is None:
+        return [
+            {
+                "path": "source.topic",
+                "message": f"{topic} is not an image topic of the MCAP "
+                f"(image topics: {choices})",
+            }
+        ]
+    if not entry.get("supported", True):
+        return [
+            {
+                "path": "source.topic",
+                "message": f"{topic} cannot be read: {entry.get('unsupported_reason')}",
+            }
+        ]
+    section = config.get("rectify")
+    rectify = isinstance(section, dict) and section.get("enabled") is True
+    camera = config.get("camera")
+    calibration = camera.get("calibration") if isinstance(camera, dict) else None
+    from_source = (
+        isinstance(calibration, dict) and calibration.get("from_source") is True
+    )
+    errors = []
+    for wanted, path, use in (
+        (rectify, "rectify.enabled", "rectification"),
+        (from_source, "camera.calibration.from_source", "the intrinsics"),
+    ):
+        if not wanted:
+            continue
+        if not entry.get("has_camera_info"):
+            message = f"{topic} has no CameraInfo: {use} needs one"
+        elif entry.get("camera_info_error"):
+            message = (
+                f"the CameraInfo of {topic} ({entry['camera_info_topic']}) cannot "
+                f"be used: {entry['camera_info_error']}"
+            )
+        elif path == "rectify.enabled" and not entry.get("has_distortion"):
+            message = (
+                f"the CameraInfo of {topic} has no distortion (already "
+                "rectified): nothing to rectify"
+            )
+        else:
+            continue
+        errors.append({"path": path, "message": message})
+    return errors
+
+
 def yaml_expanded_nodes(text: str) -> int:
     """Nodes of a YAML document once its aliases are expanded (each alias
     counts its whole target, as the JSON reply repeats it); anchors and
@@ -518,6 +585,15 @@ def create_app(
     def get_video(video_id: str) -> dict[str, Any]:
         return video_or_404(video_id).to_dict()
 
+    # Declared before the /api/videos/{video_id}/{name} file route, which
+    # would match it.
+    @app.get("/api/videos/{video_id}/topics")
+    def video_topics(video_id: str) -> dict[str, Any]:
+        record = video_or_404(video_id)
+        if record.mcap is None:
+            raise HTTPException(404, f"{record.name} is not an MCAP (no topics)")
+        return record.mcap
+
     @app.get("/api/videos/{video_id}/{name}")
     def video_file(video_id: str, name: str) -> FileResponse:
         record = video_or_404(video_id)
@@ -549,12 +625,14 @@ def create_app(
         `models_not_ready` when a model of the config is not ready."""
         errors: list[dict[str, str]] = []
         source = config.get("source")
-        video = source.get("video") if isinstance(source, dict) else None
-        if video_id is None and isinstance(video, str) and video:
-            # A client path reaches ffmpeg: only the library and import folders.
-            _real, problem = video_problem(video)
-            if problem is not None:
-                errors.append({"path": "source.video", "message": problem})
+        for key in ("video", "mcap"):
+            value = source.get(key) if isinstance(source, dict) else None
+            if video_id is None and isinstance(value, str) and value:
+                # A client path reaches ffmpeg or the MCAP reader: only the
+                # library and import folders.
+                _real, problem = video_problem(value)
+                if problem is not None:
+                    errors.append({"path": f"source.{key}", "message": problem})
         if video_id is not None:
             try:
                 if not valid_video_id(video_id):
@@ -571,11 +649,19 @@ def create_app(
                             "on the server: import it again",
                         }
                     )
-                # The library video is what runs (and what the history
-                # records): source.video is bound to video_id.
+                # The library entry is what runs (and what the history
+                # records): source.video, or source.mcap for an MCAP, is
+                # bound to video_id.
                 source = config.get("source")
-                source = source if isinstance(source, dict) else {}
-                config = {**config, "source": {**source, "video": str(record.original)}}
+                source = dict(source) if isinstance(source, dict) else {}
+                if record.kind == "mcap":
+                    source.pop("video", None)
+                    source["mcap"] = str(record.original)
+                    errors += mcap_topic_problems(config, record.mcap or {})
+                else:
+                    source.pop("mcap", None)
+                    source["video"] = str(record.original)
+                config = {**config, "source": source}
         problems = schema.validate_config(config)
         if not problems:  # paths are only discoverable in a valid config
             problems = security.path_problems(config, paths)
@@ -732,10 +818,11 @@ def create_app(
         config = {k: v for k, v in config.items() if k in _known_keys()}
         if record.video_id is not None:
             return await submit_run(config, record.video_id)
-        # Not a library video: rerun its source.video only from an import
-        # folder (the same rule as importing a server path).
+        # Not a library entry: rerun its source.video (or source.mcap) only
+        # from an import folder (the same rule as importing a server path).
         source = config.get("source")
-        video = source.get("video") if isinstance(source, dict) else None
+        source = source if isinstance(source, dict) else {}
+        video = source.get("video") or source.get("mcap")
         if not isinstance(video, str) or not video:
             raise HTTPException(409, f"run {run_id} recorded no source video")
         _real, problem = video_problem(video)

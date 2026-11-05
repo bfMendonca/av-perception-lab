@@ -1,5 +1,11 @@
 """Video library of the web server: uploads, server-path imports, previews.
 
+Entries are videos or ROS 2 MCAP recordings (`kind`, from the `.mcap`
+suffix). An MCAP is validated with `probe_mcap` instead of ffprobe (at least
+one image topic), its summary is kept in `record.json` (`mcap`, served by
+the topics route), its size/rate/duration are those of its first image
+topic, its thumb is the first frame of that topic, and it has no preview.
+
 One folder per video, `library_root/<id>/`, where `id` is the first 12 hex
 digits of the content's sha256 (re-uploads dedupe):
 
@@ -23,7 +29,7 @@ allowed `data_roots`. Only `ffprobe`/`ffmpeg` (and PyAV) are used: no torch.
 Every one of them opens its input with `INPUT_GUARD`: local files only and
 only the video demuxers the library accepts (a playlist or concat file could
 otherwise make ffmpeg open other files or hosts). An upload's stored suffix
-is one of `VIDEO_SUFFIXES` (anything else is stored as `.bin`).
+is one of `STORED_SUFFIXES` (anything else is stored as `.bin`).
 """
 
 import concurrent.futures
@@ -52,6 +58,8 @@ RECORD = "record.json"
 THUMB = "thumb.jpg"
 PREVIEW = "preview.mp4"
 RAW_SUFFIXES = (".h264", ".264")
+MCAP_SUFFIX = ".mcap"
+KINDS = ("video", "mcap")
 PREVIEW_MAX_SIDE = 1280
 THUMB_WIDTH = 320
 _SENSOR_TS = re.compile(r'"SensorTimestamp":\s*(\d+)\s*[,}\n]')  # remux_vfr.py
@@ -84,6 +92,8 @@ VIDEO_MEDIA_TYPES = {
 }
 VIDEO_SUFFIXES = tuple(VIDEO_MEDIA_TYPES)
 UNKNOWN_SUFFIX = ".bin"
+# Suffixes an upload keeps (an MCAP is served as application/octet-stream).
+STORED_SUFFIXES = (*VIDEO_SUFFIXES, MCAP_SUFFIX)
 
 log = logging.getLogger(__name__)
 
@@ -126,17 +136,19 @@ class VideoRecord:
     origin: str = "upload"  # upload|import
     # The original is gone, or a referenced import changed since it was added.
     missing: bool = False
+    kind: str = "video"  # video|mcap
+    # MCAP summary (the topics route; `mcap_summary`), None for a video.
+    mcap: dict[str, Any] | None = None
 
     def to_dict(self) -> dict[str, Any]:
         """JSON view, with the URLs of the file routes."""
         data = asdict(self)
+        names = ("file", "preview", "thumb", *(("topics",) if self.mcap else ()))
         data.update(
             original=str(self.original),
             preview=str(self.preview) if self.preview else None,
             thumb=str(self.thumb),
-            urls={
-                k: f"/api/videos/{self.id}/{k}" for k in ("file", "preview", "thumb")
-            },
+            urls={k: f"/api/videos/{self.id}/{k}" for k in names},
         )
         return data
 
@@ -408,6 +420,125 @@ def _remux_h264_cli(src: Path, pts_us: list[int], dst: Path) -> None:
         raise InvalidVideo(f"cannot remux the H.264 stream: {_last_error(proc)}")
 
 
+# -- MCAP ----------------------------------------------------------------------
+
+
+def _mcap_text(exc: Exception, path: Path, name: str) -> str:
+    """A reader error for the client: the server path becomes the file name."""
+    return str(exc).replace(str(path), name)
+
+
+def mcap_summary(path: Path, name: str = "") -> dict[str, Any]:
+    """JSON summary of an MCAP for the UI (stored as `record.json`'s `mcap`):
+    `duration_s`, `camera_info_topics` and, per image topic, `name`,
+    `schema`, `width`, `height`, `encoding`, `rate_hz`, `count`,
+    `duration_s`, `camera_info_topic`, `has_camera_info`, `has_distortion`
+    and `camera_info_error` (why its CameraInfo cannot be used, else None).
+
+    Raises:
+        InvalidVideo: not a readable MCAP (corrupt, truncated) or without an
+            image topic; the message names `name`, never the server path.
+    """
+    from av_perception_lab.io.mcap_reader import McapError, probe_mcap
+
+    name = name or path.name
+    try:
+        info = probe_mcap(path)
+    except McapError as exc:
+        raise InvalidVideo(
+            f"not a readable MCAP: {_mcap_text(exc, path, name)}"
+        ) from None
+    if not info.images:
+        raise InvalidVideo(
+            f"{name} has no image topic (sensor_msgs/msg/Image or CompressedImage)"
+        )
+    images = []
+    for image in info.images:
+        topic = image.topic
+        row: dict[str, Any] = {
+            "name": topic.name,
+            "schema": topic.schema,
+            "width": image.width,
+            "height": image.height,
+            "encoding": image.encoding,
+            "rate_hz": topic.rate_hz,
+            "count": topic.count,
+            "duration_s": max(topic.last_ns - topic.first_ns, 0) / 1e9,
+            "camera_info_topic": image.camera_info_topic,
+            "has_camera_info": image.camera_info_topic is not None,
+            "has_distortion": False,
+            "camera_info_error": None,
+            "supported": image.supported,
+            "unsupported_reason": image.unsupported_reason,
+        }
+        if image.camera_info_topic is not None:
+            row.update(_camera_info_state(path, name, image))
+        images.append(row)
+    return {
+        "duration_s": info.duration_s,
+        "camera_info_topics": list(info.camera_info_topics),
+        "images": images,
+    }
+
+
+def _camera_info_state(path: Path, name: str, image: Any) -> dict[str, Any]:
+    """`has_distortion` / `camera_info_error` of an image topic's CameraInfo
+    (read and converted as a run would: model, ROI, binning, size)."""
+    from av_perception_lab.camera import calibration_from_camera_info, has_distortion
+    from av_perception_lab.core.options import ConfigError
+    from av_perception_lab.io.mcap_reader import McapError, read_camera_info
+
+    try:
+        msg = read_camera_info(path, image.camera_info_topic)
+        if image.width > 0:  # 0: an undecodable compressed topic, size unknown
+            calibration_from_camera_info(msg, (image.width, image.height))
+    except (McapError, ConfigError, ValueError) as exc:
+        return {"camera_info_error": _mcap_text(exc, path, name)}
+    return {"has_distortion": has_distortion(msg)}
+
+
+def _mcap_thumbnail(
+    src: Path, mcap: dict[str, Any], dst: Path, filename: str
+) -> dict[str, Any]:
+    """JPEG (at most THUMB_WIDTH wide) of the first frame of the first
+    supported image topic whose frame decodes; returns that topic's row of
+    `mcap["images"]` (the record's size and rate come from it).
+
+    Raises:
+        InvalidVideo: no image topic decodes (each one's reason listed).
+    """
+    import cv2
+
+    from av_perception_lab.io.mcap_reader import McapError, iter_images
+
+    name = display_name(filename)
+    problems = []
+    for row in mcap["images"]:
+        if not row["supported"]:
+            problems.append(f"{row['name']}: {row['unsupported_reason']}")
+            continue
+        try:
+            with contextlib.closing(iter_images(src, row["name"])) as frames:
+                first = next(frames)
+        except (McapError, StopIteration) as exc:
+            problems.append(f"{row['name']}: {_mcap_text(exc, src, name)}")
+            continue
+        _write_thumb(cv2, first.rgb, dst)
+        return row
+    raise InvalidVideo(
+        f"no decodable image topic in {name} found: {'; '.join(problems)}"
+    )
+
+
+def _write_thumb(cv2: Any, rgb: Any, dst: Path) -> None:
+    height, width = rgb.shape[:2]
+    if width > THUMB_WIDTH:
+        size = (THUMB_WIDTH, max(1, round(height * THUMB_WIDTH / width)))
+        rgb = cv2.resize(rgb, size, interpolation=cv2.INTER_AREA)
+    if not cv2.imwrite(str(dst), cv2.cvtColor(rgb, cv2.COLOR_RGB2BGR)):
+        raise InvalidVideo("could not write the thumbnail")
+
+
 # -- helpers -------------------------------------------------------------------
 
 
@@ -437,10 +568,10 @@ def display_name(filename: str) -> str:
 
 
 def _suffix(filename: str) -> str:
-    """The stored suffix of an upload: a video suffix, else `.bin` (a client
-    name never picks how the file is served)."""
+    """The stored suffix of an upload: a video suffix or `.mcap`, else `.bin`
+    (a client name never picks how the file is served)."""
     suffix = Path(display_name(filename)).suffix.lower()
-    return suffix if suffix in VIDEO_SUFFIXES else UNKNOWN_SUFFIX
+    return suffix if suffix in STORED_SUFFIXES else UNKNOWN_SUFFIX
 
 
 def video_media_type(path: Path) -> str:
@@ -450,6 +581,10 @@ def video_media_type(path: Path) -> str:
 
 def _is_raw(filename: str) -> bool:
     return _suffix(filename) in RAW_SUFFIXES
+
+
+def _is_mcap(filename: str) -> bool:
+    return _suffix(filename) == MCAP_SUFFIX
 
 
 def _write_json(path: Path, data: dict[str, Any]) -> None:
@@ -571,7 +706,8 @@ class Library:
         else:
             original = work / f"original{_suffix(filename)}"
             os.replace(src, original)
-        return self._finish(video_id, work, original, None, filename, "upload")
+        kind = "mcap" if _is_mcap(filename) else "video"
+        return self._finish(video_id, work, original, None, filename, "upload", kind)
 
     def add_from_path(self, path: Path) -> VideoRecord:
         """Add a file of the server by reference (a `.h264` with its sibling
@@ -612,7 +748,8 @@ class Library:
                 original = work / "original.mkv"
                 remux_h264(real, meta, original)
                 return self._finish(video_id, work, original, None, path.name, "import")
-            return self._finish(video_id, work, real, real, path.name, "import")
+            kind = "mcap" if _is_mcap(real.name) else "video"
+            return self._finish(video_id, work, real, real, path.name, "import", kind)
         finally:
             shutil.rmtree(stage, ignore_errors=True)
 
@@ -642,13 +779,23 @@ class Library:
         reference: Path | None,
         filename: str,
         origin: str,
+        kind: str = "video",
     ) -> VideoRecord:
         """Probe, thumbnail and move `work` into place as entry `video_id`."""
-        info = probe(original)
-        _thumbnail(original, work / THUMB, min(1.0, info.duration_s / 3))
+        mcap = None
+        if kind == "mcap":
+            mcap = mcap_summary(original, display_name(filename))
+            first = _mcap_thumbnail(original, mcap, work / THUMB, filename)
+            info = ProbeInfo(
+                first["width"], first["height"], first["rate_hz"], first["duration_s"]
+            )
+        else:
+            info = probe(original)
+            _thumbnail(original, work / THUMB, min(1.0, info.duration_s / 3))
         record = {
             "id": video_id,
             "name": display_name(filename),
+            "kind": kind,
             "width": info.width,
             "height": info.height,
             "fps": info.fps,
@@ -656,10 +803,13 @@ class Library:
             "size_bytes": original.stat().st_size,
             # inside the entry: a name relative to it; an import: absolute path
             "original": str(reference) if reference else original.name,
-            "preview_status": "pending",
+            # an MCAP has nothing to preview
+            "preview_status": "ready" if mcap is not None else "pending",
             "created": datetime.now().astimezone().isoformat(timespec="seconds"),
             "origin": origin,
         }
+        if mcap is not None:
+            record["mcap"] = mcap
         if reference is not None:  # what the content hash was taken from
             st = reference.stat()
             record["source_size"] = st.st_size
@@ -673,7 +823,8 @@ class Library:
                     return existing
                 shutil.rmtree(target, ignore_errors=True)  # replace the broken one
             os.rename(work, target)
-        self._schedule_preview(video_id)
+        if kind == "video":
+            self._schedule_preview(video_id)
         loaded = self._load(video_id)
         assert loaded is not None
         return loaded
@@ -704,6 +855,12 @@ class Library:
             original = original if original.is_absolute() else folder / original
             preview = folder / PREVIEW
             status = str(data.get("preview_status", "pending"))
+            kind = str(data.get("kind", "video"))  # entries before MCAPs: videos
+            mcap = data.get("mcap")
+            if kind not in KINDS or (kind == "mcap") != isinstance(mcap, dict):
+                return None
+            if kind == "mcap" and not mcap.get("images"):
+                return None
             return VideoRecord(
                 id=video_id,
                 name=str(data["name"]),
@@ -719,6 +876,8 @@ class Library:
                 created=str(data.get("created", "")),
                 origin=str(data.get("origin", "upload")),
                 missing=self._is_missing(data, original),
+                kind=kind,
+                mcap=mcap,
             )
         except (OSError, ValueError, KeyError, TypeError):
             return None
@@ -732,7 +891,7 @@ class Library:
 
     def _preview_job(self, video_id: str) -> None:
         record = self._load(video_id)
-        if record is None or self._closed:
+        if record is None or self._closed or record.kind != "video":
             return
         folder = self.root / video_id
         try:

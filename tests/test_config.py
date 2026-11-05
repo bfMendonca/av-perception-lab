@@ -704,7 +704,7 @@ def test_calibration_overrides(tmp_path):
         ),
         (
             ["camera.calibration={undistort: true}"],
-            r"calibration\.path: missing required",
+            r"^camera\.calibration: set path or from_source",
         ),
         (
             ["camera.calibration={path: c.yaml}", "camera.focal_px=1400"],
@@ -722,3 +722,81 @@ def test_calibration_overrides(tmp_path):
 def test_calibration_config_errors(tmp_path, overrides, match):
     with pytest.raises(ConfigError, match=match):
         load_config(write(tmp_path, MINIMAL), overrides)
+
+
+MCAP_SRC = {"mcap": "a.mcap", "topic": "/cam"}
+
+
+@pytest.mark.parametrize(
+    ("data", "match"),
+    [
+        (
+            {
+                "source": MCAP_SRC,
+                "camera": {"calibration": {"from_source": True, "path": "c.yaml"}},
+            },
+            r"^camera\.calibration: .*exclusive",
+        ),
+        (
+            {"source": MCAP_SRC, "camera": {"calibration": {}}},
+            r"^camera\.calibration: .*path or from_source",
+        ),
+        (
+            {
+                "source": MCAP_SRC,
+                "camera": {"calibration": {"from_source": True, "undistort": True}},
+            },
+            r"^camera\.calibration: .*rectify",
+        ),
+        (
+            {
+                "source": {"video": "v.mp4"},
+                "camera": {"calibration": {"from_source": True}},
+            },
+            r"^camera\.calibration\.from_source: needs source\.mcap",
+        ),
+        (
+            {"source": {"video": "v.mp4"}, "rectify": {"enabled": True}},
+            r"^rectify\.enabled: needs source\.mcap",
+        ),
+        (
+            {
+                "source": MCAP_SRC,
+                "camera": {"focal_px": 1400},
+                "rectify": {"enabled": True},
+            },
+            r"^rectify\.enabled: camera\.focal_px is exclusive",
+        ),
+        (
+            {
+                "source": MCAP_SRC,
+                "camera": {"calibration": {"path": "c.yaml"}},
+                "rectify": {"enabled": True},
+            },
+            r"^rectify\.enabled: camera\.calibration\.path is exclusive",
+        ),
+        ({"source": MCAP_SRC, "rectify": {"alpha": 1.5}}, r"^rectify: alpha"),
+        ({"source": MCAP_SRC, "rectify": {"alpha": -0.1}}, r"^rectify: alpha"),
+    ],
+)
+def test_mcap_config_errors(tmp_path, data, match):
+    with pytest.raises(ConfigError, match=match):
+        load_config(write(tmp_path, {**MINIMAL, **data}))
+
+
+def test_mcap_source_with_from_source_and_rectify_loads(tmp_path):
+    data = {
+        **MINIMAL,
+        "source": MCAP_SRC,
+        "camera": {"calibration": {"from_source": True}},
+        "rectify": {"enabled": True, "alpha": 0.5},
+    }
+    cfg = load_config(write(tmp_path, data))
+    assert cfg.camera.calibration.from_source and cfg.camera.calibration.path is None
+    assert cfg.rectify.enabled and cfg.rectify.alpha == 0.5
+    assert cfg.to_dict()["rectify"] == {"enabled": True, "alpha": 0.5}
+
+
+def test_rectify_defaults_off(tmp_path):
+    cfg = load_config(write(tmp_path, MINIMAL))
+    assert not cfg.rectify.enabled and cfg.rectify.alpha == 0.0

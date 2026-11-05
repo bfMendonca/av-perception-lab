@@ -2,7 +2,7 @@
 // progress and the chosen segment. Lives at the app level so a drop anywhere
 // on the page, the top bar and the video deck share it.
 import { useCallback, useEffect, useRef, useState } from "react";
-import type { VideoApi, VideoRecord } from "../api/video";
+import { isMcap, type VideoApi, type VideoRecord } from "../api/video";
 import { MIN_SEGMENT_S } from "./segment";
 
 const CURRENT_KEY = "ddd.video.current";
@@ -86,8 +86,15 @@ export function useVideoSession(api: VideoApi, options: SessionOptions = {}) {
       setError(null);
       if (remember) writeStored(record?.id ?? null);
       if (record) setVideos((list) => [record, ...list.filter((v) => v.id !== record.id)]);
+      // An MCAP record carries its topics; ask for them if one does not.
+      if (record && isMcap(record) && !record.mcap) {
+        api
+          .fetchTopics(record.id)
+          .then((mcap) => setCurrent((cur) => (cur?.id === record.id ? { ...cur, mcap } : cur)))
+          .catch(() => undefined);
+      }
     },
-    [remember],
+    [api, remember],
   );
 
   const refreshLibrary = useCallback(async () => {
@@ -192,8 +199,9 @@ export function useVideoSession(api: VideoApi, options: SessionOptions = {}) {
     [api, fail, select],
   );
 
+  /** `total`: the length to clamp to (an MCAP topic's), by default the record's. */
   const setSegment = useCallback(
-    (seg: Segment) => setSegmentState(clampSegment(seg, current?.duration_s ?? 0)),
+    (seg: Segment, total: number = current?.duration_s ?? 0) => setSegmentState(clampSegment(seg, total)),
     [current],
   );
 

@@ -56,6 +56,7 @@ from collections import Counter, defaultdict
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import asdict, dataclass, field
 from datetime import datetime
+from fractions import Fraction
 from pathlib import Path
 from typing import Any
 
@@ -80,8 +81,8 @@ from av_perception_lab.distance import (
     DistanceConfig,
     resample_mask,
 )
-from av_perception_lab.io.source import VideoSource
-from av_perception_lab.io.video import VideoWriter
+from av_perception_lab.io.source import FrameSource, VideoSource
+from av_perception_lab.io.video import TimestampedVideoWriter, VideoWriter
 from av_perception_lab.motion.measurement import project_points, reference_pixel
 from av_perception_lab.render import (
     BevTrack,
@@ -153,7 +154,7 @@ class RunContext:
     """What every sink may need to open its artefact."""
 
     run_dir: Path
-    source: VideoSource
+    source: FrameSource
     setup: SetupInfo
     # Pipeline.describe(): {"components": ..., "pipeline": ...}
     pipeline: dict[str, Any]
@@ -168,6 +169,15 @@ class RunContext:
     def excluded_classes(self) -> dict[str, list[str]]:
         """Semantic segmenter name -> excluded class names (only maps excluding some)."""
         return self.pipeline["pipeline"]["exclude_semantic"]
+
+
+def _output_fps(source: FrameSource) -> str:
+    """Constant frame rate ("num/den") of the rendered video, for sources
+    without real frame times (an MCAP uses `TimestampedVideoWriter`)."""
+    if isinstance(source, VideoSource):
+        return source.output_fps()
+    fps = Fraction(source.nominal_fps).limit_denominator(1001)
+    return f"{fps.numerator}/{fps.denominator}"
 
 
 def refine_counts(
@@ -451,14 +461,21 @@ class VideoSink(Sink):
             self._fusion = aggregator["type"] + (
                 f" · IoU ≥ {iou_thr:g}" if iou_thr is not None else ""
             )
-        audio = source.is_whole_video and source.info.has_audio
-        self._writer = VideoWriter(
-            ctx.run_dir / "video.mp4",
-            *self._renderer.output_size(),
-            source.output_fps(),
-            crf=cfg.crf,
-            audio_from=source.info.path if audio else None,
-        )
+        # Real capture times (MCAP): each frame at its own time, no audio;
+        # output_fps() is never asked (a one-message topic would give "0/1").
+        self._timestamped = source.frame_times_known
+        if self._timestamped:
+            self._writer = TimestampedVideoWriter(
+                ctx.run_dir / "video.mp4", *self._renderer.output_size(), crf=cfg.crf
+            )
+        else:
+            self._writer = VideoWriter(
+                ctx.run_dir / "video.mp4",
+                *self._renderer.output_size(),
+                _output_fps(source),
+                crf=cfg.crf,
+                audio_from=source.audio_from(),
+            )
 
     def write(self, result: FrameResult) -> None:
         t0 = time.perf_counter()
@@ -534,7 +551,7 @@ class VideoSink(Sink):
                         mot.trajectory.cov,
                     )
                 )
-        ms, n_total = result.timings_ms, self.ctx.source.info.n_frames
+        ms, n_total = result.timings_ms, self.ctx.source.n_frames_total
         hud = [
             f"det {ms['det']:5.1f} ms  ·  depth {ms['depth']:5.1f} ms",
             f"frame {result.frame.index + 1}/{n_total or '?'}  ·  {self._conf}",
@@ -579,7 +596,10 @@ class VideoSink(Sink):
         )
         if self.on_frame is not None:
             self.on_frame(result.frame.index, image)
-        self._writer.write(image)
+        if self._timestamped:
+            self._writer.write(image, result.frame.t)
+        else:
+            self._writer.write(image)
         self.render_ms.append((time.perf_counter() - t0) * 1e3)
 
     def close(self) -> None:

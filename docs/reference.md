@@ -36,6 +36,7 @@
 - [Rastreamento e suavização](#rastreamento-e-suavização)
 - [Estimação de movimento e trajetórias](#estimação-de-movimento-e-trajetórias)
 - [Calibração da câmera](#calibração-da-câmera)
+- [Entrada MCAP (ROS 2)](#entrada-mcap-ros-2)
 - [Avaliação contra referências](#avaliação-contra-referências)
 - [Interface web (API de esquema e validação)](#interface-web-api-de-esquema-e-validação)
 - [Interface web: front-end e editor de pipeline](#interface-web-front-end-e-editor-de-pipeline)
@@ -409,10 +410,10 @@ desconhecidas são erro (com o caminho, ex.
 | Seção | Chaves (padrão) |
 |---|---|
 | topo | `device` (`cuda:0`) |
-| `source` | `video` (obrigatório aqui ou como `VIDEO`); `start` (0 s); `duration` (0 = até o fim); `max_frames` (0 = todos); `stride` (1) |
+| `source` | `video` (obrigatório aqui ou como `VIDEO`) ou `mcap` + `topic` (ver [Entrada MCAP](#entrada-mcap-ros-2)); `start` (0 s); `duration` (0 = até o fim); `max_frames` (0 = todos); `stride` (1) |
 | `detectors` | Lista (≥ 1); cada item tem `type`, `name` opcional (padrão: `rfdetr-<variant>`, `rfdetr-<arquivo de pesos>` ou, no YOLO, o nome do arquivo de pesos) e as opções do adaptador. Comuns: `threshold` (0.5, em (0, 1]), `classes` (`driving`, `all`, lista ou nomes separados por vírgula), `labels` (null; YAML de mapa de rótulos, ver abaixo). `rfdetr`: `variant` (`large`; detecção `nano`/`small`/`medium`/`large`, segmentação `seg-nano`/`seg-small`/`seg-medium`/`seg-large`/`seg-xlarge`/`seg-2xlarge`), `weights` (checkpoint próprio), `optimize` (TorchScript + FP16). `yolo`: `weights` (obrigatório, `.pt` de detecção ou de segmentação `*-seg.pt`), `imgsz` (640, múltiplo de 32), `half` (FP16) |
 | `depth` | `type: da3`; `model` (`da3metric-large`; alias, repo HF ou diretório; modelos relativos são recusados); `process_res` (504, ≥ 14); `process_res_method` (`upper_bound_resize`); `hf_cache` |
-| `camera` | Precedência `calibration` > `focal_px` > `estimate`. `calibration` (null; `path`, `undistort` false, `alpha` 0.0, `check_lens` `error`, `cross_check` false — ver [Calibração da câmera](#calibração-da-câmera); exclusivo com `focal_px`); `focal_px` (null; focal em px do vídeo); `estimate` (`model: da3-large-1.1`, `frames: 16`, `process_res`, `process_res_method`, `hf_cache`; `null` desliga a estimativa; usado também por `calibration.cross_check`) |
+| `camera` | Precedência `calibration` > `focal_px` > `estimate`. `calibration` (null; `path` ou `from_source` (true = K e distorção do `CameraInfo` do MCAP), `undistort` false, `alpha` 0.0, `check_lens` `error`, `cross_check` false — ver [Calibração da câmera](#calibração-da-câmera); exclusivo com `focal_px`); `focal_px` (null; focal em px do vídeo); `estimate` (`model: da3-large-1.1`, `frames: 16`, `process_res`, `process_res_method`, `hf_cache`; `null` desliga a estimativa; usado também por `calibration.cross_check`) |
 | `aggregation` | `type`: `concat` (padrão; mantém todas as caixas, marcadas por `source`), `nms` ou `wbf` (opções abaixo) |
 | `refiners` | Lista (padrão `[]`), aplicada em ordem depois da agregação (cada um vê as máscaras do anterior); item `{type, name?, …}`, ver [Refinadores de máscara](#refinadores-de-máscara) |
 | `semantic` | Lista (padrão `[]`) de segmentadores, rodados em ordem sobre o mesmo quadro; item `{name, type, …}` com `name` **obrigatório** e único (`[a-z0-9][a-z0-9_-]*`), ver [Segmentação semântica](#segmentação-semântica) |
@@ -761,6 +762,96 @@ das gravações é o recomendado. Com `calibration: null` (padrão) a execução
 a da `task_0006` (o `metrics.json` só ganha `frame_intrinsics`, `camera: {}`
 e `video.transform: null`).
 
+### Entrada MCAP (ROS 2)
+
+Em vez de um vídeo, a execução pode ler um tópico de imagem de um arquivo
+`.mcap` (`sensor_msgs/msg/Image` ou `CompressedImage`, CDR; `task_0033`).
+Arquivos indexados e não indexados são aceitos. Os módulos `mcap` e
+`mcap-ros2-support` são dependências base, e o PyAV também (escreve o vídeo
+de taxa variável).
+
+```yaml
+source:
+  mcap: recordings/drive.mcap      # exclusivo com source.video
+  topic: /camera/front/image_raw   # obrigatório com mcap
+  duration: 10.0
+  stride: 2                        # conta mensagens, não quadros de vídeo
+detectors: [{type: rfdetr, variant: large}]
+depth: {type: da3}
+camera:
+  calibration: {from_source: true}   # K e D do CameraInfo pareado
+# ou, no lugar de camera: remover a distorção antes de todos os estágios
+# rectify: {enabled: true, alpha: 0.0}
+```
+
+- **Chaves**: `source.mcap` e `source.topic` (um `topic` é obrigatório e
+  `mcap` é exclusivo com `video`); `camera.calibration.from_source` (true =
+  intrínsecos do `CameraInfo` do tópico; exclusivo com `path` e com
+  `undistort`; exige `source.mcap`); seção `rectify` (`enabled` false,
+  `alpha` 0.0, como o `alpha` da calibração) e estágio `rectify`
+  (opcional, logo depois da fonte).
+- **Base de tempo**: `Frame.t` usa o `header.stamp` quando todos os carimbos
+  das primeiras 50 mensagens são > 0 e não decrescentes; senão, o `log_time`.
+  Mensagens cujo tempo não é maior que o da última mantida são descartadas e
+  contadas em `duplicates_dropped`; havendo descarte, o fim da execução
+  imprime um `[warn] source.mcap: ...` no stderr (contagem, % do tópico, base
+  de tempo) e, se o tempo volta atrás no meio do tópico (carimbo reiniciado
+  depois das 50 primeiras mensagens: sim time, gravações concatenadas), a
+  mensagem em que voltou (`stamp_regression_at`) e quantos descartes vêm
+  depois dela (`dropped_after_regression`). O aviso também aparece no log da
+  interface web. `t` conta a partir da primeira mensagem
+  **selecionada** (o `t` de um vídeo inclui o `start`); `start`/`duration`
+  selecionam por tempo e `stride` conta mensagens.
+- **Decodificação**: os tempos saem dos bytes crus (o `header.stamp` logo
+  depois do cabeçalho CDR), então só as mensagens selecionadas passam pelo
+  decodificador de imagem; as puladas por `start`/`stride`, as descartadas e
+  as não amostradas (`sample`, estimativa da focal) são lidas mas não
+  decodificadas. A amostragem lê os carimbos da seleção uma vez e busca só as
+  mensagens amostradas (pelo índice de chunks, quando há).
+- **Codificações**: `rgb8`, `bgr8`, `rgba8`, `bgra8`, `mono8` e, em
+  `CompressedImage`, `jpeg`/`png`. Outras (`16UC1`, `compressedDepth`, ...)
+  aparecem na lista de tópicos da interface, desabilitadas com o motivo, e
+  recusadas na execução. Um quadro acima de `MAX_IMAGE_PIXELS` (2^27 ≈ 134 Mpx)
+  é recusado antes de decodificar (`McapError`; na interface, 422): em
+  `CompressedImage` o tamanho vem do cabeçalho PNG (IHDR) ou JPEG (SOFn) —
+  dados que não são PNG nem JPEG são recusados —, em `Image` dos campos da
+  mensagem.
+- **`CameraInfo`**: pareado ao tópico de imagem pelo maior prefixo de
+  namespace em comum. Uma mensagem crua (D não nulo) usa K e D; uma retificada
+  (D vazio ou zero) usa o 3×3 à esquerda de P, sem distorção. Modelos
+  `plumb_bob` e `rational_polynomial`; `equidistant`, `roi` parcial (zeros
+  ou o quadro inteiro, na ordem `x_offset, y_offset, height, width`, valem
+  como sem ROI),
+  `binning` > 1, tamanho de D inválido ou tamanho diferente do dos quadros
+  são recusados (`ConfigError`).
+- **`rectify`**: exige um tópico de MCAP com `CameraInfo` **com distorção**
+  (sem `CameraInfo`, ou já retificado, é erro antes de carregar os modelos) e
+  é recusado com `camera.focal_px` ou `camera.calibration.path` (com
+  `from_source` é permitido: é a mesma fonte). Os quadros são retificados
+  antes de todos os componentes e a K entregue à profundidade é a retificada.
+  Diferente de `camera.calibration.undistort`, que usa um arquivo de
+  calibração e não existe com `from_source`. Na interface a faixa
+  "Rectification" só aparece com entrada MCAP e a chave fica desabilitada
+  quando o tópico não tem `CameraInfo` utilizável ou já é retificado.
+- **Vídeo**: com MCAP o `video.mp4` tem **taxa variável** (cada quadro no seu
+  `t`, base de 1/90000 s, sem áudio). Tamanhos ímpares são recusados pelo
+  escritor.
+- **Saídas**: a descrição da fonte fica em `metrics.json["video"]` (não há
+  chave `source`): `path`, `topic`, `schema`, `encoding`, `width`, `height`,
+  `count`, `nominal_fps`, `time_base` (`header` ou `log`),
+  `duplicates_dropped`, `stamp_regression_at`, `dropped_after_regression`,
+  `camera_info_topic`. Com `from_source` ou `rectify`
+  o `metrics.json` grava a K e a distorção usadas, e a avaliação as usa para
+  transformar as referências.
+- **Limites conhecidos**: a avaliação de uma execução MCAP com
+  `source.start > 0` é recusada (`ConfigError`: o `t` do MCAP não inclui o
+  `start`); tamanhos de quadro ímpares são recusados pelo escritor de vídeo.
+- **Risco aceito**: a descompressão dos chunks (zstd/lz4) é da biblioteca
+  `mcap`, sem teto próprio além do limite de 4 GiB por registro; um MCAP
+  forjado pode declarar chunks enormes (bomba de descompressão) e o upload
+  na interface os descompacta no processo do servidor. É uma ferramenta de
+  pesquisa local: abra só MCAPs de origem conhecida.
+
 ### Avaliação contra referências
 
 `av-perception-lab-evaluate` cruza o `detections.csv` e o `metrics.json` de
@@ -1030,6 +1121,15 @@ Rotas: `GET /api/videos`, `GET /api/videos/roots`, `POST /api/videos`
 (com `Range`). `POST /api/runs` recusa (422) um `video_id` que não está na
 biblioteca ou cujo arquivo sumiu, e com `video_id` o `source.video` é sempre
 o original do vídeo (o do cliente é sobrescrito).
+Um `.mcap` (ROS 2) entra na biblioteca como `kind: "mcap"` (validado com
+`probe_mcap`; sem tópico de imagem decodificável, corrompido ou truncado →
+422; tamanho, taxa e miniatura vêm do primeiro tópico suportado), e
+`GET /api/videos/{id}/topics` devolve os tópicos de imagem (resolução, taxa,
+contagem, `CameraInfo` pareado, `has_distortion`, `supported` e
+`unsupported_reason` — ex.: `16UC1`, `compressedDepth`); com esse `video_id`
+o `POST /api/runs` define `source.mcap`, exige um `source.topic` suportado
+entre os tópicos de imagem e recusa (422) `rectify.enabled`/`camera.calibration.from_source`
+num tópico sem `CameraInfo` utilizável (task_0033).
 
 ### Interface web: execuções e comparação
 
@@ -1343,7 +1443,7 @@ Cada execução cria `<output.out_root>/<AAAAmmdd_HHMMSS>_<vídeo>_<detectores>_
 
 | Arquivo | Conteúdo |
 |---|---|
-| `video.mp4` | Vídeo anotado (H.264); com mais de um detector e `concat`, cor e contagem do HUD por modelo de origem; com fusão, cor pelo rótulo canônico, `×N` no rótulo quando N detectores viram o objeto e linhas de HUD com o agregador e a concordância (`agree <m> · only <a> <x> · only <b> <y>`); máscaras translúcidas na cor da instância, no quadro e no painel de profundidade, e `· region <política> · erode <k>` na linha de distância do HUD nos quadros em que alguma instância usou a máscara; camadas semânticas translúcidas (cor pelo nome da classe, por baixo das máscaras e caixas, só no painel do quadro, na ordem de `semantic`) e linhas de HUD `refine <nome> · <preenchidas>/<alvos>` e `semantic <nome> · excl <classes>`; com rastreamento, rótulo `#<id> classe conf · D m · ±v m/s` (distância suavizada com `show_smoothed`, velocidade com `show_speed`) e última linha de HUD `track iou · IoU ≥ 0.3 · age 0.5 s · kalman q 2 · ids <trilhas abertas>`; com `motion`, `· v <m/s>` no fim do rótulo, trajetória prevista a partir da base da caixa (opacidade decrescente, elipses de `n_sigma` no chão em ~3 pontos), painel BEV opcional e `· motion <tipos> · <horizonte> s` na linha de rastreamento; áudio copiado quando o vídeo inteiro é processado sem `stride` |
+| `video.mp4` | Vídeo anotado (H.264; taxa variável com entrada MCAP); com mais de um detector e `concat`, cor e contagem do HUD por modelo de origem; com fusão, cor pelo rótulo canônico, `×N` no rótulo quando N detectores viram o objeto e linhas de HUD com o agregador e a concordância (`agree <m> · only <a> <x> · only <b> <y>`); máscaras translúcidas na cor da instância, no quadro e no painel de profundidade, e `· region <política> · erode <k>` na linha de distância do HUD nos quadros em que alguma instância usou a máscara; camadas semânticas translúcidas (cor pelo nome da classe, por baixo das máscaras e caixas, só no painel do quadro, na ordem de `semantic`) e linhas de HUD `refine <nome> · <preenchidas>/<alvos>` e `semantic <nome> · excl <classes>`; com rastreamento, rótulo `#<id> classe conf · D m · ±v m/s` (distância suavizada com `show_smoothed`, velocidade com `show_speed`) e última linha de HUD `track iou · IoU ≥ 0.3 · age 0.5 s · kalman q 2 · ids <trilhas abertas>`; com `motion`, `· v <m/s>` no fim do rótulo, trajetória prevista a partir da base da caixa (opacidade decrescente, elipses de `n_sigma` no chão em ~3 pontos), painel BEV opcional e `· motion <tipos> · <horizonte> s` na linha de rastreamento; áudio copiado quando o vídeo inteiro é processado sem `stride` |
 | `detections.csv` | Uma linha por caixa: quadro, tempo, classe, confiança, caixa, região amostrada no mapa, `n_valid`/`n_inliers`/`inlier_frac`, média, mediana, desvio, variância, p10–p90, mín/máx, `distance_m` (vazio = n/a) e, no fim, `source` (detector de origem), `raw_label` (nome no vocabulário do modelo), `n_sources` (nº de detectores que viram o objeto; 1 sem fusão), `sources`, `source_scores` e `raw_labels` (um item por detector, o seu melhor membro, separados por `\|`, em score decrescente), e por fim `used_mask` (1 = estatísticas sobre a máscara), `mask_px` (pixels do mapa da máscara erodida; `mask_px / n_box_px` = ocupação da caixa), `mask_erode` (erosão aplicada) e `box_distance_m` (só com `region: both`, distância pela caixa da instância que usou máscara) e, por último, `mask_source` (componente que produziu a máscara — detector, refinador ou membro da fusão dono da máscara —; vazio = sem máscara) e `mask_score` (qualidade prevista pelo refinador, 4 casas; vazio para máscaras de detector) e, no fim, `track_id`, `distance_smooth_m`, `distance_smooth_std_m`, `rel_speed_mps` e `rel_speed_std_mps` (vazias sem rastreamento/suavização; desvios e velocidade só com `kalman`; `distance_m` segue sendo a distância bruta) e, por fim, as 16 colunas de movimento (`motion`; vazias sem o estágio): `motion_model`, `motion_x_m`, `motion_z_m`, `motion_x_std_m`, `motion_z_std_m`, `motion_vx_mps`, `motion_vz_mps`, `motion_speed_mps`, `motion_speed_std_mps`, `motion_heading_deg`, `motion_heading_std_deg` (vazios abaixo de `min_speed_for_heading`), `motion_yaw_rate_dps`, `motion_yaw_rate_std_dps` (só com `ctrv`), `motion_abs_speed_mps` (só com ego-motion), `motion_nis` (vazio sem medida no quadro) e `motion_n_updates`. Com máscara, as colunas de estatística descrevem a máscara e `n_box_px` é a janela da caixa sem encolhimento. A semântica não acrescenta colunas |
 | `trajectories.jsonl` | Só com `motion`: uma linha JSON por quadro × instância com estimativa — `frame`, `t`, `track_id`, `label`, `model`, `x`, `z`, `vx`, `vz`, `y` e a trajetória prevista (`t_ahead`, `xz`, `cov` 2×2 por ponto), no referencial da câmera do quadro, 4 casas |
 | `metrics.json` | `components` (descrição de cada detector, da profundidade, do agregador, dos `refiners` e dos `semantic`), `pipeline` (política: `exclude_sky`, `agreement`, `region`, `mask_erode`, `exclude_semantic` como `{nome: [classes]}`, `smoothing`, `motion` — modelos, classes, medida, previsão e `ego_motion` com `clamped_frames`), `components.tracker` (null sem rastreamento), tempos por etapa (`det`, `det.<nome>`, `agree`, `aggregate`, `refine`/`refine.<nome>`, `track`, `semantic`/`semantic.<nome>`, `smooth` e `motion` quando existem, `depth`, `dist`, `render`), `tracks` (só com rastreador: `n_tracks`, `short_tracks` — trilhas com menos de `min_duration_s` = 1 s, fora da lista — e `per_track` com `id`, `label` (moda), `labels`, `label_changes`, `sources`, `first_frame`/`last_frame`/`first_t`, `duration_s`, `n_frames`, `coverage`, `gaps`, `max_gap_s`, `distance_m` {min, median, max}, `jitter_raw_m`/`jitter_smooth_m` (desvio da diferença quadro a quadro), `rel_speed_mps` {p5, median, p95} e, só com `motion`, `motion` {`model`, `speed_mps` {p5, median, p95}, `nis_mean`, `restarts`} ou `null` sem estimativa), `mask_sources` (instâncias com máscara por produtor), `refined` (por refinador: `targets` e `filled`), `frame_intrinsics` (K do quadro entregue ao modelo de profundidade, `null` quando ele prevê K por quadro), `camera` (`{}` sem `camera.calibration`; com ela: `calibration` (caminho, tamanho, K contínua, distorção, RMS, desvios, câmera), `scaled_from`, `lens_check`, `undistort` e, com `cross_check`, `estimated_focal_frame_px`, `estimated_source` e `estimated_over_calibrated`), `video.transform` (correção de distorção aplicada aos quadros ou `null`), `semantic` (só com segmentador: por mapa `exclude`, `class_frac_mean`, `excluded_frac_mean`; no topo, `excluded_frac_mean` da união das exclusões), VRAM, focal (px do quadro e intrínsecos do mapa) e origem, parâmetros de distância, contagens (`detections_total`, `detections_by_source`, `detections_by_n_sources`), `distance_regions` (`{"mask": n, "box": n}`), `region_comparison` (só com `region: both`: diferença máscara − caixa com `n`, `median_signed_m`, `median_abs_m`, `p90_abs_m`, `median_rel`, total e `by_label`), `agreement` (com ≥ 2 detectores: por detector `instances`/`duplicates`; por par `matched`/`only_a`/`only_b`/`mean_iou`; séries por quadro em `per_frame`), versões (inclui `transformers` e `timm`), commit e `config` (YAML resolvido) |

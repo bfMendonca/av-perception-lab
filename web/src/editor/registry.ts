@@ -1,6 +1,6 @@
 // Front-end extension registry: optional custom views; the generic renderers
 // are the fallbacks. Registering returns a function that undoes it.
-import type { ReactElement } from "react";
+import { createContext, type ReactElement } from "react";
 import type { Catalog, Field, StageInfo, ValidationError } from "../api/types";
 import type { Path } from "./paths";
 import type { Selection } from "./yamlState";
@@ -29,18 +29,38 @@ export interface StageViewProps {
 
 export type StageView = (props: StageViewProps) => ReactElement | null;
 
+/**
+ * Data of the app that custom stage views may read (the current input, for
+ * one); the editor passes it along without looking inside.
+ */
+export type StageContextValue = Readonly<Record<string, unknown>>;
+export const StageContext = createContext<StageContextValue>({});
+
+export interface StageViewOptions {
+  /** Leave the stage's lane out of the canvas (its value and the app's StageContext decide). */
+  hidden?: (value: unknown, context: StageContextValue) => boolean;
+}
+
 const stageViews = new Map<string, StageView>();
+const stageOptions = new Map<StageView, StageViewOptions>();
 const fieldControlEntries: { match: (f: Field) => boolean; control: FieldControl }[] = [];
 
 /** Replace the generic lane of the stage `yamlKey`. */
-export function registerStageView(yamlKey: string, view: StageView): () => void {
+export function registerStageView(yamlKey: string, view: StageView, options: StageViewOptions = {}): () => void {
   stageViews.set(yamlKey, view);
+  stageOptions.set(view, options);
   return () => {
     if (stageViews.get(yamlKey) === view) stageViews.delete(yamlKey);
   };
 }
 
 export const stageViewFor = (yamlKey: string): StageView | undefined => stageViews.get(yamlKey);
+
+/** A registered view asks to leave the stage `yamlKey` out of the canvas. */
+export function stageHidden(yamlKey: string, value: unknown, context: StageContextValue): boolean {
+  const view = stageViews.get(yamlKey);
+  return Boolean(view && stageOptions.get(view)?.hidden?.(value, context));
+}
 
 /** Use `control` for every field `match` accepts; the latest registration wins. */
 export function registerFieldControl(match: (f: Field) => boolean, control: FieldControl): () => void {

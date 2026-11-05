@@ -19,15 +19,27 @@ from av_perception_lab.camera import (
     load_calibration,
     save_calibration,
 )
-from av_perception_lab.config import CalibrationConfig, CameraConfig, EstimateConfig
+from av_perception_lab.config import (
+    CalibrationConfig,
+    CameraConfig,
+    EstimateConfig,
+    RectifyConfig,
+)
 from av_perception_lab.core.options import ConfigError
 from av_perception_lab.core.types import CameraIntrinsics
+from av_perception_lab.io.mcap_reader import CameraInfoMsg
 from av_perception_lab.io.source import FrameSource
 
 
 class StillSource(FrameSource):
     frame_size = (1920, 1080)
     name = "still"
+    input_name = "stub"
+    nominal_fps = 30.0
+    n_frames_total = None
+
+    def with_transform(self, transform):
+        return self
 
     def __iter__(self):
         return iter(())
@@ -393,3 +405,159 @@ def test_build_camera_rejects_another_lens_before_any_model(tmp_path):
         build_camera(
             CameraConfig(calibration=CalibrationConfig(path=tmp_path / "x.yaml")), wide
         )
+
+
+# --- task_0033: intrinsics and rectification from the MCAP's CameraInfo -------------
+
+P_RECT = (1400.0, 0.0, 960.0, 0.0, 0.0, 1400.0, 540.0, 0.0, 0.0, 0.0, 1.0, 0.0)
+
+
+def camera_info_msg(*, distorted=True, size=(1920, 1080)) -> CameraInfoMsg:
+    return CameraInfoMsg(
+        width=size[0],
+        height=size[1],
+        k=tuple(K_CV.ravel()),
+        d=tuple(DIST.ravel()) if distorted else (0.0,) * 5,
+        model="plumb_bob",
+        p=P_RECT,
+        roi=(0, 0, 0, 0),
+        binning=0,
+    )
+
+
+class FakeMcap(FakeVideo):
+    """The part of McapSource that build_camera uses (no recording metadata)."""
+
+    def __init__(self, info=None, size=(1920, 1080), transform=None):
+        super().__init__(size, {}, transform)
+        self.info = info
+        self.camera_info_calls = 0
+
+    def camera_info(self):
+        self.camera_info_calls += 1  # each call re-reads the MCAP
+        return self.info
+
+    def with_transform(self, transform):
+        return FakeMcap(self.info, self.frame_size, transform)
+
+    name = "rec_cam_image_raw"
+
+
+def _textured_frame(size=(1920, 1080)) -> np.ndarray:
+    w, h = size
+    rng = np.random.default_rng(0)
+    return rng.integers(0, 256, (h, w, 3), dtype=np.uint8)
+
+
+def test_from_source_uses_camera_info_intrinsics(monkeypatch):
+    mcap = FakeMcap(camera_info_msg())
+    cfg = CameraConfig(calibration=CalibrationConfig(from_source=True))
+    setup = build_camera(cfg, mcap)
+    assert setup.source is mcap  # frames unchanged
+    provider = setup.intrinsics
+    assert isinstance(provider, CalibratedIntrinsics)
+    assert provider.cross_check is None
+    expected = calibration()
+    assert provider.calibration.intrinsics == pytest.approx(expected.intrinsics)
+    assert provider.calibration.dist == pytest.approx(expected.dist)
+    details = setup.details
+    assert details["calibration"]["path"] is None
+    assert details["calibration"]["source"] == "CameraInfo (rec_cam_image_raw)"
+    assert details["calibration"]["dist"] == pytest.approx(list(DIST.ravel()))
+    assert details["undistort"] is None
+    assert details["lens_check"]["status"] == "unavailable"  # no metadata in an MCAP
+    assert provider.label == "CameraInfo (rec_cam_image_raw)"
+    json.dumps(details)
+
+    # A rectified CameraInfo gives P's 3x3 and no distortion.
+    rect = build_camera(cfg, FakeMcap(camera_info_msg(distorted=False))).intrinsics
+    assert rect.calibration.intrinsics == CameraIntrinsics(1400.0, 1400.0, 960.5, 540.5)
+    assert not rect.calibration.has_distortion
+
+    # cross_check still estimates the focal and reports both.
+    monkeypatch.setattr(camera, "estimate_focal_frame_px", lambda *a, **k: 1500.0)
+    crossed = build_camera(
+        CameraConfig(calibration=CalibrationConfig(from_source=True, cross_check=True)),
+        mcap,
+    )
+    assert isinstance(crossed.intrinsics.cross_check, EstimatedIntrinsics)
+    result = crossed.intrinsics.resolve(StillSource(), device="cpu")
+    assert result.details["estimated_focal_frame_px"] == 1500.0
+
+
+def test_rectify_undistorts_and_returns_rectified_k():
+    mcap = FakeMcap(camera_info_msg())
+    setup = build_camera(CameraConfig(), mcap, RectifyConfig(enabled=True, alpha=0.5))
+    assert mcap.camera_info_calls == 1  # the CameraInfo is read once
+    transform = setup.source.transform
+    assert isinstance(transform, Undistorter)
+    assert transform.alpha == 0.5
+    frame = _textured_frame()
+    assert not np.array_equal(transform(frame), frame)  # frames differ from input
+    provider = setup.intrinsics
+    assert isinstance(provider, CalibratedIntrinsics)
+    assert provider.calibration == transform.output  # rectified K, no distortion
+    assert provider.label == "CameraInfo (rec_cam_image_raw) (rectified)"
+    details = setup.details
+    # The raw K and D (for the evaluation to transform field references) and the
+    # rectified K, as with camera.calibration.undistort.
+    raw = Calibration.from_description(details["calibration"])
+    assert raw.intrinsics == pytest.approx(calibration().intrinsics)
+    assert raw.dist == pytest.approx(tuple(DIST.ravel()))
+    assert details["undistort"] == transform.describe()
+    assert details["undistort"]["alpha"] == 0.5
+    json.dumps(details)
+
+
+def test_no_camera_info_with_rectify_or_from_source_raises_config_error(monkeypatch):
+    # Review Focus 1: refused by build_camera, i.e. before any model is loaded.
+    def no_model(*args, **kwargs):
+        raise AssertionError("no model may load")
+
+    monkeypatch.setattr(camera, "estimate_focal_frame_px", no_model)
+    from_source = CameraConfig(
+        calibration=CalibrationConfig(from_source=True, cross_check=True)
+    )
+    with pytest.raises(ConfigError, match="no CameraInfo for this topic"):
+        build_camera(from_source, FakeMcap(None))
+    with pytest.raises(ConfigError, match="no CameraInfo for this topic"):
+        build_camera(CameraConfig(), FakeMcap(None), RectifyConfig(enabled=True))
+    # A plain video has no CameraInfo either (camera_info() -> None by default).
+    with pytest.raises(ConfigError, match="no CameraInfo for this topic"):
+        build_camera(CameraConfig(), StillSource(), RectifyConfig(enabled=True))
+
+
+def test_rectified_camera_info_with_rectify_raises_config_error():
+    rectified = FakeMcap(camera_info_msg(distorted=False))
+    with pytest.raises(ConfigError, match="already rectified"):
+        build_camera(CameraConfig(), rectified, RectifyConfig(enabled=True))
+
+
+def test_rectify_off_leaves_video_path_untouched(tmp_path):
+    video = FakeVideo()
+    for rectify in (None, RectifyConfig(), RectifyConfig(enabled=False, alpha=1.0)):
+        for cfg in (CameraConfig(focal_px=1000.0), CameraConfig()):
+            setup = build_camera(cfg, video, rectify)
+            assert setup.source is video and setup.details == {}
+            assert type(setup.intrinsics) is type(build_intrinsics_provider(cfg))
+        path = tmp_path / "cal.yaml"
+        save_calibration(calibration(camera=IPHONE), path)
+        cfg = CameraConfig(calibration=CalibrationConfig(path=path, undistort=True))
+        new, old = build_camera(cfg, video, rectify), build_camera(cfg, video)
+        assert new.details == old.details
+        assert new.intrinsics.calibration == old.intrinsics.calibration
+        assert new.intrinsics.label == old.intrinsics.label
+        assert new.details["calibration"]["path"] == str(path)
+
+
+def test_rectify_needs_no_focal_estimate():
+    # The rectified K comes from the CameraInfo: the DA3 focal model is not
+    # required (cli.requirement rows) unless calibration.cross_check asks for it.
+    on = RectifyConfig(enabled=True)
+    assert camera.focal_estimate_config(CameraConfig()) is not None
+    assert camera.focal_estimate_config(CameraConfig(), RectifyConfig()) is not None
+    assert camera.focal_estimate_config(CameraConfig(), on) is None
+    crossed = CameraConfig(
+        calibration=CalibrationConfig(from_source=True, cross_check=True)
+    )
+    assert camera.focal_estimate_config(crossed, on) is crossed.estimate

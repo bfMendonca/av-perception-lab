@@ -33,10 +33,12 @@ from av_perception_lab.config import (
     CameraConfig,
     EstimateConfig,
     LensCheck,
+    RectifyConfig,
 )
 from av_perception_lab.core.options import ConfigError
 from av_perception_lab.core.types import CameraIntrinsics
-from av_perception_lab.io.source import FrameSource, FrameTransform, VideoSource
+from av_perception_lab.io.mcap_reader import CameraInfoMsg
+from av_perception_lab.io.source import FrameSource, FrameTransform
 
 # Valid lengths of an OpenCV distortion vector (k1 k2 p1 p2 [k3 [k4 k5 k6 [s1..s4 [tx ty]]]]).
 DIST_COUNTS: frozenset[int] = frozenset({4, 5, 8, 12, 14})
@@ -115,13 +117,17 @@ class EstimatedIntrinsics(IntrinsicsProvider):
         )
 
 
-def focal_estimate_config(cfg: CameraConfig) -> EstimateConfig | None:
+def focal_estimate_config(
+    cfg: CameraConfig, rectify: RectifyConfig | None = None
+) -> EstimateConfig | None:
     """`camera.estimate` when a run would use it (no `focal_px`, and either no
-    calibration or `calibration.cross_check`), else None. Only matters when the
-    depth model needs intrinsics."""
+    calibration nor rectification, or `calibration.cross_check`), else None.
+    Only matters when the depth model needs intrinsics."""
     if cfg.focal_px is not None or cfg.estimate is None:
         return None
-    if cfg.calibration is not None and not cfg.calibration.cross_check:
+    if cfg.calibration is not None:
+        return cfg.estimate if cfg.calibration.cross_check else None
+    if rectify is not None and rectify.enabled:  # intrinsics from the CameraInfo
         return None
     return cfg.estimate
 
@@ -250,6 +256,58 @@ class Calibration:
             )
         except (KeyError, TypeError, ValueError) as exc:
             raise ConfigError(f"invalid calibration description ({exc!r})") from None
+
+
+_CAMERA_INFO_MODELS = frozenset({"plumb_bob", "rational_polynomial"})
+
+
+def has_distortion(msg: CameraInfoMsg) -> bool:
+    """True for a raw CameraInfo (D non-empty and not all zero)."""
+    return any(msg.d)
+
+
+def calibration_from_camera_info(
+    msg: CameraInfoMsg, image_size: tuple[int, int]
+) -> Calibration:
+    """Calibration from a ROS `CameraInfo`.
+
+    Raw (distorted) messages use K and D; rectified ones (D empty or all zero)
+    use the left 3x3 of P with no distortion. K/P are in OpenCV's convention,
+    so `Calibration.from_opencv` adds the 0.5 of the continuous convention.
+
+    Raises:
+        ConfigError: unsupported model, ROI, binning, bad D length, or a
+            CameraInfo size different from `image_size` (W, H).
+    """
+    w, h = int(image_size[0]), int(image_size[1])
+    if (msg.width, msg.height) != (w, h):
+        raise ConfigError(
+            f"CameraInfo is {msg.width}x{msg.height}, the frames are {w}x{h}"
+        )
+    if msg.model and msg.model not in _CAMERA_INFO_MODELS:
+        raise ConfigError(
+            f"CameraInfo distortion_model {msg.model!r} is not supported "
+            f"(use one of {sorted(_CAMERA_INFO_MODELS)})"
+        )
+    # roi is (x_offset, y_offset, height, width); all zeros or the whole
+    # image both mean "no ROI" (drivers publish either).
+    if any(msg.roi) and tuple(msg.roi) != (0, 0, h, w):
+        raise ConfigError(
+            f"CameraInfo roi {tuple(msg.roi)} is not supported (only all zeros "
+            f"or the full frame (0, 0, {h}, {w}): x_offset, y_offset, height, width)"
+        )
+    if msg.binning > 1:
+        raise ConfigError(f"CameraInfo binning {msg.binning} is not supported (> 1)")
+    if has_distortion(msg):
+        if len(msg.d) not in DIST_COUNTS:
+            raise ConfigError(
+                f"CameraInfo D has {len(msg.d)} coefficients, expected one of "
+                f"{sorted(DIST_COUNTS)}"
+            )
+        matrix = np.array(msg.k, dtype=np.float64).reshape(3, 3)
+        return Calibration.from_opencv(matrix, np.array(msg.d), (w, h))
+    matrix = np.array(msg.p, dtype=np.float64).reshape(3, 4)[:, :3]
+    return Calibration.from_opencv(matrix, np.zeros(0), (w, h))
 
 
 def _node_to_python(node: cv2.FileNode) -> Any:
@@ -542,49 +600,107 @@ class CalibratedIntrinsics(IntrinsicsProvider):
 class CameraSetup:
     """What the camera configuration contributes to a run."""
 
-    source: VideoSource  # with the undistortion transform, if any
+    source: FrameSource  # with the undistortion transform, if any
     intrinsics: IntrinsicsProvider | None
     details: Mapping[str, Any]  # metrics.json["camera"]
 
 
-def build_camera(cfg: CameraConfig, source: VideoSource) -> CameraSetup:
-    """Compose the camera of a run (composition root of `camera.*`).
+NO_CAMERA_INFO = "no CameraInfo for this topic"
 
-    Without `camera.calibration` the source is unchanged and the provider is
-    `build_intrinsics_provider(cfg)`. With it: load the file, rescale it to the
-    video, check the recording camera, optionally undistort the frames, and
-    provide the calibrated K (the undistorted one when undistorting). Runs
-    before any model is loaded.
+
+def _camera_info(source: FrameSource, option: str) -> CameraInfoMsg:
+    """The source's CameraInfo, or ConfigError naming `option`."""
+    info = source.camera_info()
+    if info is None:
+        raise ConfigError(f"{option}: {NO_CAMERA_INFO} ({source.name})")
+    return info
+
+
+def build_camera(
+    cfg: CameraConfig, source: FrameSource, rectify: RectifyConfig | None = None
+) -> CameraSetup:
+    """Compose the camera of a run (composition root of `camera.*` and `rectify`).
+
+    Without `camera.calibration` and with rectification off the source is
+    unchanged and the provider is `build_intrinsics_provider(cfg)`. Otherwise
+    the calibration comes from, by precedence:
+
+    1. `rectify.enabled`: the source's CameraInfo, which must have distortion;
+       the frames are undistorted with it (`rectify.alpha`) and the provider
+       gives the rectified K. `load_config` refuses `camera.focal_px` and a
+       `camera.calibration.path` with it; `calibration.from_source` is
+       redundant and its `cross_check` still applies.
+    2. `camera.calibration.from_source`: the source's CameraInfo, frames unchanged.
+    3. `camera.calibration.path`: the file, rescaled to the frames, checked
+       against the recording camera, optionally undistorting the frames.
+
+    `details` (metrics.json["camera"]) has the same keys in every case:
+    `calibration` holds the K and distortion before any undistortion and
+    `undistort` the rectified K, so the evaluation can transform references.
+    Runs before any model is loaded.
 
     Raises:
-        ConfigError: unreadable calibration, another aspect ratio, or a camera
-            mismatch with check_lens "error".
+        ConfigError: unreadable calibration, another aspect ratio, a camera
+            mismatch with check_lens "error", no CameraInfo for rectify or
+            from_source, or an already-rectified CameraInfo with rectify.
     """
-    if cfg.calibration is None:
+    rectifying = rectify is not None and rectify.enabled
+    c: CalibrationConfig | None = cfg.calibration
+    if c is None and not rectifying:
         return CameraSetup(source, build_intrinsics_provider(cfg), {})
-    c: CalibrationConfig = cfg.calibration
-    loaded = load_calibration(c.path)
+    # Precedence (config forbids rectify with a file or focal_px): rectify's
+    # CameraInfo, then from_source's, then the calibration file.
+    info: CameraInfoMsg | None = None
+    if rectifying:
+        info = _camera_info(source, "rectify.enabled")
+        if not has_distortion(info):
+            raise ConfigError(
+                f"rectify.enabled: the CameraInfo of this topic is already "
+                f"rectified (no distortion) ({source.name}); disable rectify"
+            )
+    elif c is not None and c.from_source:
+        info = _camera_info(source, "camera.calibration.from_source")
+    if info is not None:
+        loaded = calibration_from_camera_info(info, source.frame_size)
+        origin: dict[str, Any] = {"path": None, "source": f"CameraInfo ({source.name})"}
+        label = origin["source"]
+    else:
+        # CalibrationConfig guarantees path XOR from_source; no info -> a file.
+        assert c is not None and c.path is not None
+        loaded = load_calibration(c.path)
+        origin = {"path": str(c.path)}
+        label = f"calibration {c.path}"
     calibration = loaded.scaled_to(*source.frame_size)
     details: dict[str, Any] = {
-        "calibration": {"path": str(c.path), **calibration.describe()},
+        "calibration": {**origin, **calibration.describe()},
         "scaled_from": (
             list(loaded.image_size)
             if loaded.image_size != calibration.image_size
             else None
         ),
+        # A source without recording metadata (an MCAP) gives "unavailable".
         "lens_check": check_camera_metadata(
-            calibration.camera, source.camera_metadata(), c.check_lens
+            calibration.camera,
+            source.camera_metadata(),
+            c.check_lens if c is not None else "off",
         ),
         "undistort": None,
     }
-    label = f"calibration {c.path}"
-    if c.undistort:
-        undistorter = Undistorter(calibration, alpha=c.alpha)
+    alpha = None
+    if rectifying:
+        assert rectify is not None
+        alpha, suffix = rectify.alpha, " (rectified)"
+    elif c is not None and c.undistort:
+        alpha, suffix = c.alpha, " (undistorted)"
+    if alpha is not None:
+        undistorter = Undistorter(calibration, alpha=alpha)
         source = source.with_transform(undistorter)
         calibration = undistorter.output
         details["undistort"] = undistorter.describe()
-        label += " (undistorted)"
-    cross = EstimatedIntrinsics(cfg.estimate) if c.cross_check else None
+        label += suffix
+    cross = (
+        EstimatedIntrinsics(cfg.estimate) if c is not None and c.cross_check else None
+    )
     return CameraSetup(
         source,
         CalibratedIntrinsics(calibration, label=label, cross_check=cross),

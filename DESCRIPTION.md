@@ -69,7 +69,7 @@ still pending.
 av-perception-lab/
 ├── pyproject.toml           # uv manifest; "infer" extra holds the GPU stack, "eval" extra matplotlib, "web" extra FastAPI; 4 console scripts; pytest "gpu" marker
 ├── uv.lock
-├── web/                     # front-end (Vite React TS): src/api (types, client, video, models), src/editor (yamlState store, Lanes, ModuleCard, Inspector, fieldControls, DiffView, registry), src/models (useModelStatus hook + ReadinessProvider, ReadinessBanner, ModelRequirements, readiness.ts/cardReadiness.ts rules, statusStyles.css), src/video (VideoDeck, DropZone, Player, SegmentBar, JobPanel, segment.ts, useVideoSession, useJobs, useProcess), src/api/runs.ts, src/runs (RunsView, RunList, RunDetail, CompareView (KpiCards, ConfigDiff), DistanceChart, JsonTree, Artifacts, artifactViews registry, format.ts), src/ui (Shell, route.ts, theme.css); built to web/dist (not versioned)
+├── web/                     # front-end (Vite React TS): src/api (types, client, video, models), src/editor (yamlState store, Lanes, ModuleCard, Inspector, fieldControls, DiffView, registry with StageContext and hidden stage views), src/models (useModelStatus hook + ReadinessProvider, ReadinessBanner, ModelRequirements, readiness.ts/cardReadiness.ts rules, statusStyles.css), src/video (VideoDeck, DropZone, Player, SegmentBar, JobPanel, segment.ts, useVideoSession, useJobs, useProcess, TopicPicker, RectifyLane, mcapCamera.ts, useMcapBinding), src/api/runs.ts, src/runs (RunsView, RunList, RunDetail, CompareView (KpiCards, ConfigDiff), DistanceChart, JsonTree, Artifacts, artifactViews registry, format.ts), src/ui (Shell, route.ts, theme.css); built to web/dist (not versioned)
 ├── configs/                 # example run YAMLs: rfdetr_da3, yolo_o365_da3, multi_detector(_fused), *_seg_da3, rfdetr_sam2_da3, yolo_o365_sam2_da3, rfdetr_semantic_da3, rfdetr_lanes_scene_da3, rfdetr_da3_track, rfdetr_da3_calibrated, yolo_light_da3, rfdetr_da3_motion, rfdetr_sam2_lanes_motion_da3
 │   ├── labels/              # versioned label maps: coco_driving, objects365_driving
 │   └── references/          # example_references.yaml (fictitious field-reference template)
@@ -395,12 +395,45 @@ entries are assembled in `.incoming/` and renamed into place);
 longest side <= 1280, source timestamps) encoded in one background thread,
 `preview: null` until ready. `GET /api/videos/roots` -> `{roots, cwd}`.
 `POST /api/runs` rejects (422) a `video_id` not in the library or `missing`,
-and with a `video_id` always sets `source.video` to the record's original. Front-end: a video
+and with a `video_id` always sets `source.video` to the record's original. ROS 2
+MCAP entries (task_0033): `.mcap` uploads/imports become `kind: "mcap"`
+records (old records load as `kind: "video"`), validated with `probe_mcap`
+(corrupt, truncated or without a decodable image topic -> 422),
+size/rate/duration of the first supported image topic whose first frame
+decodes, thumb = that frame, no preview; topics with an unsupported encoding
+(16UC1, compressedDepth, ...) are listed with `supported: false` and do not
+reject the file; `GET
+/api/videos/{id}/topics` returns the stored summary (`duration_s`,
+`camera_info_topics`, `images[]` with `name`, `schema`, `width`, `height`,
+`encoding`, `rate_hz`, `count`, `duration_s`, `camera_info_topic`,
+`has_camera_info`, `has_distortion`, `camera_info_error`, `supported`,
+`unsupported_reason`; 404 for a video). With an MCAP `video_id`, `POST
+/api/runs` sets `source.mcap` (drops `source.video`), requires a supported
+`source.topic` among the image topics, and
+refuses `rectify.enabled` / `camera.calibration.from_source` on a topic
+without a usable CameraInfo (rectify also needs distortion) with 422. Front-end: a video
 deck above the editor (drop anywhere / browse / server path / library,
 player looping the segment, two-handle segment bar with start/length/stride
 and a live estimate at 2 fps, Process and Process entire video, a GPU
 confirmation below 4000 MiB free, a job panel with queue position, progress,
 live `preview.jpg`, cancel, failure log tail) and the runs view (below) that a finished job opens.
+MCAP in the front-end (task_0033): the drop zone, file picker and library
+accept `.mcap`; an MCAP entry shows its thumbnail instead of a player and a
+topic picker (name, resolution, rate, message count, CameraInfo badge;
+unsupported topics disabled with their reason; the first supported topic is
+preselected) plus a "Use the CameraInfo for the intrinsics" tick
+(`camera.calibration.from_source`, which removes `camera.focal_px` and a
+calibration file). The editor's config follows the input
+(`useMcapBinding`): an MCAP writes `source.mcap`/`source.topic` and drops
+`source.video`; switching back to a video removes them together with the
+CameraInfo/rectify choices. A Rectification lane (`RectifyLane`, a stage
+view registered with `hidden`) appears between Source and Detectors only for
+an MCAP input (or when a YAML already enables it); its switch sets
+`rectify.enabled` and is disabled with "no CameraInfo for this topic" or
+"already rectified". The availability rules are pure functions in
+`web/src/video/mcapCamera.ts` (`rectifyAvailability`,
+`cameraInfoAvailability`); the client maps the topics JSON to camelCase
+(`fetchTopics`).
 
 Hardening (task_0018, `web/security.py`): `TrustedHostMiddleware` answers
 only loopback names, the bound `--host` and `--allowed-host` values (400

@@ -129,7 +129,7 @@ def _job_record(path: Path, out_root: Path) -> RunRecord | None:
         return None  # the folder's own record covers it
     config = data.get("config") if isinstance(data.get("config"), dict) else {}
     source = config.get("source") if isinstance(config.get("source"), dict) else {}
-    video = source.get("video")
+    video = source.get("video") or source.get("mcap")
     tail = data.get("log_tail")
     return RunRecord(
         id=f"job-{data['id']}",

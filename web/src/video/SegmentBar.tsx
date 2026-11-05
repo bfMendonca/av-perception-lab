@@ -9,6 +9,8 @@ import type { Segment } from "./useVideoSession";
 export interface SegmentBarProps {
   duration: number;
   fps: number;
+  /** Frames in the input when it has no rate (an MCAP topic with one message). */
+  count?: number;
   segment: Segment;
   stride: number;
   playhead: number;
@@ -22,7 +24,7 @@ type Drag = { kind: "start" | "end" | "move"; offset: number } | null;
 
 const round = (s: number) => Math.round(s * 100) / 100;
 
-export function SegmentBar({ duration, fps, segment, stride, playhead, onChange, onStride, onSeek }: SegmentBarProps) {
+export function SegmentBar({ duration, fps, count = 0, segment, stride, playhead, onChange, onStride, onSeek }: SegmentBarProps) {
   const track = useRef<HTMLDivElement>(null);
   const [drag, setDrag] = useState<Drag>(null);
   const total = duration > 0 ? duration : 1;
@@ -85,7 +87,7 @@ export function SegmentBar({ duration, fps, segment, stride, playhead, onChange,
     else setEnd(next);
   };
 
-  const frames = expectedFrames(segment.length, fps, stride);
+  const frames = expectedFrames(segment.length, fps, stride, count);
   const estimate = estimateSeconds(frames);
 
   return (

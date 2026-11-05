@@ -119,7 +119,8 @@ def scene_runtime(monkeypatch, scene_videos) -> DepthOracle:
 def run_cli(tmp_path, scene_runtime) -> Callable[..., Path]:
     """Factory: run_cli(video, overrides=(), *, perceived) -> run folder.
 
-    Runs `cli.main` with the video as positional argument, BASE_CONFIG as
+    Runs `cli.main` with the video as positional argument (None: no
+    positional, e.g. an MCAP set with `source.mcap`), BASE_CONFIG as
     --config and every override as `--set`, asserts exit code 0 and returns
     the run folder. `perceived` is the frame focal the fake DA3 sees in this
     video (the true K, or the undistorted one).
@@ -129,11 +130,14 @@ def run_cli(tmp_path, scene_runtime) -> Callable[..., Path]:
     counter = itertools.count()
 
     def run(
-        video: Path, overrides: Sequence[str] = (), *, perceived: CameraIntrinsics
+        video: Path | None,
+        overrides: Sequence[str] = (),
+        *,
+        perceived: CameraIntrinsics,
     ) -> Path:
         out_root = tmp_path / f"run{next(counter)}"
         scene_runtime.perceived = perceived
-        argv = [str(video), "--config", str(config)]
+        argv = [*([str(video)] if video is not None else []), "--config", str(config)]
         for override in (*overrides, f"output.out_root={out_root}"):
             argv += ["--set", override]
         assert cli.main(argv) == 0
