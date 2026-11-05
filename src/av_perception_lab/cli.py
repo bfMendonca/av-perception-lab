@@ -175,7 +175,7 @@ def run(
         if cfg.source.mcap is not None
         else VideoSource(cfg.source)
     )
-    camera = build_camera(cfg.camera, input_source)
+    camera = build_camera(cfg.camera, input_source, cfg.rectify)
     source = camera.source
     pipeline = Pipeline(
         detectors,
@@ -295,7 +295,7 @@ def config_requirements(
         except ValueError as exc:  # unsafe declaration (UnsafePathError)
             req = str(exc)
         rows.append((path, component.name, component.type_name, req))
-    estimate = focal_estimate_config(cfg.camera)
+    estimate = focal_estimate_config(cfg.camera, cfg.rectify)
     if depth_needs_intrinsics and estimate is not None:
         try:
             req = da3_requirements(estimate.model, estimate.hf_cache)
