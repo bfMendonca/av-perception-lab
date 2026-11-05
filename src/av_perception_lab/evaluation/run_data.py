@@ -160,17 +160,47 @@ class RunData:
             if e in self.columns and np.isfinite(self.columns[e]).any()
         )
 
+    @property
+    def has_frame_times(self) -> bool:
+        """Whether the source recorded real frame times (an MCAP topic: variable
+        rate, metrics.json["video"]["time_base"]) instead of a constant fps."""
+        return "time_base" in self.metrics["video"]
+
+    @property
+    def fps(self) -> float:
+        """Frame rate of the source: the video's fps, or the nominal (median)
+        message rate of an MCAP topic."""
+        video = self.metrics["video"]
+        return video["fps"] if "fps" in video else video["nominal_fps"]
+
     def processed_frames(self) -> np.ndarray:
         """Source frame indices of every processed frame:
-        round(start * fps) + stride * k for k < frames_processed (as io.video.read_frames)."""
+        round(start * fps) + stride * k for k < frames_processed (as io.video.read_frames).
+        For an MCAP `start` selects by message time, so with start > 0 the
+        first index is estimated at the nominal rate."""
         src = self.metrics["config"]["source"]
-        first = round(src["start"] * self.metrics["video"]["fps"])
+        first = round(src["start"] * self.fps)
         return first + src["stride"] * np.arange(self.metrics["frames_processed"])
 
     def frame_times(self, frames: np.ndarray) -> np.ndarray:
-        """Frame.t (s) of source frame indices."""
+        """Frame.t (s) of source frame indices.
+
+        With real frame times (MCAP) they are the CSV `t` of the frames with
+        rows, interpolated between them and extrapolated at the nominal rate
+        outside; otherwise start + frame offset / fps.
+        """
         src = self.metrics["config"]["source"]
-        fps = self.metrics["video"]["fps"]
+        fps = self.fps
+        frames = np.asarray(frames)
+        if self.has_frame_times and len(self):
+            known, first = np.unique(self.columns["frame"], return_index=True)
+            t = self.columns["t"][first]
+            inside = np.interp(frames, known, t)
+            before = t[0] + (frames - known[0]) / fps
+            after = t[-1] + (frames - known[-1]) / fps
+            return np.where(
+                frames < known[0], before, np.where(frames > known[-1], after, inside)
+            )
         return src["start"] + (frames - round(src["start"] * fps)) / fps
 
     def __len__(self) -> int:
@@ -216,10 +246,10 @@ def read_columns(
     }
 
 
-# metrics.json keys read by RunData (written since task_0002/0006).
+# metrics.json keys read by RunData (written since task_0002/0006), besides
+# video.fps (video) or video.nominal_fps (MCAP, task_0033).
 _METRICS_PATHS: tuple[tuple[str, ...], ...] = (
     ("video", "path"),
-    ("video", "fps"),
     ("frames_processed",),
     ("components", "detectors"),
     ("components", "aggregator", "type"),
@@ -251,5 +281,10 @@ def load_run(run_dir: Path) -> RunData:
                     f"{metrics_path}: missing {'.'.join(keys)} (run older than task_0002?)"
                 )
             node = node[key]
+    if not {"fps", "nominal_fps"} & set(metrics["video"]):
+        raise ConfigError(
+            f"{metrics_path}: missing video.fps or video.nominal_fps "
+            "(run older than task_0002?)"
+        )
     columns = read_columns(csv_path)
     return RunData(run_dir, columns, metrics)

@@ -94,6 +94,31 @@ def test_undistorted_run(fake_run_dir):
         _ = broken.undistort_calibration
 
 
+def test_mcap_run_uses_the_recorded_frame_times(fake_run_dir):
+    # An MCAP source describes itself without "fps" (variable rate): the
+    # nominal rate counts frames, and frame times come from the CSV `t`
+    # (interpolated between frames with rows, extrapolated at the nominal rate).
+    rows = [
+        {**ROWS[0], "frame": 0, "t": 0.0},
+        {**ROWS[1], "frame": 2, "t": 0.25},
+        {**ROWS[0], "frame": 3, "t": 0.31},
+    ]
+    metrics = {
+        "video": {
+            "path": "/data/drive.mcap",
+            "topic": "/cam/image_raw",
+            "nominal_fps": 10.0,
+            "time_base": "header",
+        },
+        "frames_processed": 5,
+    }
+    run = load_run(fake_run_dir(rows, metrics))
+    assert run.video_name == "drive.mcap"
+    frames = run.processed_frames()
+    assert frames.tolist() == [0, 1, 2, 3, 4]
+    assert run.frame_times(frames) == pytest.approx([0.0, 0.125, 0.25, 0.31, 0.41])
+
+
 def test_load_errors(fake_run_dir, tmp_path):
     with pytest.raises(ConfigError, match="detections.csv not found"):
         load_run(tmp_path)
