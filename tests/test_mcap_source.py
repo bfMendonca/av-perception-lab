@@ -215,3 +215,41 @@ def test_unsupported_topic_is_refused_naming_the_encoding(tmp_path):
     )
     with pytest.raises(ConfigError, match=r"source.topic: .*16UC1"):
         _source(path)
+
+
+@pytest.fixture
+def decode_calls(monkeypatch):
+    """Counts the image decodes (cvtColor / imdecode) of the MCAP reader."""
+    from av_perception_lab.io import mcap_reader
+
+    calls = []
+    real = mcap_reader.decode_image
+    monkeypatch.setattr(
+        mcap_reader, "decode_image", lambda *a: calls.append(1) or real(*a)
+    )
+    return calls
+
+
+@pytest.mark.parametrize("indexed", [True, False])
+def test_discarded_messages_are_never_decoded(tmp_path, decode_calls, indexed):
+    seconds = [i / 10 for i in range(20)]
+    seconds[7] = seconds[6]  # a duplicate: dropped, never decoded
+    path = _record(tmp_path, seconds, indexed=indexed)
+    source = _source(path, start=0.25, stride=3)
+    assert source.time_base == "header" and decode_calls == []
+    frames = list(source)
+    assert [f.index for f in frames] == [3, 6, 9, 12, 15, 18]
+    assert len(decode_calls) == len(frames)
+    decode_calls.clear()
+    assert len(_source(path, max_frames=2).sample(4)) == 4
+    assert len(decode_calls) == 4
+    decode_calls.clear()
+    assert [f.index for f in _source(path, max_frames=2, stride=2)] == [0, 2]
+    assert len(decode_calls) == 2
+
+
+def test_sample_spreads_over_exact_selection(tmp_path, decode_calls):
+    path = _record(tmp_path, [i / 10 for i in range(10)], indexed=False)
+    samples = _source(path, start=0.2, duration=0.6).sample(3)
+    assert [int(rgb[0, 0, 0]) // 10 for rgb in samples] == [2, 4, 6]
+    assert len(decode_calls) == 3

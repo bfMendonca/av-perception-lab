@@ -3,6 +3,7 @@ over a time segment, with stride and frame cap; McapSource reads an image
 topic of a ROS 2 MCAP with the message times. Both optionally apply a
 FrameTransform (e.g. lens undistortion) to every frame they yield."""
 
+import contextlib
 import copy
 import itertools
 import statistics
@@ -23,9 +24,11 @@ from av_perception_lab.io.mcap_reader import (
     ImageTopic,
     McapError,
     McapInfo,
-    iter_images,
+    RawImage,
+    iter_raw_images,
     probe_mcap,
     read_camera_info,
+    read_images_at,
 )
 from av_perception_lab.io.quicktime import camera_metadata
 from av_perception_lab.io.video import (
@@ -217,6 +220,18 @@ class VideoSource(FrameSource):
 TIME_BASE_WINDOW = 50
 
 
+class _Drops:
+    """Messages dropped because their time did not increase."""
+
+    def __init__(self) -> None:
+        self.count = 0
+
+    def add(self, position: int, backward: bool) -> None:
+        """Message `position` (from the start of the topic) dropped; `backward`
+        when its time is before the last kept one (not a repeat)."""
+        self.count += 1
+
+
 class McapSource(FrameSource):
     """An image topic of a ROS 2 MCAP (probed at construction), optionally
     transformed.
@@ -228,6 +243,9 @@ class McapSource(FrameSource):
     `start`/`duration` select by message time from the first message,
     `stride` counts messages and `Frame.index` is the message index (after
     dropping) from the start of the topic, like the frame index of a video.
+    Only the selected messages are decoded: the times come from the raw
+    message bytes, so dropped, skipped (`start`, `stride`) and unsampled
+    messages are read but never go through the image decoder.
     """
 
     frame_times_known = True
@@ -262,7 +280,7 @@ class McapSource(FrameSource):
         self.topic: ImageTopic = topic
         self.transform = transform
         self._head: tuple[str, float] | None = None  # (time base, nominal fps)
-        self._duplicates = 0  # dropped by the last iteration (not by sample)
+        self._drops = _Drops()  # dropped by the last iteration (not by sample)
 
     def with_transform(self, transform: FrameTransform) -> "McapSource":
         """The same source with `transform` applied to every frame (no new probe)."""
@@ -291,18 +309,19 @@ class McapSource(FrameSource):
         fps = Fraction(self.nominal_fps / self.cfg.stride).limit_denominator(1001)
         return f"{fps.numerator}/{fps.denominator}"
 
-    def _messages(self):
-        return iter_images(self.info.path, self.topic.topic.name)
+    def _messages(self) -> Iterator[RawImage]:
+        return iter_raw_images(self.info.path, self.topic.topic.name)
 
     def _read_head(self) -> tuple[str, float]:
-        """Time base and median message rate over the first messages (cached)."""
+        """Time base and median message rate over the first messages (cached;
+        only the stamps are read, no image is decoded)."""
         if self._head is None:
-            head = []
             try:
-                for msg in self._messages():
-                    head.append((msg.log_ns, msg.header_ns))
-                    if len(head) >= TIME_BASE_WINDOW:
-                        break
+                with contextlib.closing(self._messages()) as messages:
+                    head = [
+                        (msg.log_ns, msg.header_ns)
+                        for msg in itertools.islice(messages, TIME_BASE_WINDOW)
+                    ]
             except McapError as exc:
                 raise ConfigError(f"source.mcap: {exc}") from exc
             stamps = [h for _, h in head]
@@ -326,40 +345,34 @@ class McapSource(FrameSource):
         """Median message rate over the first messages."""
         return self._read_head()[1]
 
-    def _timed(self, *, count: bool) -> Iterator[tuple[int, int, np.ndarray]]:
-        """(index, time ns, rgb) of every message with an increasing time;
-        size-checked. With `count`, the dropped messages go to self._duplicates."""
+    def _timed(self, drops: _Drops) -> Iterator[tuple[int, int, int, RawImage]]:
+        """(index, time ns, log-time rank, message) of every message with an
+        increasing time, not decoded; the dropped ones are counted in `drops`.
+        The rank counts the earlier messages with the same log time."""
         use_header = self.time_base == "header"
-        w, h = self.frame_size
-        if count:
-            self._duplicates = 0
-        last = None
-        index = 0
-        for msg in self._messages():
+        last = prev_log = None
+        index = rank = 0
+        for position, msg in enumerate(self._messages()):
+            rank = rank + 1 if msg.log_ns == prev_log else 0
+            prev_log = msg.log_ns
             ns = msg.header_ns if use_header else msg.log_ns
             if last is not None and ns <= last:
-                if count:
-                    self._duplicates += 1
+                drops.add(position, ns < last)
                 continue
             last = ns
-            got_h, got_w = msg.rgb.shape[:2]
-            if (got_w, got_h) != (w, h):
-                raise ContractError(
-                    f"{self.input_name} {self.topic.topic.name}: message {index} is "
-                    f"{got_w}x{got_h}, the first one is {w}x{h}"
-                )
-            yield index, ns, msg.rgb
+            yield index, ns, rank, msg
             index += 1
 
     def _select(
-        self, *, stride: int, max_frames: int, count: bool = False
-    ) -> Iterator[tuple[int, float, np.ndarray]]:
-        """(index, seconds from the first selected message, rgb) of the selection."""
+        self, *, stride: int, max_frames: int, drops: _Drops
+    ) -> Iterator[tuple[int, float, int, RawImage]]:
+        """(index, seconds from the first selected message, log-time rank,
+        message) of the selection; nothing is decoded."""
         start_ns = round(self.cfg.start * 1e9)
         end_ns = round((self.cfg.start + self.cfg.duration) * 1e9)
         first = t0 = None
         selected = kept = 0
-        for index, ns, rgb in self._timed(count=count):
+        for index, ns, rank, msg in self._timed(drops):
             first = ns if first is None else first
             if ns - first < start_ns:
                 continue
@@ -367,34 +380,55 @@ class McapSource(FrameSource):
                 return
             t0 = ns if t0 is None else t0
             if selected % stride == 0:
-                yield index, (ns - t0) / 1e9, rgb
+                yield index, (ns - t0) / 1e9, rank, msg
                 kept += 1
                 if max_frames and kept >= max_frames:
                     return
             selected += 1
 
+    def _decode(self, index: int, msg: RawImage) -> np.ndarray:
+        """The message's RGB frame, size-checked and transformed."""
+        rgb = msg.decode()
+        w, h = self.frame_size
+        got_h, got_w = rgb.shape[:2]
+        if (got_w, got_h) != (w, h):
+            raise ContractError(
+                f"{self.input_name} {self.topic.topic.name}: message {index} is "
+                f"{got_w}x{got_h}, the first one is {w}x{h}"
+            )
+        return _apply(self.transform, rgb)
+
     def __iter__(self) -> Iterator[Frame]:
+        self._drops = drops = _Drops()
         try:
-            for index, t, rgb in self._select(
-                stride=self.cfg.stride, max_frames=self.cfg.max_frames, count=True
+            for index, t, _, msg in self._select(
+                stride=self.cfg.stride, max_frames=self.cfg.max_frames, drops=drops
             ):
-                yield Frame(index, t, _apply(self.transform, rgb))
+                yield Frame(index, t, self._decode(index, msg))
         except McapError as exc:
             raise ConfigError(f"source.mcap: {exc}") from exc
 
     def sample(self, n: int) -> list[np.ndarray]:
-        # Like sample_frames: the selection length is estimated from the
-        # probed count and rate, so no extra pass over the file.
-        rate, total = self.topic.topic.rate_hz, self.topic.topic.count
-        if self.cfg.duration:
-            count = int(self.cfg.duration * rate)
-        else:
-            count = max(total - round(self.cfg.start * rate), 0)
-        stride = max(1, count // n) if count else 1
+        # Spread over the start/duration selection (stride and max_frames
+        # ignored, like sample_frames): a pass over the stamps finds it, then
+        # only the n sampled messages are read again and decoded.
         try:
+            window = [
+                (index, msg.log_ns, rank)
+                for index, _, rank, msg in self._select(
+                    stride=1, max_frames=0, drops=_Drops()
+                )
+            ]
+            stride = max(1, len(window) // n)
+            picks = window[::stride][:n]
+            messages = read_images_at(
+                self.info.path,
+                self.topic.topic.name,
+                [(log_ns, rank) for _, log_ns, rank in picks],
+            )
             return [
-                _apply(self.transform, rgb)
-                for _, _, rgb in self._select(stride=stride, max_frames=n)
+                self._decode(index, msg)
+                for (index, _, _), msg in zip(picks, messages, strict=True)
             ]
         except McapError as exc:
             raise ConfigError(f"source.mcap: {exc}") from exc
@@ -421,7 +455,7 @@ class McapSource(FrameSource):
             "rate": t.topic.rate_hz,
             "nominal_fps": self.nominal_fps,
             "time_base": self.time_base,
-            "duplicates_dropped": self._duplicates,
+            "duplicates_dropped": self._drops.count,
             "camera_info_topic": t.camera_info_topic,
             "transform": self.transform.describe() if self.transform else None,
         }

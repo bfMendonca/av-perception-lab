@@ -337,3 +337,68 @@ def test_probe_flags_unsupported_topics_without_raising(tmp_path):
         list(iter_images(path, "/cam/aligned_depth/image_raw"))
     with pytest.raises(McapError, match="compressedDepth"):
         list(iter_images(path, "/cam/depth/image_raw/compressedDepth"))
+
+
+def test_cdr_stamp_matches_the_decoder_both_byte_orders():
+    from av_perception_lab.io.mcap_reader import cdr_stamp_ns
+
+    le = bytes([0, 1, 0, 0]) + (-6).to_bytes(4, "little", signed=True)
+    le += (999_999_999).to_bytes(4, "little") + b"rest"
+    be = bytes([0, 0, 0, 0]) + (7).to_bytes(4, "big", signed=True)
+    be += (123).to_bytes(4, "big")
+    assert cdr_stamp_ns(le) == -6 * 1_000_000_000 + 999_999_999
+    assert cdr_stamp_ns(be) == 7_000_000_123
+    assert cdr_stamp_ns(bytes([0, 7, 0, 0]) + bytes(8)) is None  # not plain CDR
+    assert cdr_stamp_ns(bytes([0, 1, 0, 0, 1])) is None  # too short
+
+
+@pytest.mark.parametrize("compressed", [None, "png"])
+def test_raw_images_read_stamps_without_decoding(tmp_path, monkeypatch, compressed):
+    from av_perception_lab.io import mcap_reader
+
+    stamps = [7_123_456_789, 1_000_000_000, 3]
+    path = write_mcap(
+        tmp_path / "a.mcap",
+        images=[
+            ImageSpec(
+                topic="/c",
+                frames=_frames(3),
+                times_ns=[1, 2, 3],
+                header_ns=stamps,
+                compressed=compressed,
+            )
+        ],
+    )
+    calls = []
+    real = mcap_reader.decode_image
+    monkeypatch.setattr(
+        mcap_reader, "decode_image", lambda *a: calls.append(1) or real(*a)
+    )
+    raw = list(mcap_reader.iter_raw_images(path, "/c"))
+    assert [(m.log_ns, m.header_ns) for m in raw] == list(zip([1, 2, 3], stamps))
+    assert calls == []
+    assert np.array_equal(raw[1].decode(), list(iter_images(path, "/c"))[1].rgb)
+    assert len(calls) == 4  # raw[1].decode() + the three of iter_images
+
+
+@pytest.mark.parametrize("indexed", [True, False])
+def test_read_images_at_fetches_only_the_targets(tmp_path, monkeypatch, indexed):
+    from av_perception_lab.io import mcap_reader
+
+    frames = [np.full((4, 4, 3), 10 * i, np.uint8) for i in range(6)]
+    times = [0, 10, 10, 20, 30, 40]  # a log-time tie: rank tells them apart
+    path = write_mcap(
+        tmp_path / "a.mcap",
+        images=[ImageSpec(topic="/c", frames=frames, times_ns=times)],
+        indexed=indexed,
+    )
+    calls = []
+    real = mcap_reader.decode_image
+    monkeypatch.setattr(
+        mcap_reader, "decode_image", lambda *a: calls.append(1) or real(*a)
+    )
+    got = mcap_reader.read_images_at(path, "/c", [(10, 1), (30, 0)])
+    assert [int(m.decode()[0, 0, 0]) // 10 for m in got] == [2, 4]
+    assert len(calls) == 2
+    with pytest.raises(McapError, match="no message"):
+        mcap_reader.read_images_at(path, "/c", [(25, 0)])

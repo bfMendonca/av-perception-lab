@@ -6,7 +6,10 @@ the module imports in the light environment. Every library failure (missing
 or corrupt file, truncated recording, bad message) surfaces as `McapError`.
 """
 
-from collections.abc import Iterator, Sequence
+import contextlib
+import itertools
+import struct
+from collections.abc import Callable, Iterator, Sequence
 from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
@@ -372,15 +375,136 @@ def decode_image(msg: Any, schema: str) -> np.ndarray:
     return arr if convert is None else cv2.cvtColor(arr, convert)
 
 
-def iter_images(path: Path, topic: str) -> Iterator[ImageMessage]:
-    """Decode every message of an image topic, in log-time order."""
+class RawImage:
+    """An image message read but not decoded: the times are known, the
+    pixels are decoded (CDR, then `decode_image`) only by `decode()`."""
+
+    __slots__ = ("_data", "_decoder", "_path", "_schema", "header_ns", "log_ns")
+
+    def __init__(
+        self,
+        path: Path,
+        schema: str,
+        decoder: Callable[[bytes], Any],
+        log_ns: int,
+        data: bytes,
+    ) -> None:
+        self._path, self._schema, self._decoder, self._data = (
+            path,
+            schema,
+            decoder,
+            data,
+        )
+        self.log_ns = log_ns
+        stamp = cdr_stamp_ns(data)
+        if stamp is None:  # not plain CDR: decode the message for its header
+            with _guard(path, "decode a message of"):
+                stamp = _stamp_ns(decoder(data).header.stamp)
+        self.header_ns = stamp
+
+    def decode(self) -> np.ndarray:
+        """The (H, W, 3) uint8 RGB frame."""
+        with _guard(self._path, "decode a message of"):
+            return decode_image(self._decoder(self._data), self._schema)
+
+
+def cdr_stamp_ns(data: bytes) -> int | None:
+    """`header.stamp` (ns) of a CDR-serialized `Image` / `CompressedImage`
+    read from the raw bytes, None when the encapsulation is not plain CDR.
+
+    The stamp is the first field (int32 sec, uint32 nanosec) right after the
+    4-byte encapsulation header; its second byte gives the byte order
+    (0: big-endian, 1: little-endian)."""
+    if len(data) < 12 or data[0] != 0 or data[1] not in (0, 1):
+        return None
+    sec, nanosec = struct.unpack_from("<iI" if data[1] else ">iI", data, 4)
+    return sec * 1_000_000_000 + nanosec
+
+
+def _raw_messages(
+    path: Path,
+    topic: str,
+    *,
+    start_ns: int | None = None,
+    end_ns: int | None = None,
+    reader: Any = None,
+) -> Iterator[RawImage]:
+    from mcap_ros2.decoder import DecoderFactory
+
+    factory = DecoderFactory()
+    for schema, channel, message in reader.iter_messages(
+        topics=[topic], starting_at=start_ns, ending_before=end_ns
+    ):
+        decoder = factory.decoder_for(channel.message_encoding, schema)
+        if decoder is None or schema is None:
+            raise McapError(
+                f"topic {topic} of {path}: no ROS 2 decoder for message "
+                f"encoding {channel.message_encoding!r}"
+            )
+        yield RawImage(path, schema.name, decoder, message.log_time, message.data)
+
+
+def iter_raw_images(path: Path, topic: str) -> Iterator[RawImage]:
+    """Every message of an image topic in log-time order, not decoded (the
+    raw bytes are read; `RawImage.decode()` decodes one)."""
+    from mcap.reader import make_reader
+
     path = Path(path)
     seen = False
-    for schema, _channel, message, decoded in _messages(path, [topic]):
-        seen = True
-        with _guard(path, "decode a message of"):
-            rgb = decode_image(decoded, schema.name)
-            header_ns = _stamp_ns(decoded.header.stamp)
-        yield ImageMessage(message.log_time, header_ns, rgb)
+    with _stream(path) as stream:
+        for msg in _raw_messages(path, topic, reader=make_reader(stream)):
+            seen = True
+            yield msg
     if not seen:
         raise McapError(f"topic {topic} has no messages in {path}")
+
+
+def read_images_at(
+    path: Path, topic: str, targets: Sequence[tuple[int, int]]
+) -> list[RawImage]:
+    """The messages of an image topic at `(log time, rank)` targets in log-time
+    order, `rank` counting the earlier messages with the same log time.
+
+    An indexed MCAP is read only around each target (chunk index); an
+    unindexed one in a single pass that stops after the last target."""
+    from mcap.reader import make_reader
+
+    path = Path(path)
+    out: list[RawImage] = []
+    with _stream(path) as stream:
+        reader = make_reader(stream)
+        summary = reader.get_summary()
+        if summary is not None and summary.chunk_indexes:
+            for log_ns, rank in targets:
+                at = _raw_messages(
+                    path, topic, start_ns=log_ns, end_ns=log_ns + 1, reader=reader
+                )
+                with contextlib.closing(at):
+                    msg = next(itertools.islice(at, rank, None), None)
+                if msg is None:
+                    break
+                out.append(msg)
+        else:
+            wanted = iter(targets)
+            target = next(wanted, None)
+            prev, rank = None, 0
+            for msg in _raw_messages(path, topic, reader=reader):
+                if target is None:
+                    break
+                rank = rank + 1 if msg.log_ns == prev else 0
+                prev = msg.log_ns
+                if (msg.log_ns, rank) == target:
+                    out.append(msg)
+                    target = next(wanted, None)
+    if len(out) < len(targets):
+        log_ns, rank = targets[len(out)]
+        raise McapError(
+            f"topic {topic} of {path}: no message at log time {log_ns} (rank {rank})"
+        )
+    return out
+
+
+def iter_images(path: Path, topic: str) -> Iterator[ImageMessage]:
+    """Decode every message of an image topic, in log-time order."""
+    for msg in iter_raw_images(path, topic):
+        yield ImageMessage(msg.log_ns, msg.header_ns, msg.decode())
