@@ -624,9 +624,9 @@ def build_camera(
 
     1. `rectify.enabled`: the source's CameraInfo, which must have distortion;
        the frames are undistorted with it (`rectify.alpha`) and the provider
-       gives the rectified K. A `camera.calibration.path` is then ignored with
-       a warning (K and undistortion come from the CameraInfo, so the file
-       cannot undistort the frames twice); its `cross_check` still applies.
+       gives the rectified K. `load_config` refuses `camera.focal_px` and a
+       `camera.calibration.path` with it; `calibration.from_source` is
+       redundant and its `cross_check` still applies.
     2. `camera.calibration.from_source`: the source's CameraInfo, frames unchanged.
     3. `camera.calibration.path`: the file, rescaled to the frames, checked
        against the recording camera, optionally undistorting the frames.
@@ -645,7 +645,8 @@ def build_camera(
     c: CalibrationConfig | None = cfg.calibration
     if c is None and not rectifying:
         return CameraSetup(source, build_intrinsics_provider(cfg), {})
-    ignored: str | None = None
+    # Precedence (config forbids rectify with a file or focal_px): rectify's
+    # CameraInfo, then from_source's, then the calibration file.
     info: CameraInfoMsg | None = None
     if rectifying:
         info = _camera_info(source, "rectify.enabled")
@@ -654,13 +655,6 @@ def build_camera(
                 f"rectify.enabled: the CameraInfo of this topic is already "
                 f"rectified (no distortion) ({source.name}); disable rectify"
             )
-        if c is not None and c.path is not None:
-            ignored = str(c.path)
-            print(
-                f"[warn] camera.calibration.path ignored ({ignored}): rectify uses "
-                "the CameraInfo of the source",
-                file=sys.stderr,
-            )
     elif c is not None and c.from_source:
         info = _camera_info(source, "camera.calibration.from_source")
     if info is not None:
@@ -668,6 +662,7 @@ def build_camera(
         origin: dict[str, Any] = {"path": None, "source": f"CameraInfo ({source.name})"}
         label = origin["source"]
     else:
+        # CalibrationConfig guarantees path XOR from_source; no info -> a file.
         assert c is not None and c.path is not None
         loaded = load_calibration(c.path)
         origin = {"path": str(c.path)}
@@ -688,8 +683,6 @@ def build_camera(
         ),
         "undistort": None,
     }
-    if ignored is not None:
-        details["ignored_calibration"] = ignored
     alpha = None
     if rectifying:
         assert rectify is not None

@@ -434,7 +434,7 @@ class FakeMcap(FakeVideo):
         self.camera_info_calls = 0
 
     def camera_info(self):
-        self.camera_info_calls += 1
+        self.camera_info_calls += 1  # each call re-reads the MCAP
         return self.info
 
     def with_transform(self, transform):
@@ -488,6 +488,7 @@ def test_from_source_uses_camera_info_intrinsics(monkeypatch):
 def test_rectify_undistorts_and_returns_rectified_k():
     mcap = FakeMcap(camera_info_msg())
     setup = build_camera(CameraConfig(), mcap, RectifyConfig(enabled=True, alpha=0.5))
+    assert mcap.camera_info_calls == 1  # the CameraInfo is read once
     transform = setup.source.transform
     assert isinstance(transform, Undistorter)
     assert transform.alpha == 0.5
@@ -506,18 +507,6 @@ def test_rectify_undistorts_and_returns_rectified_k():
     assert details["undistort"] == transform.describe()
     assert details["undistort"]["alpha"] == 0.5
     json.dumps(details)
-
-
-def test_rectify_with_calibration_file_uses_camera_info(tmp_path, capsys):
-    # rectify's CameraInfo wins over camera.calibration.path (K and undistortion);
-    # the file is not loaded (it may even be missing) and a warning says so.
-    missing = tmp_path / "nope.yaml"
-    cfg = CameraConfig(calibration=CalibrationConfig(path=missing, undistort=True))
-    setup = build_camera(cfg, FakeMcap(camera_info_msg()), RectifyConfig(enabled=True))
-    assert setup.details["calibration"]["path"] is None
-    assert setup.details["ignored_calibration"] == str(missing)
-    assert setup.intrinsics.calibration == setup.source.transform.output
-    assert "camera.calibration.path ignored" in capsys.readouterr().err
 
 
 def test_no_camera_info_with_rectify_or_from_source_raises_config_error(monkeypatch):

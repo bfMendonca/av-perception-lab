@@ -759,6 +759,22 @@ MCAP_SRC = {"mcap": "a.mcap", "topic": "/cam"}
             {"source": {"video": "v.mp4"}, "rectify": {"enabled": True}},
             r"^rectify\.enabled: needs source\.mcap",
         ),
+        (
+            {
+                "source": MCAP_SRC,
+                "camera": {"focal_px": 1400},
+                "rectify": {"enabled": True},
+            },
+            r"^rectify\.enabled: camera\.focal_px is exclusive",
+        ),
+        (
+            {
+                "source": MCAP_SRC,
+                "camera": {"calibration": {"path": "c.yaml"}},
+                "rectify": {"enabled": True},
+            },
+            r"^rectify\.enabled: camera\.calibration\.path is exclusive",
+        ),
         ({"source": MCAP_SRC, "rectify": {"alpha": 1.5}}, r"^rectify: alpha"),
         ({"source": MCAP_SRC, "rectify": {"alpha": -0.1}}, r"^rectify: alpha"),
     ],

@@ -300,6 +300,20 @@ class RunConfig:
                 raise ValueError(
                     "rectify.enabled: needs source.mcap (a video has no CameraInfo)"
                 )
+        if self.rectify.enabled:
+            # rectify takes K from the CameraInfo: another intrinsics source
+            # would be dropped (from_source is the same source, so it is allowed).
+            if self.camera.focal_px is not None:
+                raise ValueError(
+                    "rectify.enabled: camera.focal_px is exclusive with it "
+                    "(rectify uses the CameraInfo K); remove camera.focal_px"
+                )
+            cal = self.camera.calibration
+            if cal is not None and cal.path is not None:
+                raise ValueError(
+                    "rectify.enabled: camera.calibration.path is exclusive with it "
+                    "(rectify uses the CameraInfo); remove camera.calibration"
+                )
         if self.render.bev_inset and self.motion is None:
             raise ValueError("render.bev_inset: needs the motion section")
 
