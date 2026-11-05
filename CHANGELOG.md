@@ -4,6 +4,37 @@ Todas as mudancas relevantes do av-perception-lab serao documentadas neste arqui
 
 ---
 
+## [Unreleased] MCAP input
+
+ROS 2 MCAP files as a pipeline input (task_0033).
+
+### Added
+
+- `source.mcap` + `source.topic`: read a `sensor_msgs/Image` or
+  `CompressedImage` topic (rgb8, bgr8, rgba8, bgra8, mono8, jpeg, png) from an
+  indexed or unindexed `.mcap` (`io/mcap_reader.py`, `McapSource`). `Frame.t`
+  uses `header.stamp` when it is positive and non-decreasing, else the log
+  time; repeated timestamps are dropped (`duplicates_dropped`).
+- `camera.calibration.from_source`: K and distortion from the topic's
+  `CameraInfo` (raw: K/D; rectified: P).
+- `rectify` section and stage: removes the lens distortion with the
+  `CameraInfo` before every other stage.
+- The annotated `video.mp4` of an MCAP run has variable frame rate
+  (`TimestampedVideoWriter`, PyAV); `metrics.json["video"]` describes the
+  source.
+- Web: `.mcap` drop, import and library entries, `GET /api/videos/{id}/topics`,
+  a topic picker, a "Use the CameraInfo" tick and a Rectification lane.
+- Evaluation loads MCAP runs and uses their recorded frame times; runs with
+  `source.start > 0` are refused.
+
+### Changed
+
+- `mcap`, `mcap-ros2-support` and `av` are base dependencies (`av` left the
+  `web` extra); `FrameSource` gained `input_name`, `nominal_fps`,
+  `n_frames_total` and optional members; `camera.calibration.path` is optional.
+
+---
+
 ## [Unreleased] Delete a run
 
 Delete a run from the web history (task_0032).

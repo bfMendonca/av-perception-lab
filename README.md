@@ -25,7 +25,7 @@ A research prototype for studying how detection, depth, segmentation and trackin
 | Node.js 22.12 or newer, with npm | `node --version` | building the web interface once (`utils/run_web.sh`) |
 | NVIDIA GPU and a driver for CUDA 12.8 | `nvidia-smi` | running the models (steps 3 and 4 below) |
 
-The repository has no sample video. Use any MP4, MOV or MKV that ffmpeg can decode.
+The repository has no sample video. Use any MP4, MOV or MKV that ffmpeg can decode. ROS 2 `.mcap` recordings with an image topic also work as input (`source.mcap` and `source.topic`; the web interface lists the topics when you drop the file). The YAML keys are in [`docs/reference.md`](docs/reference.md#entrada-mcap-ros-2).
 
 ## Quick start
 
