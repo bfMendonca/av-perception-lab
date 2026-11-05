@@ -252,6 +252,11 @@ class McapSource(FrameSource):
                 f"source.topic: {cfg.topic!r} is not an image topic of {cfg.mcap} "
                 f"(image topics: {available})"
             )
+        if not topic.supported:
+            raise ConfigError(
+                f"source.topic: {cfg.topic!r} cannot be read: "
+                f"{topic.unsupported_reason}"
+            )
         self.cfg = cfg
         self.info = info
         self.topic: ImageTopic = topic

@@ -154,6 +154,13 @@ def mcap_topic_problems(
                 f"(image topics: {choices})",
             }
         ]
+    if not entry.get("supported", True):
+        return [
+            {
+                "path": "source.topic",
+                "message": f"{topic} cannot be read: {entry.get('unsupported_reason')}",
+            }
+        ]
     section = config.get("rectify")
     rectify = isinstance(section, dict) and section.get("enabled") is True
     camera = config.get("camera")

@@ -468,6 +468,8 @@ def mcap_summary(path: Path, name: str = "") -> dict[str, Any]:
             "has_camera_info": image.camera_info_topic is not None,
             "has_distortion": False,
             "camera_info_error": None,
+            "supported": image.supported,
+            "unsupported_reason": image.unsupported_reason,
         }
         if image.camera_info_topic is not None:
             row.update(_camera_info_state(path, name, image))
@@ -488,27 +490,47 @@ def _camera_info_state(path: Path, name: str, image: Any) -> dict[str, Any]:
 
     try:
         msg = read_camera_info(path, image.camera_info_topic)
-        calibration_from_camera_info(msg, (image.width, image.height))
+        if image.width > 0:  # 0: an undecodable compressed topic, size unknown
+            calibration_from_camera_info(msg, (image.width, image.height))
     except (McapError, ConfigError, ValueError) as exc:
         return {"camera_info_error": _mcap_text(exc, path, name)}
     return {"has_distortion": has_distortion(msg)}
 
 
-def _mcap_thumbnail(src: Path, topic: str, dst: Path, filename: str) -> None:
-    """JPEG of the first frame of `topic`, at most THUMB_WIDTH wide."""
+def _mcap_thumbnail(
+    src: Path, mcap: dict[str, Any], dst: Path, filename: str
+) -> dict[str, Any]:
+    """JPEG (at most THUMB_WIDTH wide) of the first frame of the first
+    supported image topic whose frame decodes; returns that topic's row of
+    `mcap["images"]` (the record's size and rate come from it).
+
+    Raises:
+        InvalidVideo: no image topic decodes (each one's reason listed).
+    """
     import cv2
 
     from av_perception_lab.io.mcap_reader import McapError, iter_images
 
     name = display_name(filename)
-    try:
-        with contextlib.closing(iter_images(src, topic)) as frames:
-            first = next(frames)
-    except (McapError, StopIteration) as exc:
-        raise InvalidVideo(
-            f"could not decode a frame: {_mcap_text(exc, src, name)}"
-        ) from None
-    rgb = first.rgb
+    problems = []
+    for row in mcap["images"]:
+        if not row["supported"]:
+            problems.append(f"{row['name']}: {row['unsupported_reason']}")
+            continue
+        try:
+            with contextlib.closing(iter_images(src, row["name"])) as frames:
+                first = next(frames)
+        except (McapError, StopIteration) as exc:
+            problems.append(f"{row['name']}: {_mcap_text(exc, src, name)}")
+            continue
+        _write_thumb(cv2, first.rgb, dst)
+        return row
+    raise InvalidVideo(
+        f"no decodable image topic in {name} found: {'; '.join(problems)}"
+    )
+
+
+def _write_thumb(cv2: Any, rgb: Any, dst: Path) -> None:
     height, width = rgb.shape[:2]
     if width > THUMB_WIDTH:
         size = (THUMB_WIDTH, max(1, round(height * THUMB_WIDTH / width)))
@@ -763,11 +785,10 @@ class Library:
         mcap = None
         if kind == "mcap":
             mcap = mcap_summary(original, display_name(filename))
-            first = mcap["images"][0]
+            first = _mcap_thumbnail(original, mcap, work / THUMB, filename)
             info = ProbeInfo(
                 first["width"], first["height"], first["rate_hz"], first["duration_s"]
             )
-            _mcap_thumbnail(original, first["name"], work / THUMB, filename)
         else:
             info = probe(original)
             _thumbnail(original, work / THUMB, min(1.0, info.duration_s / 3))

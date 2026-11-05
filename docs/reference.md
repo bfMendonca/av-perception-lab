@@ -1031,11 +1031,13 @@ Rotas: `GET /api/videos`, `GET /api/videos/roots`, `POST /api/videos`
 biblioteca ou cujo arquivo sumiu, e com `video_id` o `source.video` é sempre
 o original do vídeo (o do cliente é sobrescrito).
 Um `.mcap` (ROS 2) entra na biblioteca como `kind: "mcap"` (validado com
-`probe_mcap`; sem tópico de imagem, corrompido ou truncado → 422), e
+`probe_mcap`; sem tópico de imagem decodificável, corrompido ou truncado →
+422; tamanho, taxa e miniatura vêm do primeiro tópico suportado), e
 `GET /api/videos/{id}/topics` devolve os tópicos de imagem (resolução, taxa,
-contagem, `CameraInfo` pareado, `has_distortion`); com esse `video_id` o
-`POST /api/runs` define `source.mcap`, exige `source.topic` entre os tópicos
-de imagem e recusa (422) `rectify.enabled`/`camera.calibration.from_source`
+contagem, `CameraInfo` pareado, `has_distortion`, `supported` e
+`unsupported_reason` — ex.: `16UC1`, `compressedDepth`); com esse `video_id`
+o `POST /api/runs` define `source.mcap`, exige um `source.topic` suportado
+entre os tópicos de imagem e recusa (422) `rectify.enabled`/`camera.calibration.from_source`
 num tópico sem `CameraInfo` utilizável (task_0033).
 
 ### Interface web: execuções e comparação

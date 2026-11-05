@@ -398,14 +398,18 @@ longest side <= 1280, source timestamps) encoded in one background thread,
 and with a `video_id` always sets `source.video` to the record's original. ROS 2
 MCAP entries (task_0033): `.mcap` uploads/imports become `kind: "mcap"`
 records (old records load as `kind: "video"`), validated with `probe_mcap`
-(corrupt, truncated or without an image topic -> 422), size/rate/duration
-of the first image topic, thumb = its first frame, no preview; `GET
+(corrupt, truncated or without a decodable image topic -> 422),
+size/rate/duration of the first supported image topic whose first frame
+decodes, thumb = that frame, no preview; topics with an unsupported encoding
+(16UC1, compressedDepth, ...) are listed with `supported: false` and do not
+reject the file; `GET
 /api/videos/{id}/topics` returns the stored summary (`duration_s`,
 `camera_info_topics`, `images[]` with `name`, `schema`, `width`, `height`,
 `encoding`, `rate_hz`, `count`, `duration_s`, `camera_info_topic`,
-`has_camera_info`, `has_distortion`, `camera_info_error`; 404 for a
-video). With an MCAP `video_id`, `POST /api/runs` sets `source.mcap` (drops
-`source.video`), requires `source.topic` among the image topics, and
+`has_camera_info`, `has_distortion`, `camera_info_error`, `supported`,
+`unsupported_reason`; 404 for a video). With an MCAP `video_id`, `POST
+/api/runs` sets `source.mcap` (drops `source.video`), requires a supported
+`source.topic` among the image topics, and
 refuses `rectify.enabled` / `camera.calibration.from_source` on a topic
 without a usable CameraInfo (rectify also needs distortion) with 422. Front-end: a video
 deck above the editor (drop anywhere / browse / server path / library,

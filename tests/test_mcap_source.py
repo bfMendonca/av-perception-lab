@@ -205,3 +205,13 @@ def test_source_config_exclusivity(tmp_path):
     assert cfg.video is None and cfg.topic == TOPIC
     with pytest.raises(ConfigError, match="no input MCAP"):
         McapSource(SourceConfig())
+
+
+def test_unsupported_topic_is_refused_naming_the_encoding(tmp_path):
+    depth = [np.full((12, 16), 1000, np.uint16)]
+    path = write_mcap(
+        tmp_path / "rec.mcap",
+        images=[ImageSpec(topic=TOPIC, frames=depth, times_ns=[0], encoding="16UC1")],
+    )
+    with pytest.raises(ConfigError, match=r"source.topic: .*16UC1"):
+        _source(path)

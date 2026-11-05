@@ -128,6 +128,8 @@ def test_upload_mcap_lists_topics(api, tmp_path, video_factory):
         "has_camera_info": True,
         "has_distortion": True,
         "camera_info_error": None,
+        "supported": True,
+        "unsupported_reason": None,
     }
     assert front["schema"] == "sensor_msgs/msg/CompressedImage"
     assert (front["width"], front["height"], front["count"]) == (12, 8, 2)
@@ -376,3 +378,115 @@ def test_rerun_and_reopen_of_an_mcap_run(api, web_paths, tmp_path):
     (run / "config.yaml").write_text(json.dumps(outside))
     resp = api.post(f"/api/runs/{run.name}/rerun")
     assert resp.status_code == 409 and "import" in resp.json()["detail"]
+
+
+def realsense_like(path: Path, color: bool = True) -> Path:
+    """A 16UC1 depth topic that sorts before the colour topic, a
+    compressedDepth topic, and (optionally) the rgb8 colour topic."""
+    depth = [np.full((12, 16), 1000, np.uint16)] * 2
+    images = [
+        ImageSpec(
+            topic="/camera/aligned_depth_to_color/image_raw",
+            frames=depth,
+            times_ns=[0, 100_000_000],
+            encoding="16UC1",
+        ),
+        ImageSpec(
+            topic="/camera/aligned_depth_to_color/image_raw/compressedDepth",
+            frames=frames(2),
+            times_ns=[0, 100_000_000],
+            compressed="png",
+            format="16UC1; compressedDepth png",
+            data_prefix=bytes(12),
+        ),
+    ]
+    if color:
+        images.append(
+            ImageSpec(
+                topic="/camera/color/image_raw",
+                frames=frames(3, 8, 12),
+                times_ns=[0, 500_000_000, 1_000_000_000],
+            )
+        )
+    return write_mcap(path, images=images)
+
+
+def test_unsupported_first_topic_does_not_reject_the_file(api, tmp_path):
+    resp = upload(api, realsense_like(tmp_path / "rs.mcap"))
+    assert resp.status_code == 200, resp.text
+    record = resp.json()
+    # the record and thumb come from the first supported topic (colour)
+    assert (record["width"], record["height"]) == (12, 8)
+    assert record["fps"] == pytest.approx(2.0)
+    assert record["duration_s"] == pytest.approx(1.0)
+    thumb = api.get(f"/api/videos/{record['id']}/thumb")
+    assert thumb.status_code == 200 and thumb.content[:2] == b"\xff\xd8"
+    topics = by_name(api.get(f"/api/videos/{record['id']}/topics").json())
+    raw16 = topics["/camera/aligned_depth_to_color/image_raw"]
+    assert raw16["supported"] is False
+    assert "16UC1" in raw16["unsupported_reason"]
+    comp = topics["/camera/aligned_depth_to_color/image_raw/compressedDepth"]
+    assert comp["supported"] is False and comp["encoding"] == "compressedDepth"
+    color = topics["/camera/color/image_raw"]
+    assert color["supported"] is True and color["unsupported_reason"] is None
+    # choosing an unsupported topic is refused early, with the reason
+    for extra in ({}, {"rectify": {"enabled": True}}):
+        cfg = {
+            **VALID,
+            "source": {"topic": "/camera/aligned_depth_to_color/image_raw"},
+            **extra,
+        }
+        resp = api.post("/api/runs", json={"config": cfg, "video_id": record["id"]})
+        assert resp.status_code == 422, resp.text
+        error = resp.json()["errors"][0]
+        assert error["path"] == "source.topic" and "16UC1" in error["message"]
+    cfg = {**VALID, "source": {"topic": "/camera/color/image_raw"}}
+    resp = api.post("/api/runs", json={"config": cfg, "video_id": record["id"]})
+    assert resp.status_code == 200, resp.text
+
+
+def test_mcap_with_only_unsupported_topics_is_422(api, web_paths, tmp_path):
+    resp = upload(api, realsense_like(tmp_path / "depth.mcap", color=False))
+    assert resp.status_code == 422
+    detail = resp.json()["detail"]
+    assert "no decodable image topic" in detail and "16UC1" in detail
+    assert api.get("/api/videos").json() == []
+    assert files_under(web_paths.library_root) == []
+
+
+def test_camera_info_of_another_size_is_reported_and_refused(api, tmp_path):
+    rec = write_mcap(
+        tmp_path / "size.mcap",
+        images=[ImageSpec(topic="/cam/image_raw", frames=frames(2), times_ns=[0, 1])],
+        camera_infos=[
+            CameraInfoSpec(topic="/cam/camera_info", width=32, height=20, k=K, d=RAW_D)
+        ],
+    )
+    record = upload(api, rec).json()
+    cam = by_name(record["mcap"])["/cam/image_raw"]
+    assert cam["has_camera_info"] is True and cam["has_distortion"] is False
+    assert cam["camera_info_error"]
+    for section, path in (
+        ({"rectify": {"enabled": True}}, "rectify.enabled"),
+        (
+            {"camera": {"calibration": {"from_source": True}}},
+            "camera.calibration.from_source",
+        ),
+    ):
+        cfg = {**VALID, "source": {"topic": "/cam/image_raw"}, **section}
+        resp = api.post("/api/runs", json={"config": cfg, "video_id": record["id"]})
+        assert resp.status_code == 422, resp.text
+        error = resp.json()["errors"][0]
+        assert error["path"] == path and "cannot be used" in error["message"]
+
+
+def test_single_message_topic_is_accepted_with_fps_zero(api, tmp_path):
+    rec = write_mcap(
+        tmp_path / "one.mcap",
+        images=[ImageSpec(topic="/cam/image_raw", frames=frames(1), times_ns=[5])],
+    )
+    resp = upload(api, rec)
+    assert resp.status_code == 200, resp.text
+    record = resp.json()
+    assert record["fps"] == 0.0 and record["duration_s"] == 0.0
+    assert by_name(record["mcap"])["/cam/image_raw"]["count"] == 1

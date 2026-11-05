@@ -45,13 +45,20 @@ class TopicInfo:
 
 @dataclass(frozen=True, slots=True)
 class ImageTopic:
-    """An image topic; size and encoding come from its first message."""
+    """An image topic; size and encoding come from its first message.
+
+    `supported` is False when its frames cannot be decoded (a raw encoding
+    outside the supported set, compressedDepth, or a compressed first frame
+    that does not decode); `unsupported_reason` says why. The size of an
+    undecodable compressed topic is 0 x 0."""
 
     topic: TopicInfo
     width: int
     height: int
-    encoding: str  # raw encoding, or the compressed format ("jpeg", "png")
+    encoding: str  # raw encoding, or the compressed codec ("jpeg", "png")
     camera_info_topic: str | None
+    supported: bool = True
+    unsupported_reason: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -184,6 +191,8 @@ def compressed_codec(fmt: str) -> str:
     image_transport form (`rgb8; jpeg compressed bgr8`, whose first part is
     the original encoding, not the codec)."""
     text = fmt.strip().lower()
+    if "compresseddepth" in text:  # a header before the PNG: not an image
+        return "compressedDepth"
     for codec, names in (("jpeg", ("jpeg", "jpg")), ("png", ("png",))):
         if any(name in text for name in names):
             return codec
@@ -222,16 +231,23 @@ def probe_mcap(path: Path) -> McapInfo:
         for name in sorted(n for n, r in rows.items() if r[0] != CAMERA_INFO_SCHEMA):
             schema, count, first_ns, last_ns = rows[name]
             _, msg = _first_decoded(path, name)
+            reason = None
             if schema == COMPRESSED_SCHEMA:
-                frame = _decode_compressed(msg)
-                height, width = frame.shape[:2]
                 encoding = compressed_codec(str(msg.format))
+                width = height = 0
+                try:
+                    frame = _decode_compressed(msg)
+                    height, width = frame.shape[:2]
+                except McapError as exc:
+                    reason = str(exc)
             else:
                 width, height, encoding = (
                     int(msg.width),
                     int(msg.height),
                     str(msg.encoding),
                 )
+                if encoding not in _RAW_ENCODINGS:
+                    reason = _unsupported_encoding(encoding)
             images.append(
                 ImageTopic(
                     topic=TopicInfo(
@@ -246,6 +262,8 @@ def probe_mcap(path: Path) -> McapInfo:
                     height=height,
                     encoding=encoding,
                     camera_info_topic=pair_camera_info(name, info_topics),
+                    supported=reason is None,
+                    unsupported_reason=reason,
                 )
             )
     if images:
@@ -311,7 +329,19 @@ def read_camera_info(path: Path, topic: str) -> CameraInfoMsg:
         )
 
 
+def _unsupported_encoding(encoding: str) -> str:
+    return (
+        f"unsupported image encoding {encoding!r}; "
+        f"supported: {', '.join(_RAW_ENCODINGS)}, jpeg, png"
+    )
+
+
 def _decode_compressed(msg: Any) -> np.ndarray:
+    if compressed_codec(str(msg.format)) == "compressedDepth":
+        raise McapError(
+            f"unsupported compressed format {msg.format!r} (compressedDepth: "
+            "depth images are not decoded)"
+        )
     buf = np.frombuffer(bytes(msg.data), np.uint8)
     bgr = cv2.imdecode(buf, cv2.IMREAD_COLOR)
     if bgr is None:
@@ -328,10 +358,7 @@ def decode_image(msg: Any, schema: str) -> np.ndarray:
         raise McapError(f"unsupported image schema {schema}")
     encoding = str(msg.encoding)
     if encoding not in _RAW_ENCODINGS:
-        raise McapError(
-            f"unsupported image encoding {encoding!r}; "
-            f"supported: {', '.join(_RAW_ENCODINGS)}, jpeg, png"
-        )
+        raise McapError(_unsupported_encoding(encoding))
     channels, convert = _RAW_ENCODINGS[encoding]
     height, width, step = int(msg.height), int(msg.width), int(msg.step)
     data = np.frombuffer(bytes(msg.data), np.uint8)

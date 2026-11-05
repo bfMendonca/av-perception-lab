@@ -71,6 +71,7 @@ class ImageSpec:
     encoding: str = "rgb8"
     compressed: str | None = None  # "jpeg" or "png"
     format: str | None = None  # CompressedImage.format (default: `compressed`)
+    data_prefix: bytes = b""  # before the compressed bytes (compressedDepth header)
     header_ns: Sequence[int] | None = None  # None: stamp = time
     step_pad: int = 0  # extra bytes per row
 
@@ -120,11 +121,17 @@ def _image_message(spec: ImageSpec, frame: np.ndarray, stamp_ns: int) -> dict:
         ok, buf = cv2.imencode(ext, np.ascontiguousarray(frame[..., ::-1]))
         assert ok
         fmt = spec.format if spec.format is not None else spec.compressed
-        return {"header": header, "format": fmt, "data": buf.tobytes()}
-    channels, convert = _RAW[spec.encoding]
-    arr = np.ascontiguousarray(convert(frame), dtype=np.uint8)
-    height, width = arr.shape[:2]
-    rows = arr.reshape(height, width * channels)
+        data = spec.data_prefix + buf.tobytes()
+        return {"header": header, "format": fmt, "data": data}
+    if spec.encoding in _RAW:
+        channels, convert = _RAW[spec.encoding]
+        arr = np.ascontiguousarray(convert(frame), dtype=np.uint8)
+        height, width = arr.shape[:2]
+        rows = arr.reshape(height, width * channels)
+    else:  # any other encoding (16UC1, 32FC1...): the frame's own bytes
+        arr = np.ascontiguousarray(frame)
+        height, width = arr.shape[:2]
+        rows = arr.view(np.uint8).reshape(height, -1)
     if spec.step_pad:
         pad = np.zeros((height, spec.step_pad), np.uint8)
         rows = np.concatenate([rows, pad], axis=1)

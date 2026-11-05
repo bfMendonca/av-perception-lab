@@ -287,3 +287,53 @@ def test_probe_reports_codec_of_image_transport_format(
         ],
     )
     assert probe_mcap(path).images[0].encoding == expected
+
+
+def test_probe_flags_unsupported_topics_without_raising(tmp_path):
+    depth = [np.full((12, 16), 1000, np.uint16)] * 2
+    path = write_mcap(
+        tmp_path / "a.mcap",
+        images=[
+            ImageSpec(topic="/cam/color/image_raw", frames=_frames(2), times_ns=[0, 1]),
+            ImageSpec(
+                topic="/cam/aligned_depth/image_raw",
+                frames=depth,
+                times_ns=[0, 1],
+                encoding="16UC1",
+            ),
+            ImageSpec(
+                topic="/cam/depth/image_raw/compressedDepth",
+                frames=_frames(2),
+                times_ns=[0, 1],
+                compressed="png",
+                format="16UC1; compressedDepth png",
+                data_prefix=bytes(12),
+            ),
+            ImageSpec(
+                topic="/cam/broken/compressed",
+                frames=_frames(1),
+                times_ns=[0],
+                compressed="jpeg",
+                data_prefix=b"garbage",
+            ),
+        ],
+    )
+    info = probe_mcap(path)
+    topics = {i.topic.name: i for i in info.images}
+    color = topics["/cam/color/image_raw"]
+    assert color.supported and color.unsupported_reason is None
+    raw16 = topics["/cam/aligned_depth/image_raw"]
+    assert not raw16.supported and "16UC1" in raw16.unsupported_reason
+    assert (raw16.width, raw16.height, raw16.encoding) == (16, 12, "16UC1")
+    comp_depth = topics["/cam/depth/image_raw/compressedDepth"]
+    assert (
+        not comp_depth.supported and "compressedDepth" in comp_depth.unsupported_reason
+    )
+    assert comp_depth.encoding == "compressedDepth"  # not "png"
+    broken = topics["/cam/broken/compressed"]
+    assert not broken.supported and "decode" in broken.unsupported_reason
+    # the reader still names the encoding when an unsupported topic is read
+    with pytest.raises(McapError, match="16UC1"):
+        list(iter_images(path, "/cam/aligned_depth/image_raw"))
+    with pytest.raises(McapError, match="compressedDepth"):
+        list(iter_images(path, "/cam/depth/image_raw/compressedDepth"))
