@@ -289,9 +289,12 @@ def calibration_from_camera_info(
             f"CameraInfo distortion_model {msg.model!r} is not supported "
             f"(use one of {sorted(_CAMERA_INFO_MODELS)})"
         )
-    if any(msg.roi):
+    # roi is (x_offset, y_offset, height, width); all zeros or the whole
+    # image both mean "no ROI" (drivers publish either).
+    if any(msg.roi) and tuple(msg.roi) != (0, 0, h, w):
         raise ConfigError(
-            f"CameraInfo roi {tuple(msg.roi)} is not supported (non-zero)"
+            f"CameraInfo roi {tuple(msg.roi)} is not supported (only all zeros "
+            f"or the full frame (0, 0, {h}, {w}): x_offset, y_offset, height, width)"
         )
     if msg.binning > 1:
         raise ConfigError(f"CameraInfo binning {msg.binning} is not supported (> 1)")

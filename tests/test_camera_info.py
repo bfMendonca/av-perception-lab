@@ -74,3 +74,34 @@ def test_size_mismatch_raises():
 def test_equidistant_roi_and_binning_raise_config_error(kw, field):
     with pytest.raises(ConfigError, match=field):
         calibration_from_camera_info(_msg(**kw), (1280, 720))
+
+
+def test_full_frame_roi_means_no_roi():
+    # ROS RegionOfInterest order: x_offset, y_offset, height, width
+    cal = calibration_from_camera_info(_msg(roi=(0, 0, 720, 1280)), (1280, 720))
+    assert cal.image_size == (1280, 720)
+    for roi in [(0, 0, 1280, 720), (0, 0, 719, 1280), (1, 0, 720, 1280)]:
+        with pytest.raises(ConfigError, match="roi"):
+            calibration_from_camera_info(_msg(roi=roi), (1280, 720))
+
+
+def test_full_frame_roi_read_from_an_mcap(tmp_path):
+    from mcap_fixture import CameraInfoSpec, write_mcap
+
+    from av_perception_lab.io.mcap_reader import read_camera_info
+
+    path = write_mcap(
+        tmp_path / "a.mcap",
+        camera_infos=[
+            CameraInfoSpec(
+                topic="/cam/camera_info",
+                width=16,
+                height=12,
+                k=[100, 0, 8, 0, 100, 6, 0, 0, 1],
+                roi=(0, 0, 12, 16),
+            )
+        ],
+    )
+    msg = read_camera_info(path, "/cam/camera_info")
+    assert msg.roi == (0, 0, 12, 16)
+    assert calibration_from_camera_info(msg, (16, 12)).image_size == (16, 12)

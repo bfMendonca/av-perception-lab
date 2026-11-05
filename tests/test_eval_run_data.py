@@ -145,6 +145,24 @@ def test_mcap_run_with_start_is_refused(fake_run_dir):
     assert run.name in str(exc.value)
 
 
+def test_video_run_with_start_still_loads(fake_run_dir):
+    # the MCAP guard (time_base in the source description) spares video runs
+    config = {
+        "source": {"start": 1.5, "stride": 1, "max_frames": 0, "duration": 0.0},
+        "distance": {"distance_type": "z"},
+    }
+    metrics = {
+        "video": {"path": "/d.mp4", "fps": 30.0, "n_frames": 300},
+        "frames_processed": 3,
+        "config": config,
+    }
+    run = load_run(fake_run_dir(ROWS, metrics))
+    assert run.processed_frames().tolist() == [45, 46, 47]
+    assert run.frame_times(run.processed_frames()) == pytest.approx(
+        [1.5, 1.5333, 1.5667], abs=1e-4
+    )
+
+
 def test_load_errors(fake_run_dir, tmp_path):
     with pytest.raises(ConfigError, match="detections.csv not found"):
         load_run(tmp_path)
