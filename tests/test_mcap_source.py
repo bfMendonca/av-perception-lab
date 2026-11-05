@@ -253,3 +253,40 @@ def test_sample_spreads_over_exact_selection(tmp_path, decode_calls):
     samples = _source(path, start=0.2, duration=0.6).sample(3)
     assert [int(rgb[0, 0, 0]) // 10 for rgb in samples] == [2, 4, 6]
     assert len(decode_calls) == 3
+
+
+def test_header_stamp_reset_after_the_head_window_is_reported(tmp_path):
+    # header stamps restart (sim time / concatenated bags) after message 60,
+    # past the TIME_BASE_WINDOW messages that chose the header time base
+    seconds = [i / 10 for i in range(100)]
+    header = _ns(seconds[:60]) + _ns([s / 100 for s in range(40)])
+    path = _record(tmp_path, seconds, header=header)
+    source = _source(path)
+    assert len(list(source)) == 60
+    d = source.describe()
+    assert d["time_base"] == "header" and d["duplicates_dropped"] == 40
+    assert d["stamp_regression_at"] == 60 and d["dropped_after_regression"] == 40
+    (warning,) = source.warnings()
+    assert "40 of the 100 messages" in warning and "40.0 %" in warning
+    assert "header.stamp" in warning and "message 60" in warning
+    assert "reset" in warning
+
+
+def test_no_warning_without_drops_and_repeats_are_not_regressions(tmp_path):
+    clean = _source(_record(tmp_path, [0.0, 0.1, 0.2]))
+    list(clean)
+    assert clean.warnings() == []
+    assert clean.describe()["stamp_regression_at"] is None
+    repeat = _source(
+        write_mcap(
+            tmp_path / "dup.mcap",
+            images=[
+                ImageSpec(topic=TOPIC, frames=_frames(3), times_ns=_ns([0, 0.1, 0.1]))
+            ],
+        )
+    )
+    list(repeat)
+    d = repeat.describe()
+    assert d["duplicates_dropped"] == 1 and d["stamp_regression_at"] is None
+    (warning,) = repeat.warnings()
+    assert "1 of the 3 messages" in warning and "reset" not in warning

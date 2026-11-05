@@ -247,6 +247,8 @@ def run(
                 "(is source.start past the end of the video?)"
             )
     wall = time.perf_counter() - t_start
+    for warning in source.warnings():
+        print(f"[warn] {warning}", file=sys.stderr, flush=True)
     print(
         f"[done] {metrics.n_frames} frames, {metrics.n_boxes} boxes "
         f"({metrics.n_without_distance} n/a) in {wall:.1f} s -> {run_dir}"

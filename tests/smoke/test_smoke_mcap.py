@@ -324,3 +324,28 @@ def test_video_run_unchanged(run_cli, scene_videos):
     assert source["fps"] == 10.0 and "topic" not in source
     assert out.metrics["config"]["source"]["mcap"] is None
     assert out.video.n_frames == SCENE.n_frames
+
+
+def test_mcap_stamp_reset_warns_on_stderr(
+    run_mcap, scene_videos, tmp_path, monkeypatch, capsys
+):
+    # The header stamps restart after message 8, past the (shrunk) window of
+    # messages that chose the header time base: the rest is dropped, and the
+    # run says so on stderr besides counting it in metrics.json.
+    from av_perception_lab.io import source as source_module
+
+    monkeypatch.setattr(source_module, "TIME_BASE_WINDOW", 6)
+    header = [*TIMES_NS[:8], *(T0_NS - 10_000_000 + t for t in range(4))]
+    mcap = _scene_mcap(tmp_path / "reset.mcap", header_ns=header)
+    out = check_run_outputs(run_mcap(mcap, perceived=scene_videos.true_k))
+    source = out.metrics["video"]
+    assert source["time_base"] == "header" and source["duplicates_dropped"] == 4
+    assert source["stamp_regression_at"] == 8
+    assert out.metrics["frames_processed"] == 8
+    err = capsys.readouterr().err
+    assert "[warn] source.mcap:" in err and "4 of the 12 messages" in err, err
+    assert "reset" in err
+
+    clean = _scene_mcap(tmp_path / "clean.mcap")
+    check_run_outputs(run_mcap(clean, perceived=scene_videos.true_k))
+    assert "[warn] source.mcap" not in capsys.readouterr().err

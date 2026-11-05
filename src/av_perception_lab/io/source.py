@@ -124,6 +124,11 @@ class FrameSource(ABC):
         """The input's ROS `CameraInfo` for the frames; None if there is none."""
         return None
 
+    def warnings(self) -> list[str]:
+        """Problems found while reading the frames (after an iteration), for
+        the end of the run; [] if none."""
+        return []
+
 
 class VideoSource(FrameSource):
     """A segment of a video file (probed at construction), optionally transformed."""
@@ -225,11 +230,17 @@ class _Drops:
 
     def __init__(self) -> None:
         self.count = 0
+        self.regression_at: int | None = None  # first message whose time goes back
+        self.after_regression = 0  # dropped from that message on
 
     def add(self, position: int, backward: bool) -> None:
         """Message `position` (from the start of the topic) dropped; `backward`
         when its time is before the last kept one (not a repeat)."""
         self.count += 1
+        if backward and self.regression_at is None:
+            self.regression_at = position
+        if self.regression_at is not None:
+            self.after_regression += 1
 
 
 class McapSource(FrameSource):
@@ -442,6 +453,25 @@ class McapSource(FrameSource):
         except McapError as exc:
             raise ConfigError(f"source.mcap: {exc}") from exc
 
+    def warnings(self) -> list[str]:
+        """The messages dropped by the last iteration (time not increasing)."""
+        drops, total = self._drops, self.topic.topic.count
+        if not drops.count:
+            return []
+        base = "header.stamp" if self.time_base == "header" else "MCAP log time"
+        text = (
+            f"source.mcap: {drops.count} of the {total} messages of "
+            f"{self.topic.topic.name} ({100 * drops.count / max(total, 1):.1f} %) "
+            f"were dropped because their time ({base}) did not increase"
+        )
+        if drops.regression_at is not None:
+            text += (
+                f"; the time goes back at message {drops.regression_at} and "
+                f"{drops.after_regression} of the drops follow it (a stamp reset, "
+                "e.g. restarted sim time or concatenated recordings?)"
+            )
+        return [text]
+
     def describe(self) -> dict[str, Any]:
         t = self.topic
         return {
@@ -456,6 +486,8 @@ class McapSource(FrameSource):
             "nominal_fps": self.nominal_fps,
             "time_base": self.time_base,
             "duplicates_dropped": self._drops.count,
+            "stamp_regression_at": self._drops.regression_at,
+            "dropped_after_regression": self._drops.after_regression,
             "camera_info_topic": t.camera_info_topic,
             "transform": self.transform.describe() if self.transform else None,
         }
