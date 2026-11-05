@@ -36,6 +36,7 @@ from av_perception_lab.config import (
 )
 from av_perception_lab.core.options import ConfigError
 from av_perception_lab.core.types import CameraIntrinsics
+from av_perception_lab.io.mcap_reader import CameraInfoMsg
 from av_perception_lab.io.source import FrameSource, FrameTransform
 
 # Valid lengths of an OpenCV distortion vector (k1 k2 p1 p2 [k3 [k4 k5 k6 [s1..s4 [tx ty]]]]).
@@ -250,6 +251,55 @@ class Calibration:
             )
         except (KeyError, TypeError, ValueError) as exc:
             raise ConfigError(f"invalid calibration description ({exc!r})") from None
+
+
+_CAMERA_INFO_MODELS = frozenset({"plumb_bob", "rational_polynomial"})
+
+
+def has_distortion(msg: CameraInfoMsg) -> bool:
+    """True for a raw CameraInfo (D non-empty and not all zero)."""
+    return any(msg.d)
+
+
+def calibration_from_camera_info(
+    msg: CameraInfoMsg, image_size: tuple[int, int]
+) -> Calibration:
+    """Calibration from a ROS `CameraInfo`.
+
+    Raw (distorted) messages use K and D; rectified ones (D empty or all zero)
+    use the left 3x3 of P with no distortion. K/P are in OpenCV's convention,
+    so `Calibration.from_opencv` adds the 0.5 of the continuous convention.
+
+    Raises:
+        ConfigError: unsupported model, ROI, binning, bad D length, or a
+            CameraInfo size different from `image_size` (W, H).
+    """
+    w, h = int(image_size[0]), int(image_size[1])
+    if (msg.width, msg.height) != (w, h):
+        raise ConfigError(
+            f"CameraInfo is {msg.width}x{msg.height}, the frames are {w}x{h}"
+        )
+    if msg.model and msg.model not in _CAMERA_INFO_MODELS:
+        raise ConfigError(
+            f"CameraInfo distortion_model {msg.model!r} is not supported "
+            f"(use one of {sorted(_CAMERA_INFO_MODELS)})"
+        )
+    if any(msg.roi):
+        raise ConfigError(
+            f"CameraInfo roi {tuple(msg.roi)} is not supported (non-zero)"
+        )
+    if msg.binning > 1:
+        raise ConfigError(f"CameraInfo binning {msg.binning} is not supported (> 1)")
+    if has_distortion(msg):
+        if len(msg.d) not in DIST_COUNTS:
+            raise ConfigError(
+                f"CameraInfo D has {len(msg.d)} coefficients, expected one of "
+                f"{sorted(DIST_COUNTS)}"
+            )
+        matrix = np.array(msg.k, dtype=np.float64).reshape(3, 3)
+        return Calibration.from_opencv(matrix, np.array(msg.d), (w, h))
+    matrix = np.array(msg.p, dtype=np.float64).reshape(3, 4)[:, :3]
+    return Calibration.from_opencv(matrix, np.zeros(0), (w, h))
 
 
 def _node_to_python(node: cv2.FileNode) -> Any:
