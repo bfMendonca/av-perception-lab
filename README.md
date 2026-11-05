@@ -25,7 +25,7 @@ A research prototype for studying how detection, depth, segmentation and trackin
 | Node.js 22.12 or newer, with npm | `node --version` | building the web interface once (`utils/run_web.sh`) |
 | NVIDIA GPU and a driver for CUDA 12.8 | `nvidia-smi` | running the models (steps 3 and 4 below) |
 
-The repository has no sample video. Use any MP4, MOV or MKV that ffmpeg can decode. ROS 2 `.mcap` recordings with an image topic also work as input (`source.mcap` and `source.topic`; the web interface lists the topics when you drop the file). The YAML keys are in [`docs/reference.md`](docs/reference.md#entrada-mcap-ros-2).
+The repository has no sample video. Use any MP4, MOV or MKV that ffmpeg can decode. ROS 2 `.mcap` recordings (CDR, `Image` or `CompressedImage` topics) also work as input (`source.mcap` and `source.topic`). The web interface lists the topics when you drop the file, and can take the camera intrinsics from the topic's `CameraInfo` and rectify the frames. The YAML keys and limits are in [`docs/reference.md`](docs/reference.md#entrada-mcap-ros-2).
 
 ## Quick start
 
@@ -38,7 +38,7 @@ uv sync
 uv run pytest -q
 ```
 
-The run ends with a summary such as `898 passed, 9 skipped, 48 deselected` (the counts change as tests are added). To list the detectors, depth models and other components with their options:
+The run ends with a summary such as `1020 passed, 9 skipped, 48 deselected` (the counts change as tests are added). To list the detectors, depth models and other components with their options:
 
 ```bash
 uv run av-perception-lab --list-models
@@ -112,3 +112,5 @@ The code is licensed under the [Apache License 2.0](LICENSE) (see also [NOTICE](
 Model weights are downloaded by Prepare and are not part of this repository. They keep their own licences: RF-DETR, Depth Anything 3 (`DA3METRIC-LARGE`, `DA3-LARGE-1.1`) and SAM 2.1 are Apache-2.0; the YOLO26 weights are AGPL-3.0; the SegFormer Cityscapes checkpoints carry an NVIDIA licence; `DA3-LARGE`, `DA3-GIANT` and the nested DA3 models are CC-BY-NC-4.0; TwinLiteNet+ is MIT and its weight files have no licence of their own, so MIT is assumed. Sources and licences per model are in [`docs/task_0021.md`](docs/task_0021.md).
 
 The `infer` extra installs `ultralytics` (AGPL-3.0), which the YOLO adapters import. Making it an optional extra is planned.
+
+[![GitHub stars](https://img.shields.io/github/stars/bfMendonca/av-perception-lab?style=social)](https://github.com/bfMendonca/av-perception-lab)
