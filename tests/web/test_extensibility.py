@@ -142,6 +142,11 @@ def test_web_package_has_no_hardcoded_adapter_names():
 
 # The run contract of cli.run (config.RunConfig input/output), not stages.
 RUN_CONTRACT_KEYS = {"source", "output"}
+# The MCAP input (task_0033) has UI rules that name these config sections:
+# `rectify` exists only for an MCAP source (web/src/video/mcapCamera.ts) and
+# `camera` holds the intrinsics choices (`calibration`, `focal_px`) that the
+# CameraInfo tick overrides. They are input rules, not stage lists.
+MCAP_INPUT_KEYS = {"rectify", "camera"}
 FRONT_END_SRC = WEB_SRC.parents[2] / "web" / "src"
 _TS_STRING = re.compile(r"""(["'`])([A-Za-z0-9_.\-]+)\1""")
 
@@ -149,6 +154,7 @@ _TS_STRING = re.compile(r"""(["'`])([A-Za-z0-9_.\-]+)\1""")
 def test_front_end_has_no_hardcoded_stage_or_model_names():
     names = {t for classes in registry.available().values() for t in classes}
     keys = {s.yaml_key for s in registry.stages()} - RUN_CONTRACT_KEYS
+    mcap_ok = {n: MCAP_INPUT_KEYS for n in ("mcapCamera.ts", "RectifyLane.tsx")}
     assert "rfdetr" in names and "detectors" in keys
     sources = [
         p
@@ -158,5 +164,5 @@ def test_front_end_has_no_hardcoded_stage_or_model_names():
     assert sources, f"no front-end sources under {FRONT_END_SRC}"
     for path in sources:
         literals = {m.group(2) for m in _TS_STRING.finditer(path.read_text())}
-        clash = literals & (names | keys)
+        clash = literals & (names | keys) - mcap_ok.get(path.name, set())
         assert not clash, f"{path.name} hard-codes {sorted(clash)}"
