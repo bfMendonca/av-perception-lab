@@ -26,6 +26,15 @@ ROS 2 MCAP files as a pipeline input (task_0033).
   a topic picker, a "Use the CameraInfo" tick and a Rectification lane.
 - Evaluation loads MCAP runs and uses their recorded frame times; runs with
   `source.start > 0` are refused.
+- A `[warn] source.mcap` line on stderr (and in the web log) at the end of an
+  MCAP run whose messages were dropped for a non-increasing time, with the
+  count, the percentage and a mid-stream stamp reset when there is one
+  (`stamp_regression_at`, `dropped_after_regression` in `metrics.json`).
+- Only the selected MCAP messages are decoded (times read from the raw CDR
+  bytes); `sample()` fetches just the sampled messages.
+- MCAP frames above `MAX_IMAGE_PIXELS` (2^27) are refused from the PNG/JPEG
+  header before decoding (crafted uploads answer 422); a full-frame
+  `CameraInfo` ROI is accepted. Chunk decompression bombs are an accepted risk.
 
 ### Changed
 

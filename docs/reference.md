@@ -793,17 +793,35 @@ camera:
 - **Base de tempo**: `Frame.t` usa o `header.stamp` quando todos os carimbos
   das primeiras 50 mensagens são > 0 e não decrescentes; senão, o `log_time`.
   Mensagens cujo tempo não é maior que o da última mantida são descartadas e
-  contadas em `duplicates_dropped`. `t` conta a partir da primeira mensagem
+  contadas em `duplicates_dropped`; havendo descarte, o fim da execução
+  imprime um `[warn] source.mcap: ...` no stderr (contagem, % do tópico, base
+  de tempo) e, se o tempo volta atrás no meio do tópico (carimbo reiniciado
+  depois das 50 primeiras mensagens: sim time, gravações concatenadas), a
+  mensagem em que voltou (`stamp_regression_at`) e quantos descartes vêm
+  depois dela (`dropped_after_regression`). O aviso também aparece no log da
+  interface web. `t` conta a partir da primeira mensagem
   **selecionada** (o `t` de um vídeo inclui o `start`); `start`/`duration`
   selecionam por tempo e `stride` conta mensagens.
+- **Decodificação**: os tempos saem dos bytes crus (o `header.stamp` logo
+  depois do cabeçalho CDR), então só as mensagens selecionadas passam pelo
+  decodificador de imagem; as puladas por `start`/`stride`, as descartadas e
+  as não amostradas (`sample`, estimativa da focal) são lidas mas não
+  decodificadas. A amostragem lê os carimbos da seleção uma vez e busca só as
+  mensagens amostradas (pelo índice de chunks, quando há).
 - **Codificações**: `rgb8`, `bgr8`, `rgba8`, `bgra8`, `mono8` e, em
   `CompressedImage`, `jpeg`/`png`. Outras (`16UC1`, `compressedDepth`, ...)
   aparecem na lista de tópicos da interface, desabilitadas com o motivo, e
-  recusadas na execução.
+  recusadas na execução. Um quadro acima de `MAX_IMAGE_PIXELS` (2^27 ≈ 134 Mpx)
+  é recusado antes de decodificar (`McapError`; na interface, 422): em
+  `CompressedImage` o tamanho vem do cabeçalho PNG (IHDR) ou JPEG (SOFn) —
+  dados que não são PNG nem JPEG são recusados —, em `Image` dos campos da
+  mensagem.
 - **`CameraInfo`**: pareado ao tópico de imagem pelo maior prefixo de
   namespace em comum. Uma mensagem crua (D não nulo) usa K e D; uma retificada
   (D vazio ou zero) usa o 3×3 à esquerda de P, sem distorção. Modelos
-  `plumb_bob` e `rational_polynomial`; `equidistant`, `roi` não nulo,
+  `plumb_bob` e `rational_polynomial`; `equidistant`, `roi` parcial (zeros
+  ou o quadro inteiro, na ordem `x_offset, y_offset, height, width`, valem
+  como sem ROI),
   `binning` > 1, tamanho de D inválido ou tamanho diferente do dos quadros
   são recusados (`ConfigError`).
 - **`rectify`**: exige um tópico de MCAP com `CameraInfo` **com distorção**
@@ -821,12 +839,18 @@ camera:
 - **Saídas**: a descrição da fonte fica em `metrics.json["video"]` (não há
   chave `source`): `path`, `topic`, `schema`, `encoding`, `width`, `height`,
   `count`, `nominal_fps`, `time_base` (`header` ou `log`),
-  `duplicates_dropped`, `camera_info_topic`. Com `from_source` ou `rectify`
+  `duplicates_dropped`, `stamp_regression_at`, `dropped_after_regression`,
+  `camera_info_topic`. Com `from_source` ou `rectify`
   o `metrics.json` grava a K e a distorção usadas, e a avaliação as usa para
   transformar as referências.
 - **Limites conhecidos**: a avaliação de uma execução MCAP com
   `source.start > 0` é recusada (`ConfigError`: o `t` do MCAP não inclui o
   `start`); tamanhos de quadro ímpares são recusados pelo escritor de vídeo.
+- **Risco aceito**: a descompressão dos chunks (zstd/lz4) é da biblioteca
+  `mcap`, sem teto próprio além do limite de 4 GiB por registro; um MCAP
+  forjado pode declarar chunks enormes (bomba de descompressão) e o upload
+  na interface os descompacta no processo do servidor. É uma ferramenta de
+  pesquisa local: abra só MCAPs de origem conhecida.
 
 ### Avaliação contra referências
 

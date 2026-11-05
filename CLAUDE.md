@@ -220,7 +220,12 @@ no ambiente leve; só os gráficos pedem o extra `eval` (matplotlib).
 - Entrada MCAP (`task_0033`, `io/mcap_reader.py`, `McapSource`): `Frame.t` usa
   `header.stamp` só se as 50 primeiras mensagens têm carimbo > 0 e não
   decrescente (senão `log_time`); mensagens com tempo não maior que o da última
-  mantida são descartadas (`duplicates_dropped`). `t` conta a partir da primeira
+  mantida são descartadas (`duplicates_dropped`; aviso `[warn]` no stderr ao
+  fim da execução, com `stamp_regression_at` se o carimbo reinicia no meio).
+  Só as mensagens selecionadas são decodificadas: os tempos vêm dos bytes CDR
+  crus (`cdr_stamp_ns`); quadro > `MAX_IMAGE_PIXELS` (2^27) é recusado pelo
+  cabeçalho PNG/JPEG antes do `imdecode`; bomba de descompressão de chunk é
+  risco aceito (documentado). ROI cheio `(0, 0, h, w)` = sem ROI. `t` conta a partir da primeira
   mensagem **selecionada** (o `t` de vídeo inclui o `start`): por isso a
   avaliação recusa execução MCAP com `source.start > 0`. A descrição da fonte
   fica em `metrics.json["video"]` (`time_base`, `nominal_fps`), não em `source`.
