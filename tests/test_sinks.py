@@ -30,6 +30,7 @@ from av_perception_lab.distance import (
     instance_depth_stats,
     resample_mask,
 )
+from av_perception_lab.io import sinks as sinks_module
 from av_perception_lab.io.sinks import (
     CSV_FIELDS,
     CsvSink,
@@ -464,6 +465,60 @@ def test_video_sink_colours_by_source_with_several_detectors(ctx, result, tmp_pa
     sink.close()
     assert probe(ctx.run_dir / "video.mp4").n_frames == 1
     assert len(sink.render_ms) == 1
+
+
+def _never(*_args):
+    raise AssertionError("must not be called for a source with known frame times")
+
+
+def test_video_sink_uses_real_times_for_mcap_source(ctx, result):
+    import av
+
+    from av_perception_lab.io.video import TimestampedVideoWriter
+
+    # A single-message topic has nominal_fps 0: output_fps() would give "0/1".
+    source = SimpleNamespace(
+        frame_times_known=True,
+        frame_size=(100, 100),
+        nominal_fps=0.0,
+        n_frames_total=1,
+        describe=lambda: {"mcap": "rec.mcap"},
+        output_fps=_never,
+        audio_from=_never,
+    )
+    ctx = replace(ctx, source=source)
+    sink = VideoSink(RenderConfig(), DistanceConfig())
+    sink.open(ctx)
+    assert isinstance(sink._writer, TimestampedVideoWriter)
+    times = [0.0, 0.1, 0.35]
+    for i, t in enumerate(times):
+        sink.write(replace(result, frame=replace(result.frame, index=i, t=t)))
+    sink.close()
+    with av.open(str(ctx.run_dir / "video.mp4")) as container:
+        stream = container.streams.video[0]
+        assert not container.streams.audio
+        pts = [float(f.pts * f.time_base) for f in container.decode(stream)]
+    assert pts == pytest.approx(times, abs=1e-3)
+
+
+@pytest.mark.skipif(shutil.which("ffmpeg") is None, reason="needs ffmpeg/ffprobe")
+def test_video_sink_unchanged_for_video_source(ctx, result, tmp_path, monkeypatch):
+    # Video input keeps the constant-fps ffmpeg writer: frame.t is not used.
+    clip = tmp_path / "clip.mp4"
+    with VideoWriter(clip, 100, 100, "10/1") as writer:
+        writer.write(np.zeros((100, 100, 3), np.uint8))
+    source = VideoSource(SourceConfig(video=clip))
+    assert not source.frame_times_known
+    monkeypatch.setattr(sinks_module, "TimestampedVideoWriter", _never)
+    ctx = replace(ctx, source=source)
+    sink = VideoSink(RenderConfig(), DistanceConfig())
+    sink.open(ctx)
+    assert type(sink._writer) is VideoWriter
+    for i, t in enumerate([0.0, 0.03, 0.5]):  # irregular t: ignored
+        sink.write(replace(result, frame=replace(result.frame, index=i, t=t)))
+    sink.close()
+    info = probe(ctx.run_dir / "video.mp4")
+    assert (info.fps_str, info.n_frames) == ("10/1", 3)
 
 
 @pytest.mark.skipif(shutil.which("ffmpeg") is None, reason="needs ffmpeg/ffprobe")

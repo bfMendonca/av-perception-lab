@@ -7,6 +7,7 @@ audio only when the whole video is processed unchanged.
 """
 
 import json
+import math
 import subprocess
 from collections.abc import Iterator
 from dataclasses import dataclass
@@ -256,6 +257,100 @@ class VideoWriter:
             raise RuntimeError(
                 f"ffmpeg encoder failed with code {self._proc.returncode}"
             )
+
+    def __enter__(self) -> Self:
+        return self
+
+    def __exit__(self, *exc: object) -> None:
+        self.close()
+
+
+# 90 kHz, the MPEG time base: 11 us ticks, far below the 1 ms the times need.
+VFR_TIME_BASE = Fraction(1, 90_000)
+
+
+class TimestampedVideoWriter:
+    """H.264 encoder that shows each RGB frame at its own time (context manager).
+
+    Variable frame rate for inputs with real capture times (MCAP): frame `t`
+    (seconds, strictly increasing; need not start at 0) becomes its
+    presentation time in a 90 kHz time base, so the video plays at the true
+    speed and stays in sync with the recording. Encoded in process with PyAV
+    and the same libx264 settings as `VideoWriter` (preset medium, `crf`,
+    yuv420p, moov first). No audio. yuv420p needs even sizes: odd ones raise
+    (the frame is not cropped).
+    """
+
+    def __init__(self, path: Path, width: int, height: int, *, crf: int = 20) -> None:
+        if width <= 0 or height <= 0 or width % 2 or height % 2:
+            raise ValueError(
+                f"H.264 yuv420p needs an even frame size, got {width}x{height}"
+            )
+        import av
+
+        self._av = av
+        self.width, self.height = width, height
+        self._last_pts: int | None = None
+        self._closed = False
+        self._container = av.open(
+            str(path), "w", format="mp4", options={"movflags": "+faststart"}
+        )
+        try:
+            stream = self._container.add_stream(
+                "libx264", options={"preset": "medium", "crf": str(crf)}
+            )
+            stream.width, stream.height = width, height
+            stream.pix_fmt = "yuv420p"
+            stream.time_base = VFR_TIME_BASE
+            stream.codec_context.time_base = VFR_TIME_BASE
+        except BaseException:
+            self._container.close()
+            raise
+        self._stream = stream
+
+    def write(self, rgb: np.ndarray, t: float) -> None:
+        """Append one (height, width, 3) uint8 frame shown at `t` seconds.
+
+        Raises:
+            ValueError: wrong shape, closed writer, or `t` not finite or not
+                after the previous frame (at 90 kHz resolution).
+        """
+        if self._closed:
+            raise ValueError("write on a closed TimestampedVideoWriter")
+        if rgb.shape != (self.height, self.width, 3):
+            raise ValueError(
+                f"frame shape {rgb.shape} != {(self.height, self.width, 3)}"
+            )
+        if not math.isfinite(t):
+            raise ValueError(f"frame time t = {t} is not finite")
+        pts = round(t * VFR_TIME_BASE.denominator)
+        if self._last_pts is not None and pts <= self._last_pts:
+            raise ValueError(
+                f"frame time t = {t} s is not after the previous frame "
+                f"({self._last_pts / VFR_TIME_BASE.denominator} s)"
+            )
+        frame = self._av.VideoFrame.from_ndarray(
+            np.ascontiguousarray(rgb, dtype=np.uint8), format="rgb24"
+        )
+        frame.pts = pts
+        frame.time_base = VFR_TIME_BASE
+        self._mux(self._stream.encode(frame))
+        self._last_pts = pts
+
+    def _mux(self, packets: list[Any]) -> None:
+        for packet in packets:
+            self._container.mux(packet)
+
+    def close(self) -> None:
+        """Flush the encoder and finalise the file (idempotent)."""
+        if self._closed:
+            return
+        self._closed = True
+        try:
+            if self._last_pts is not None:
+                self._mux(self._stream.encode(None))
+        finally:
+            self._container.close()
 
     def __enter__(self) -> Self:
         return self

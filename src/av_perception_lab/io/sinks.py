@@ -81,8 +81,8 @@ from av_perception_lab.distance import (
     DistanceConfig,
     resample_mask,
 )
-from av_perception_lab.io.source import FrameSource, McapSource, VideoSource
-from av_perception_lab.io.video import VideoWriter
+from av_perception_lab.io.source import FrameSource, VideoSource
+from av_perception_lab.io.video import TimestampedVideoWriter, VideoWriter
 from av_perception_lab.motion.measurement import project_points, reference_pixel
 from av_perception_lab.render import (
     BevTrack,
@@ -172,9 +172,9 @@ class RunContext:
 
 
 def _output_fps(source: FrameSource) -> str:
-    """Constant frame rate ("num/den") of the rendered video. An MCAP renders
-    at its nominal rate for now (per-frame times come with the VFR writer)."""
-    if isinstance(source, VideoSource | McapSource):
+    """Constant frame rate ("num/den") of the rendered video, for sources
+    without real frame times (an MCAP uses `TimestampedVideoWriter`)."""
+    if isinstance(source, VideoSource):
         return source.output_fps()
     fps = Fraction(source.nominal_fps).limit_denominator(1001)
     return f"{fps.numerator}/{fps.denominator}"
@@ -461,13 +461,21 @@ class VideoSink(Sink):
             self._fusion = aggregator["type"] + (
                 f" · IoU ≥ {iou_thr:g}" if iou_thr is not None else ""
             )
-        self._writer = VideoWriter(
-            ctx.run_dir / "video.mp4",
-            *self._renderer.output_size(),
-            _output_fps(source),
-            crf=cfg.crf,
-            audio_from=source.audio_from(),
-        )
+        # Real capture times (MCAP): each frame at its own time, no audio;
+        # output_fps() is never asked (a one-message topic would give "0/1").
+        self._timestamped = source.frame_times_known
+        if self._timestamped:
+            self._writer = TimestampedVideoWriter(
+                ctx.run_dir / "video.mp4", *self._renderer.output_size(), crf=cfg.crf
+            )
+        else:
+            self._writer = VideoWriter(
+                ctx.run_dir / "video.mp4",
+                *self._renderer.output_size(),
+                _output_fps(source),
+                crf=cfg.crf,
+                audio_from=source.audio_from(),
+            )
 
     def write(self, result: FrameResult) -> None:
         t0 = time.perf_counter()
@@ -588,7 +596,10 @@ class VideoSink(Sink):
         )
         if self.on_frame is not None:
             self.on_frame(result.frame.index, image)
-        self._writer.write(image)
+        if self._timestamped:
+            self._writer.write(image, result.frame.t)
+        else:
+            self._writer.write(image)
         self.render_ms.append((time.perf_counter() - t0) * 1e3)
 
     def close(self) -> None:
