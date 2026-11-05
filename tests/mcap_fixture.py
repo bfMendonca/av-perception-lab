@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -72,6 +72,7 @@ class ImageSpec:
     compressed: str | None = None  # "jpeg" or "png"
     format: str | None = None  # CompressedImage.format (default: `compressed`)
     data_prefix: bytes = b""  # before the compressed bytes (compressedDepth header)
+    data_patch: Callable[[bytes], bytes] | None = None  # rewrites the encoded bytes
     header_ns: Sequence[int] | None = None  # None: stamp = time
     step_pad: int = 0  # extra bytes per row
 
@@ -122,6 +123,8 @@ def _image_message(spec: ImageSpec, frame: np.ndarray, stamp_ns: int) -> dict:
         assert ok
         fmt = spec.format if spec.format is not None else spec.compressed
         data = spec.data_prefix + buf.tobytes()
+        if spec.data_patch is not None:
+            data = spec.data_patch(data)
         return {"header": header, "format": fmt, "data": data}
     if spec.encoding in _RAW:
         channels, convert = _RAW[spec.encoding]

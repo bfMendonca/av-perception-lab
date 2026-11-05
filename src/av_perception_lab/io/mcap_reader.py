@@ -31,6 +31,15 @@ _RAW_ENCODINGS: dict[str, tuple[int, int | None]] = {
     "mono8": (1, cv2.COLOR_GRAY2RGB),
 }
 
+# Largest frame decoded (width x height): ~134 Mpx, far above real cameras
+# (8K is 33 Mpx). Checked from the PNG/JPEG header before `cv2.imdecode`, whose
+# own limit (2^30 px, ~3 GB of BGR) a tiny crafted file could otherwise reach.
+MAX_IMAGE_PIXELS = 1 << 27
+
+_PNG_SIGNATURE = b"\x89PNG\r\n\x1a\n"
+# JPEG start-of-frame markers (every SOFn but DHT C4, JPG C8 and DAC CC).
+_JPEG_SOF = frozenset(range(0xC0, 0xD0)) - {0xC4, 0xC8, 0xCC}
+
 
 class McapError(ValueError):
     """The MCAP file or one of its messages cannot be read."""
@@ -339,13 +348,62 @@ def _unsupported_encoding(encoding: str) -> str:
     )
 
 
+def compressed_size(data: bytes) -> tuple[int, int] | None:
+    """(width, height) declared by a PNG (IHDR) or JPEG (SOFn segment) header;
+    None when the bytes are neither or the header is cut short."""
+    if data.startswith(_PNG_SIGNATURE):
+        if len(data) < 24 or data[12:16] != b"IHDR":
+            return None
+        width, height = struct.unpack_from(">II", data, 16)
+        return width, height
+    if not data.startswith(b"\xff\xd8"):
+        return None
+    i = 2
+    while i + 4 <= len(data):
+        if data[i] != 0xFF:
+            return None
+        marker = data[i + 1]
+        if marker == 0xFF:  # fill byte
+            i += 1
+            continue
+        if marker == 0x01 or 0xD0 <= marker <= 0xD7:  # no length
+            i += 2
+            continue
+        if marker in (0xD9, 0xDA):  # end of image / start of scan: no SOF before
+            return None
+        (length,) = struct.unpack_from(">H", data, i + 2)
+        if marker in _JPEG_SOF:
+            if i + 9 > len(data):
+                return None
+            height, width = struct.unpack_from(">HH", data, i + 5)
+            return width, height
+        i += 2 + length
+    return None
+
+
+def _check_pixels(width: int, height: int) -> None:
+    if width * height > MAX_IMAGE_PIXELS:
+        raise McapError(
+            f"image of {width}x{height} pixels is above the cap of "
+            f"{MAX_IMAGE_PIXELS} pixels (MAX_IMAGE_PIXELS)"
+        )
+
+
 def _decode_compressed(msg: Any) -> np.ndarray:
     if compressed_codec(str(msg.format)) == "compressedDepth":
         raise McapError(
             f"unsupported compressed format {msg.format!r} (compressedDepth: "
             "depth images are not decoded)"
         )
-    buf = np.frombuffer(bytes(msg.data), np.uint8)
+    data = bytes(msg.data)
+    size = compressed_size(data)
+    if size is None:
+        raise McapError(
+            f"cannot decode compressed image (format {msg.format!r}): "
+            "not a PNG or JPEG with a readable header"
+        )
+    _check_pixels(*size)
+    buf = np.frombuffer(data, np.uint8)
     bgr = cv2.imdecode(buf, cv2.IMREAD_COLOR)
     if bgr is None:
         raise McapError(f"cannot decode compressed image (format {msg.format!r})")
@@ -364,6 +422,7 @@ def decode_image(msg: Any, schema: str) -> np.ndarray:
         raise McapError(_unsupported_encoding(encoding))
     channels, convert = _RAW_ENCODINGS[encoding]
     height, width, step = int(msg.height), int(msg.width), int(msg.step)
+    _check_pixels(width, height)
     data = np.frombuffer(bytes(msg.data), np.uint8)
     if step < width * channels or data.size < step * height:
         raise McapError(

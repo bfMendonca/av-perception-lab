@@ -402,3 +402,73 @@ def test_read_images_at_fetches_only_the_targets(tmp_path, monkeypatch, indexed)
     assert len(calls) == 2
     with pytest.raises(McapError, match="no message"):
         mcap_reader.read_images_at(path, "/c", [(25, 0)])
+
+
+def _huge_png(data: bytes, w: int = 60000, h: int = 60000) -> bytes:
+    """A PNG whose IHDR declares w x h (the pixels stay tiny)."""
+    return data[:16] + w.to_bytes(4, "big") + h.to_bytes(4, "big") + data[24:]
+
+
+def _huge_jpeg(data: bytes, w: int = 60000, h: int = 60000) -> bytes:
+    """A JPEG whose SOF segment declares w x h."""
+    i = 2
+    while True:
+        marker, length = data[i + 1], int.from_bytes(data[i + 2 : i + 4], "big")
+        if marker in (0xC0, 0xC1, 0xC2):
+            dims = h.to_bytes(2, "big") + w.to_bytes(2, "big")
+            return data[: i + 5] + dims + data[i + 9 :]
+        i += 2 + length
+
+
+class _Compressed:
+    def __init__(self, data, fmt):
+        self.data, self.format = data, fmt
+
+
+@pytest.mark.parametrize(("ext", "craft"), [(".png", _huge_png), (".jpg", _huge_jpeg)])
+def test_compressed_pixel_cap_is_checked_before_decoding(monkeypatch, ext, craft):
+    from av_perception_lab.io import mcap_reader
+
+    _, buf = cv2.imencode(ext, np.zeros((6, 8, 3), np.uint8))
+    data = buf.tobytes()
+    assert mcap_reader.compressed_size(data) == (8, 6)
+    assert mcap_reader.compressed_size(craft(data, 9, 7)) == (9, 7)
+    schema = "sensor_msgs/msg/CompressedImage"
+    assert decode_image(_Compressed(data, ext[1:]), schema).shape == (6, 8, 3)
+
+    def no_imdecode(*_):
+        raise AssertionError("imdecode called on an oversized image")
+
+    monkeypatch.setattr(mcap_reader.cv2, "imdecode", no_imdecode)
+    with pytest.raises(McapError, match=r"60000x60000 .*above the cap"):
+        decode_image(_Compressed(craft(data), ext[1:]), schema)
+    with pytest.raises(McapError, match="not a PNG or JPEG"):
+        decode_image(_Compressed(b"GIF89a" + bytes(20), "png"), schema)
+
+
+def test_raw_pixel_cap():
+    from av_perception_lab.io.mcap_reader import MAX_IMAGE_PIXELS
+
+    class Msg:
+        height, width, step, encoding, data = 60000, 60000, 180000, "rgb8", b"\x00"
+
+    assert 60000 * 60000 > MAX_IMAGE_PIXELS >= 8192 * 8192
+    with pytest.raises(McapError, match=r"60000x60000 .*above the cap"):
+        decode_image(Msg(), "sensor_msgs/msg/Image")
+
+
+def test_probe_flags_an_oversized_compressed_topic(tmp_path):
+    path = write_mcap(
+        tmp_path / "a.mcap",
+        images=[
+            ImageSpec(
+                topic="/c",
+                frames=_frames(1),
+                times_ns=[1],
+                compressed="png",
+                data_patch=_huge_png,
+            )
+        ],
+    )
+    (topic,) = probe_mcap(path).images
+    assert not topic.supported and "above the cap" in topic.unsupported_reason

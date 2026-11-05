@@ -490,3 +490,24 @@ def test_single_message_topic_is_accepted_with_fps_zero(api, tmp_path):
     record = resp.json()
     assert record["fps"] == 0.0 and record["duration_s"] == 0.0
     assert by_name(record["mcap"])["/cam/image_raw"]["count"] == 1
+
+
+def test_oversized_compressed_image_is_422(api, tmp_path):
+    def huge(data: bytes) -> bytes:  # IHDR declares 60000 x 60000
+        return data[:16] + (60000).to_bytes(4, "big") * 2 + data[24:]
+
+    path = write_mcap(
+        tmp_path / "bomb.mcap",
+        images=[
+            ImageSpec(
+                topic="/cam/image_raw/compressed",
+                frames=frames(1),
+                times_ns=[0],
+                compressed="png",
+                data_patch=huge,
+            )
+        ],
+    )
+    resp = upload(api, path)
+    assert resp.status_code == 422, resp.text
+    assert "above the cap" in resp.json()["detail"]
