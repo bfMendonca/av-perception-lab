@@ -4,6 +4,20 @@ Todas as mudancas relevantes do av-perception-lab serao documentadas neste arqui
 
 ---
 
+## [Unreleased] ultralytics as an opt-in extra
+
+Licence audit follow-up (task_0034).
+
+### Changed
+
+- `ultralytics` (AGPL-3.0, plus `ultralytics-platform` and `ultralytics-thop`)
+  moved from the `infer` extra to a new `yolo` extra. The `yolo` detector and
+  the `ultralytics_sam` refiner declare `extra="yolo"`. Install YOLO support
+  with `uv sync --extra infer --extra yolo`; `uv sync --extra infer` alone now
+  removes `ultralytics`. `utils/run_web.sh` keeps `--extra yolo` when it is installed.
+- README, NOTICE and the docs state the AGPL-3.0 boundary (section 13 applies
+  to a network service that installs the extra).
+
 ## [Unreleased] MCAP input
 
 ROS 2 MCAP files as a pipeline input (task_0033).

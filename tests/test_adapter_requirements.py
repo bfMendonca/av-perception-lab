@@ -109,7 +109,9 @@ def test_every_registered_adapter_declares_or_explicitly_empty_requirements(
         return
     # Adapters override the hook and need the infer stack.
     assert cls.requirements.__func__ is not Component.requirements.__func__
-    assert req.extra == "infer" and "torch" in req.packages
+    # ultralytics (AGPL-3.0) lives in its own opt-in extra, never in `infer`.
+    expected = "yolo" if "ultralytics" in req.packages else "infer"
+    assert req.extra == expected and "torch" in req.packages
     assert req.assets or req.code
     for asset in req.assets:
         assert not Path(asset.target).is_absolute() and ".." not in asset.target

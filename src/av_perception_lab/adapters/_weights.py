@@ -15,6 +15,9 @@ from av_perception_lab.core.options import ConfigError
 from av_perception_lab.core.requirements import weights_root
 
 INFER_EXTRA = "infer"  # the pyproject extra every current adapter needs
+YOLO_EXTRA = (
+    "yolo"  # ultralytics (AGPL-3.0): opt-in, for the YOLO and ultralytics_sam adapters
+)
 
 
 def under_root(path: Path) -> str | None:

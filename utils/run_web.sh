@@ -74,6 +74,10 @@ fi
 
 if [ "$GPU" = 1 ] || [ "$HAS_TORCH" = 1 ]; then
   EXTRAS=(--extra infer --extra web)
+  # ultralytics (AGPL-3.0) is the opt-in `yolo` extra: keep it when installed (uv sync is exact).
+  if compgen -G "$ENV_DIR/lib/python*/site-packages/ultralytics" > /dev/null; then
+    EXTRAS=(--extra infer --extra yolo --extra web)
+  fi
   if [ "$HAS_TORCH" = 1 ]; then
     echo "GPU stack found in $ENV_DIR: keeping it."
   else
