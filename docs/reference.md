@@ -111,7 +111,7 @@ os testes unitários não precisam de GPU.
 | Ambiente e dependências | Astral uv | `pyproject.toml` + `uv.lock` |
 | Framework de inferência | PyTorch + torchvision | 2.8.0 / 0.23.0 (índice cu128) |
 | Detecção | `rfdetr` (Roboflow RF-DETR) | git `1f2af2ea` |
-| Detecção | `ultralytics` (YOLO26; licença AGPL-3.0) | 8.4.175 |
+| Detecção | `ultralytics` (YOLO26; licença AGPL-3.0; extra opcional `yolo`, fora do `infer`) | 8.4.175 |
 | Profundidade | `depth-anything-3` (ByteDance Seed) | git `3d835ec` |
 | Refinadores SAM e SegFormer | `transformers` (Hugging Face) | `>=5.1,<6` (lock: 5.19.0) |
 | *Backbone* do EdgeTAM | `timm` | `>=1.0.17` (lock: 1.0.30) |
@@ -311,7 +311,7 @@ upstream Google Drive and is copied by hand (`--prepare` prints the command).
 ```bash
 df -h ~
 export UV_PROJECT_ENVIRONMENT=_testbed/venv-infer   # o .venv continua leve
-uv sync --extra infer
+uv sync --extra infer --extra yolo   # yolo = ultralytics (AGPL-3.0), opt-in
 # YOLO26s-seg, DA3 (metric + focal), SegFormer-B0 and the TwinLiteNet+ clone under weights/
 uv run --extra infer python -m av_perception_lab --config configs/yolo_light_da3.yaml --prepare
 mkdir -p weights/_code/TwinLiteNetPlus/pretrained   # small.pth: upstream Google Drive
@@ -1513,7 +1513,7 @@ converte a profundidade ao longo do eixo óptico em distância em linha reta.
 - [ ] **Ground truth from an MCAP** (future) — LiDAR or depth topics and simulator 3D boxes as evaluation references, instead of the manual field references.
 - [ ] **Write results back to an MCAP** (future) — annotated images and detections as topics a viewer such as Foxglove can show; Foxglove protobuf/JSON schemas as inputs through the same reader.
 - [ ] **Evaluate MCAP runs with `source.start > 0`** (`task_0033` follow-up) — `load_run` refuses them today because the frame indices and times would be wrong. Record the first selected index and the time offset in `McapSource.describe()` and use them in the evaluation.
-- [ ] **Optional YOLO extra** (asked 2026-11-01) — move `ultralytics` (AGPL-3.0) out of the `infer` extra into an optional one, as the README says is planned.
+- [x] **Optional YOLO extra** (`task_0034`, asked 2026-11-01) — moved `ultralytics` (AGPL-3.0) out of the `infer` extra into an optional one, as the README says is planned.
 - [ ] **Retake the web interface screenshot** (`docs/assets/ui-editor.png`; needs a person) — it predates the MCAP input: no Rectification lane, no topic picker, and the README alt text says the stages run "from source to semantic segmentation". Run `utils/run_web.sh --gpu`, load `configs/rfdetr_sam2_lanes_motion_da3.yaml`, run **Prepare all** (about 3.1 GB), drop an `.mcap` whose topic has a `CameraInfo` with distortion, select a three-second segment, open the Kalman smoothing panel, and overwrite the image at the same size. Update the alt text in `README.md`. Optionally add `docs/assets/ui-mcap.png` for the topic picker.
 - [ ] **Browser pass over the MCAP interface** (`task_0033` follow-up) — nobody has looked at the drop zone, the topic picker and the Rectification toggle in a real browser yet.
 - [ ] **MCAP interface polish** (`task_0033` follow-up) — show a notice when turning on the CameraInfo option or Rectification removes `camera.focal_px`, a calibration file or a custom `alpha` (or keep `rectify.enabled: false` so `alpha` survives); re-clamp the segment when the topic changes; make `useMcapBinding` independent of load order; show the error when the topic list fails to load; say "recording" instead of "video" where the input is an MCAP; use the message count for the frame estimate.

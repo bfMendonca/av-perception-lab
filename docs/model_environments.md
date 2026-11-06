@@ -421,8 +421,11 @@ quota page, Prepare fails with that message: retry later, or save
 ### 6.1 The base stack (one-time, never run by the server)
 
 The base Python stack is the `infer` extra (torch, `rfdetr`,
-`depth-anything-3`, `ultralytics`, `transformers`, `timm`) plus `web` for
-the server. It is installed once, by hand, in the repository:
+`depth-anything-3`, `transformers`, `timm`) plus `web` for
+the server. `ultralytics` (AGPL-3.0) is not in it: it is the opt-in `yolo` extra
+(`YOLO_EXTRA`), a per-model extra (6.2) that the YOLO detector and
+`ultralytics_sam` declare, installed with `--prepare --install-packages` or
+`uv sync --extra infer --extra yolo --extra web`. It is installed once, by hand, in the repository:
 
 ```bash
 uv sync --extra infer --extra web

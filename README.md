@@ -140,7 +140,7 @@ With a GPU, skip step 2 and start the interface like this:
 utils/run_web.sh --gpu
 ```
 
-The first run also installs the GPU stack: about 9 GB of Python packages. Later runs find it and keep it, so `--gpu` is only needed once. If you run `uv` yourself afterwards, always pass `--extra infer --extra web`: a plain `uv sync` removes the GPU stack.
+The first run also installs the GPU stack: about 9 GB of Python packages. Later runs find it and keep it, so `--gpu` is only needed once. If you run `uv` yourself afterwards, always pass `--extra infer --extra web`: a plain `uv sync` removes the GPU stack. YOLO is opt-in: add `--extra yolo` (it installs `ultralytics`, AGPL-3.0, see [License](#license)); `run_web.sh` keeps it once installed.
 
 In the page at <http://127.0.0.1:8000>:
 
@@ -191,7 +191,6 @@ Planned work, not features. The full list is in [`docs/reference.md`](docs/refer
 
 - [ ] Stereo input (ZED SVO) and a stereo depth model next to Depth Anything 3
 - [ ] Several camera streams and ego-motion from one MCAP
-- [ ] `ultralytics` (AGPL-3.0) as an optional extra instead of part of `infer`
 - [ ] Evaluating MCAP runs that start after the first message (`source.start > 0`)
 
 ## Contributing
@@ -204,7 +203,7 @@ The code is licensed under the [Apache License 2.0](LICENSE) (see also [NOTICE](
 
 Model weights are downloaded by Prepare and are not part of this repository. They keep their own licences: RF-DETR, Depth Anything 3 (`DA3METRIC-LARGE`, `DA3-LARGE-1.1`) and SAM 2.1 are Apache-2.0; the YOLO26 weights are AGPL-3.0; the SegFormer Cityscapes checkpoints carry an NVIDIA licence; `DA3-LARGE`, `DA3-GIANT` and the nested DA3 models are CC-BY-NC-4.0; TwinLiteNet+ is MIT and its weight files have no licence of their own, so MIT is assumed. Sources and licences per model are in [`docs/task_0021.md`](docs/task_0021.md).
 
-The `infer` extra installs `ultralytics` (AGPL-3.0), which the YOLO adapters import. Making it an optional extra is planned.
+`ultralytics` (AGPL-3.0, with `ultralytics-platform` and `ultralytics-thop`) is **not** part of the `infer` extra. It comes only with the opt-in `yolo` extra (`uv sync --extra infer --extra yolo`), which the `yolo` detector and the `ultralytics_sam` refiner need. The code here imports it lazily and stays Apache-2.0, but a running install with `yolo` combines AGPL-3.0 code: if you offer that combination to other users over a network (for example the web interface), AGPL-3.0 section 13 requires you to offer them the corresponding source. Without `--extra yolo` nothing in the install is copyleft. For a use that cannot meet the AGPL-3.0, Ultralytics sells an Enterprise licence; otherwise use RF-DETR.
 
 ## Acknowledgements
 

@@ -6,3 +6,9 @@ This product is licensed under the Apache License, Version 2.0 (see LICENSE).
 Model weights are not distributed with this repository. They are downloaded
 from their original sources and keep their own licences (see the License
 section of README.md).
+
+The optional `yolo` extra installs ultralytics, ultralytics-platform and
+ultralytics-thop, which are licensed under AGPL-3.0. They are not installed by
+default (not part of the `infer` extra) and are not distributed here. A
+deployment that installs the `yolo` extra is responsible for complying with the
+AGPL-3.0 (see the License section of README.md).

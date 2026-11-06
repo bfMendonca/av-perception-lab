@@ -29,7 +29,7 @@ from av_perception_lab.adapters._ultralytics import (
     weights_asset,
 )
 from av_perception_lab.adapters._ultralytics_env import apply_ultralytics_env
-from av_perception_lab.adapters._weights import INFER_EXTRA, not_prepared, under_root
+from av_perception_lab.adapters._weights import YOLO_EXTRA, not_prepared, under_root
 from av_perception_lab.adapters.refiners.box_prompt import (
     BoxPromptOptions,
     BoxPromptRefiner,
@@ -109,7 +109,7 @@ class UltralyticsSamRefiner(BoxPromptRefiner):
         return Requirements(
             assets=() if asset is None else (asset,),
             packages=("torch", "ultralytics"),
-            extra=INFER_EXTRA,
+            extra=YOLO_EXTRA,
         )
 
     def default_name(self) -> str:

@@ -43,7 +43,7 @@ uv run av-perception-lab-evaluate --refs REFS.yaml RUN [RUN ...]   # erro contra
 Dois ambientes, um manifesto: o ambiente leve (numpy, OpenCV, Pillow)
 serve para desenvolver e testar a lógica de distância; o extra `infer`
 (torch 2.8.0+cu128, xformers, `rfdetr` e `depth-anything-3` fixados por
-commit git, `ultralytics==8.4.175`, `transformers` e `timm`) instala a stack
+commit git, `transformers` e `timm`) instala a stack
 GPU (testada numa RTX PRO 6000 Blackwell, sm_120). Não há git remote.
 
 Código em camadas: `core/` (contratos `Instances`/`DepthResult`/`SemanticMap`/

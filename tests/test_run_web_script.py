@@ -64,6 +64,17 @@ def _with_torch(tmp_path: Path) -> Path:
     return env
 
 
+def test_keeps_the_yolo_extra_when_ultralytics_is_installed(sandbox, tmp_path):
+    _with_dist(sandbox[0])
+    env = _with_torch(tmp_path)
+    (env / "lib" / "python3.11" / "site-packages" / "ultralytics").mkdir()
+    proc = _run(sandbox, "--dry-run", env_dir=env)
+    assert (
+        "+ uv run --extra infer --extra yolo --extra web av-perception-lab-web"
+        in proc.stdout
+    )
+
+
 def test_syntax():
     assert subprocess.run([BASH, "-n", str(SCRIPT)], check=False).returncode == 0
 

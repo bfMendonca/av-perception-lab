@@ -140,7 +140,6 @@ infer = [
     { name = "torch" },
     { name = "torchvision" },
     { name = "transformers" },
-    { name = "ultralytics" },
     { name = "xformers" },
 ]
 web = [
@@ -148,6 +147,9 @@ web = [
     { name = "httpx" },
     { name = "python-multipart" },
     { name = "uvicorn" },
+]
+yolo = [
+    { name = "ultralytics" },
 ]
 
 [package.dev-dependencies]
@@ -176,11 +178,11 @@ requires-dist = [
     { name = "torch", marker = "extra == 'infer'", specifier = "==2.8.0", index = "https://download.pytorch.org/whl/cu128" },
     { name = "torchvision", marker = "extra == 'infer'", specifier = "==0.23.0", index = "https://download.pytorch.org/whl/cu128" },
     { name = "transformers", marker = "extra == 'infer'", specifier = ">=5.1,<6" },
-    { name = "ultralytics", marker = "extra == 'infer'", specifier = "==8.4.175" },
+    { name = "ultralytics", marker = "extra == 'yolo'", specifier = "==8.4.175" },
     { name = "uvicorn", marker = "extra == 'web'" },
     { name = "xformers", marker = "extra == 'infer'", specifier = "==0.0.32.post2", index = "https://download.pytorch.org/whl/cu128" },
 ]
-provides-extras = ["infer", "eval", "web"]
+provides-extras = ["infer", "yolo", "eval", "web"]
 
 [package.metadata.requires-dev]
 dev = [
