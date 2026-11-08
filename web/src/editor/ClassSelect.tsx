@@ -83,6 +83,11 @@ export function ClassSelect({ value, onChange, id, errors }: FieldControlProps):
   // server does not declare): kept and shown, never dropped silently.
   const extras = (list ?? []).filter((e) => !knownSet.has(e) && !isBackground(e));
   const selected = new Set(list ?? [...known, ...extras]);
+  // The server only takes an allowlist (no wildcard): unchecking one class of
+  // "all" while a map's classes are loading or unknown would leave that map
+  // out of the list, so it would silently draw nothing. Per-class editing of
+  // "all" waits until every map is known; an explicit list stays editable.
+  const locked = list === null && groups.some((g) => g.loading || g.names === null);
 
   const write = (next: Set<string>) => {
     if (known.length > 0 && known.every((e) => next.has(e))) {
@@ -92,6 +97,7 @@ export function ClassSelect({ value, onChange, id, errors }: FieldControlProps):
     onChange([...known, ...extras].filter((e) => next.has(e)));
   };
   const toggle = (entry: string) => {
+    if (locked) return;
     const next = new Set(selected);
     if (next.has(entry)) next.delete(entry);
     else next.add(entry);
@@ -104,7 +110,7 @@ export function ClassSelect({ value, onChange, id, errors }: FieldControlProps):
 
   const row = (entry: string, note?: string) => (
     <label key={entry} className="classes__item">
-      <input type="checkbox" aria-label={entry} checked={selected.has(entry)} onChange={() => toggle(entry)} />
+      <input type="checkbox" aria-label={entry} checked={selected.has(entry)} disabled={locked} aria-describedby={locked ? `${noteId}-lock` : undefined} onChange={() => toggle(entry)} />
       <span>{classOf(entry)}</span>
       {note ? <span className="classes__note">{note}</span> : null}
     </label>
@@ -152,6 +158,11 @@ export function ClassSelect({ value, onChange, id, errors }: FieldControlProps):
                   Select none
                 </button>
               </div>
+              {locked ? (
+                <p className="classes__empty" id={`${noteId}-lock`} role="status">
+                  Per-class selection is locked until every map's classes are known (a list would leave {groups.filter((g) => g.loading || g.names === null).map((g) => g.name).join(", ")} out, drawing nothing). Select none still works.
+                </p>
+              ) : null}
               {groups.map((g) => {
                 const mine = extras.filter((e) => mapOf(e) === g.name);
                 const entries = g.entries.filter(matches);

@@ -112,6 +112,45 @@ describe("ClassSelect", () => {
     expect(screen.queryByRole("checkbox")).not.toBeInTheDocument();
   });
 
+  it("locks per-class editing of 'all' while another map's classes are unknown", async () => {
+    stubFetch({ scene: known(["road", "sky"]), lanes: { status: 200, body: { names: null, source: null } } });
+    const { onChange } = renderSelect(undefined, [SCENE, LANES]);
+    await open();
+    const road = await screen.findByRole("checkbox", { name: "scene.road" });
+    await screen.findByText(/classes appear after the first load/i);
+    expect(road).toBeChecked();
+    expect(road).toBeDisabled();
+    expect(screen.getByText(/per-class selection is locked/i)).toBeInTheDocument();
+    await userEvent.click(road);
+    expect(onChange).not.toHaveBeenCalled(); // lanes was never silently left out
+    await userEvent.click(screen.getByRole("button", { name: /select none/i }));
+    expect(onChange).toHaveBeenLastCalledWith([]);
+  });
+
+  it("locks while another map is still loading", async () => {
+    stubFetch({ scene: known(["road"]), lanes: known(["lane"]) });
+    resetClassesCache();
+    renderSelect(undefined, [SCENE, LANES]);
+    await open();
+    // nothing fetched yet: both maps loading, the lock note explains why
+    expect(screen.getAllByText(/loading classes/i)).toHaveLength(2);
+    expect(screen.getByText(/per-class selection is locked/i)).toBeInTheDocument();
+    expect(await screen.findByRole("checkbox", { name: "lanes.lane" })).toBeEnabled();
+    expect(screen.queryByText(/per-class selection is locked/i)).not.toBeInTheDocument();
+  });
+
+  it("an explicit allowlist stays editable with an unknown map", async () => {
+    stubFetch({ scene: known(["road", "sky"]), lanes: { status: 200, body: { names: null, source: null } } });
+    const { onChange } = renderSelect(["scene.road", "scene.sky"], [SCENE, LANES]);
+    await open();
+    await screen.findByText(/classes appear after the first load/i);
+    await waitFor(() => expect(screen.queryByText(/loading classes/i)).not.toBeInTheDocument());
+    const road = screen.getByRole("checkbox", { name: "scene.road" });
+    expect(road).toBeEnabled();
+    await userEvent.click(road);
+    expect(onChange).toHaveBeenLastCalledWith(["scene.sky"]);
+  });
+
   it("keeps a YAML entry that is not in the fetched list", async () => {
     stubFetch({ scene: known(["road", "sky"]) });
     const { onChange } = renderSelect(["scene.road", "scene.lamp"]);
