@@ -189,7 +189,7 @@ class Detector(Component):
         try:
             weights = cls.weights_file(options)
             names = None if weights is None else class_cache.read(weights)
-        except (ConfigError, OSError):
+        except (ConfigError, OSError, ValueError, RuntimeError):
             return None
         return None if names is None else ClassCatalog(names, "cache")
 

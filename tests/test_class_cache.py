@@ -1,5 +1,6 @@
 import os
 import stat
+from pathlib import Path
 
 import pytest
 
@@ -110,3 +111,48 @@ def test_cache_does_not_override_loaded_names(root, weights, monkeypatch):
 
 def test_detector_without_weights_file_declares_nothing(root):
     assert CachedDetector.declared_classes(DetectorOptions()) is None
+
+
+def test_degenerate_weights_declare_nothing(root):
+    from types import SimpleNamespace
+
+    from av_perception_lab.adapters.detectors.ultralytics_yolo import YoloDetector
+
+    for bad in ("", ".", ".."):
+        options = SimpleNamespace(weights=Path(bad))
+        assert YoloDetector.declared_classes(options) is None
+
+
+def test_yolo_weights_file_bare_name_and_path(root, tmp_path):
+    from av_perception_lab.adapters.detectors.ultralytics_yolo import YoloDetector
+
+    bare = YoloDetector.Options(weights=Path("a.pt"))
+    assert YoloDetector.weights_file(bare) == root / "ultralytics" / "a.pt"
+    explicit = YoloDetector.Options(weights=tmp_path / "b.pt")
+    assert YoloDetector.weights_file(explicit) == tmp_path / "b.pt"
+
+
+def test_yolo_declared_classes_roundtrip(root):
+    from av_perception_lab.adapters.detectors.ultralytics_yolo import YoloDetector
+
+    options = YoloDetector.Options(weights=Path("a.pt"))
+    target = YoloDetector.weights_file(options)
+    target.parent.mkdir(parents=True)
+    target.write_bytes(b"x")
+    assert YoloDetector.declared_classes(options) is None
+    class_cache.write(target, ["car", "person"])
+    assert YoloDetector.declared_classes(options) == ClassCatalog(
+        ("car", "person"), "cache"
+    )
+
+
+def test_rfdetr_weights_file_explicit_wins_else_variant(root, tmp_path):
+    from av_perception_lab.adapters.detectors.rfdetr import (
+        RFDETRDetector,
+        checkpoint_path,
+    )
+
+    default = RFDETRDetector.Options(variant="small")
+    assert RFDETRDetector.weights_file(default) == checkpoint_path("small")
+    explicit = RFDETRDetector.Options(variant="small", weights=tmp_path / "c.pth")
+    assert RFDETRDetector.weights_file(explicit) == tmp_path / "c.pth"
