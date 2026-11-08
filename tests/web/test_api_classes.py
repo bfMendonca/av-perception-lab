@@ -111,3 +111,53 @@ def test_local_model_dir_in_weights_reads_metadata(client, tmp_path, monkeypatch
     spec = {"type": "segformer", "model": str(ck)}
     r = client.post(URL, json={"kind": "semantic", "spec": spec})
     assert r.json() == {"names": ["road", "car"], "source": "metadata"}
+
+
+def _asset_client(tmp_path, web_paths):
+    import dataclasses
+
+    from conftest import LOCAL
+    from fastapi.testclient import TestClient
+
+    from av_perception_lab.web.app import create_app
+
+    assets = tmp_path / "assets"
+    assets.mkdir(exist_ok=True)
+    paths = dataclasses.replace(web_paths, asset_roots=(assets,))
+    return TestClient(base_url=LOCAL, app=create_app(paths))
+
+
+def test_labels_outside_roots_leaks_nothing(web_paths, tmp_path, monkeypatch):
+    monkeypatch.setattr(rq, "_explicit_root", tmp_path / "weights")
+    api = _asset_client(tmp_path, web_paths)
+    secret = tmp_path / "secret.txt"
+    secret.write_text("zanzibar-secret")
+    from av_perception_lab.core import labels
+
+    monkeypatch.setattr(
+        labels.LabelMap, "load", classmethod(lambda *a, **k: pytest.fail("read"))
+    )
+    bodies = []
+    for target in (secret, tmp_path / "missing.yaml"):
+        spec = {"type": "rfdetr", "labels": str(target)}
+        r = api.post(URL, json={"kind": "detector", "spec": spec})
+        assert r.status_code == 422
+        assert "zanzibar" not in r.text
+        bodies.append(r.json()["errors"][0]["path"])
+    assert bodies[0] == bodies[1] == "spec.labels"
+
+
+def test_segformer_model_escapes_are_rejected(web_paths, tmp_path, monkeypatch):
+    root = tmp_path / "weights"
+    monkeypatch.setattr(rq, "_explicit_root", root)
+    api = _asset_client(tmp_path, web_paths)
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (outside / "config.json").write_text('{"id2label": {"0": "a"}}')
+    root.mkdir()
+    (root / "link").symlink_to(outside)
+    for model in (f"{root}/../outside", str(root / "link")):
+        spec = {"type": "segformer", "model": model}
+        r = api.post(URL, json={"kind": "semantic", "spec": spec})
+        assert r.status_code == 422
+        assert r.json()["errors"][0]["path"] == "spec.model"
