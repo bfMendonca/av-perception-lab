@@ -182,6 +182,31 @@ dependency-conflict paths: `docs/model_environments.md`. Tests:
 `tests/web/test_models.py` (status rows of fake adapters registered with
 `monkeypatch.setitem(registry._REGISTRY[...])`).
 
+## (f) Declaring the classes of a new model
+
+A semantic segmenter or detector can tell the editor which classes it emits
+before it is loaded, so the `render.semantic_classes` dropdown can list them
+(`POST /api/classes`, `web/classes.py`). Override the classmethod
+`Component.declared_classes(options) -> ClassCatalog | None`
+(`core/components.py`):
+
+- Declare the classes when they are cheaply knowable from the options or the
+  weights without importing a framework: a constant of the architecture
+  (`ClassCatalog(names, "static")`, as TwinLiteNet+), or plain metadata next to
+  the weights such as a `config.json` (`"metadata"`, as SegFormer). It must
+  never raise and never load the model.
+- Otherwise return `None` (the default). Detectors get a fallback: a
+  `Detector` that implements `weights_file(options)` (the checkpoint path,
+  importable without frameworks) has its names recorded after every load in
+  `<weights root>/.classes/<key>.json` and read back as `"cache"`.
+- Contract: the declared names must equal `class_names`/the segmenter's
+  classes after `load()`. If the architecture can vary (checkpoint with another
+  head), check it at load and fail loudly (see `_check_heads` in
+  `adapters/semantic/twinlitenet.py`). Add a test that compares the two.
+- The endpoint parses the spec into the options dataclass and checks its
+  paths like a run, but does not construct the component; a local model
+  directory is confined to the weights root and the `--asset-root` folders.
+
 ## Versão do catálogo
 
 `catalog_version` sobe só em mudança incompatível; adicionar campos ou

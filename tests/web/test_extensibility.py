@@ -147,6 +147,9 @@ RUN_CONTRACT_KEYS = {"source", "output"}
 # `camera` holds the intrinsics choices (`calibration`, `focal_px`) that the
 # CameraInfo tick overrides. They are input rules, not stage lists.
 MCAP_INPUT_KEYS = {"rectify", "camera"}
+# The classes dropdown reads the `semantic` section (and asks /api/classes with
+# kind "semantic"): it is tied to that section like the MCAP controls to theirs.
+CLASS_SELECT_KEYS = {"semantic"}
 FRONT_END_SRC = WEB_SRC.parents[2] / "web" / "src"
 _TS_STRING = re.compile(r"""(["'`])([A-Za-z0-9_.\-]+)\1""")
 
@@ -155,6 +158,7 @@ def test_front_end_has_no_hardcoded_stage_or_model_names():
     names = {t for classes in registry.available().values() for t in classes}
     keys = {s.yaml_key for s in registry.stages()} - RUN_CONTRACT_KEYS
     mcap_ok = {n: MCAP_INPUT_KEYS for n in ("mcapCamera.ts", "RectifyLane.tsx")}
+    mcap_ok["ClassSelect.tsx"] = CLASS_SELECT_KEYS
     assert "rfdetr" in names and "detectors" in keys
     sources = [
         p
