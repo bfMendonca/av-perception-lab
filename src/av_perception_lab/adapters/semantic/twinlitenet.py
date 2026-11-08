@@ -35,7 +35,11 @@ import cv2
 import numpy as np
 
 from av_perception_lab.adapters._weights import INFER_EXTRA, under_root
-from av_perception_lab.core.components import LoadContext, SemanticSegmenter
+from av_perception_lab.core.components import (
+    ClassCatalog,
+    LoadContext,
+    SemanticSegmenter,
+)
 from av_perception_lab.core.options import ConfigError
 from av_perception_lab.core.registry import register
 from av_perception_lab.core.requirements import (
@@ -46,7 +50,7 @@ from av_perception_lab.core.requirements import (
     UserProvided,
     weights_root,
 )
-from av_perception_lab.core.types import SemanticMap
+from av_perception_lab.core.types import ContractError, SemanticMap
 
 TWINLITENET_CLASSES: tuple[str, ...] = ("background", "drivable", "lane")
 _PAD_VALUE = (114, 114, 114)  # demoDataset.letterbox_for_img default
@@ -178,6 +182,11 @@ class TwinLiteNetSegmenter(SemanticSegmenter):
             assets=assets, code=code, packages=("torch",), extra=INFER_EXTRA
         )
 
+    @classmethod
+    def declared_classes(cls, options: Options) -> ClassCatalog | None:
+        """The architecture's fixed classes (checked against the head in `_load`)."""
+        return ClassCatalog(TWINLITENET_CLASSES, "static")
+
     def default_name(self) -> str:
         """ "twinlitenet-<variant>" (programmatic use: configs require a name)."""
         return f"twinlitenet-{self.options.variant}"
@@ -205,6 +214,7 @@ class TwinLiteNetSegmenter(SemanticSegmenter):
         net = _import_network(repo)(SimpleNamespace(config=self.options.variant))
         # A plain state_dict (loads with torch 2.8's weights_only default).
         net.load_state_dict(torch.load(weights, map_location=ctx.device))
+        _check_heads(net)
         net = net.to(ctx.device).eval()
         self._net = net.half() if self.options.half else net
         self._device = ctx.device
@@ -309,3 +319,20 @@ def _import_network(repo: Path) -> type:
     finally:
         sys.path.remove(str(repo))
     return module.TwinLiteNetPlus
+
+
+def _check_heads(net: Any) -> None:
+    """The static class list holds only if each head (`out_da`, `out_ll`) ends
+    in a 2-channel conv (background + one class, merged into 3 labels)."""
+    for head in ("out_da", "out_ll"):
+        convs = [
+            m.out_channels
+            for m in getattr(net, head).modules()
+            if hasattr(m, "out_channels")
+        ]
+        if not convs or convs[-1] != 2:
+            raise ContractError(
+                f"TwinLiteNet+ head {head} has {convs[-1] if convs else '?'} output "
+                f"channels, expected 2: the declared classes {TWINLITENET_CLASSES} "
+                f"(3 classes) do not match this network"
+            )

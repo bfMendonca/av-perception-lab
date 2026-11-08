@@ -10,6 +10,7 @@ checkpoints ship pytorch_model.bin), declared by `requirements` for `--prepare`;
 torch and transformers are imported inside the hooks only.
 """
 
+import json
 from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
@@ -17,9 +18,18 @@ from typing import Any
 
 import numpy as np
 
-from av_perception_lab.adapters._hf_hub import from_pretrained_offline, hf_asset
+from av_perception_lab.adapters._hf_hub import (
+    from_pretrained_offline,
+    hf_asset,
+    is_repo_id,
+    resolve_cache,
+)
 from av_perception_lab.adapters._weights import INFER_EXTRA
-from av_perception_lab.core.components import LoadContext, SemanticSegmenter
+from av_perception_lab.core.components import (
+    ClassCatalog,
+    LoadContext,
+    SemanticSegmenter,
+)
 from av_perception_lab.core.registry import register
 from av_perception_lab.core.requirements import Requirements
 from av_perception_lab.core.types import ContractError, SemanticMap
@@ -58,6 +68,26 @@ class SegformerSegmenter(SemanticSegmenter):
             packages=("torch", "transformers"),
             extra=INFER_EXTRA,
         )
+
+    @classmethod
+    def declared_classes(cls, options: Options) -> ClassCatalog | None:
+        """id2label of the checkpoint's `config.json` (plain JSON, no
+        transformers); None if the file is missing or not a valid id2label."""
+        try:
+            config = _config_path(options)
+            if config is None:
+                return None
+            id2label = json.loads(config.read_text(encoding="utf-8"))["id2label"]
+            return ClassCatalog(_id2label_names(id2label), "metadata")
+        except (
+            OSError,
+            ValueError,
+            KeyError,
+            TypeError,
+            AttributeError,
+            ContractError,
+        ):
+            return None
 
     def default_name(self) -> str:
         """Lower-case basename of the repo (programmatic use: configs require a name)."""
@@ -119,3 +149,20 @@ def _id2label_names(id2label: Mapping[int | str, str]) -> tuple[str, ...]:
     if sorted(by_id) != list(range(len(by_id))):
         raise ContractError(f"id2label ids are not 0..C-1: {sorted(by_id)}")
     return tuple(by_id[i] for i in range(len(by_id)))
+
+
+def _config_path(options: Any) -> Path | None:
+    """`config.json` of the repo's snapshot in the HF cache layout, or of a
+    local checkpoint directory."""
+    if not is_repo_id(options.model):
+        return Path(options.model).expanduser() / "config.json"
+    repo_dir = resolve_cache(options.hf_cache) / (
+        "models--" + options.model.replace("/", "--")
+    )
+    snapshots = repo_dir / "snapshots"
+    if not snapshots.is_dir():
+        return None
+    for snap in sorted(p for p in snapshots.iterdir() if p.is_dir()):
+        if (snap / "config.json").is_file():
+            return snap / "config.json"
+    return None

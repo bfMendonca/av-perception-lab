@@ -94,3 +94,59 @@ def test_import_from_the_clone_only_while_importing(tmp_path, monkeypatch):
     finally:
         for name in names:  # the fake clone's modules must not leak into other tests
             sys.modules.pop(name, None)
+
+
+def test_twinlitenet_declared_classes_static():
+    from av_perception_lab.adapters.semantic.twinlitenet import TwinLiteNetSegmenter
+    from av_perception_lab.core.components import ClassCatalog
+
+    got = TwinLiteNetSegmenter.declared_classes(TwinLiteNetSegmenter.Options())
+    assert got == ClassCatalog(("background", "drivable", "lane"), "static")
+    assert "torch" not in sys.modules
+
+
+def _fake_net(channels):
+    def head(c):
+        conv = types.SimpleNamespace(out_channels=c)
+        return types.SimpleNamespace(modules=lambda: [object(), conv])
+
+    net = types.SimpleNamespace(out_da=head(channels), out_ll=head(channels))
+    net.load_state_dict = lambda state: None
+    net.to = lambda device: net
+    net.eval = lambda: net
+    return net
+
+
+def _load_with_fake_net(tmp_path, monkeypatch, channels):
+    from av_perception_lab.adapters.semantic import twinlitenet
+
+    (tmp_path / "model").mkdir()
+    (tmp_path / "model" / "model.py").write_text("")
+    (tmp_path / "w.pth").write_text("")
+    fake_torch = types.SimpleNamespace(load=lambda *a, **k: {})
+    monkeypatch.setitem(sys.modules, "torch", fake_torch)
+    monkeypatch.setattr(
+        twinlitenet, "_import_network", lambda repo: lambda args: _fake_net(channels)
+    )
+    seg = registry.build(
+        "semantic",
+        {
+            "type": "twinlitenet",
+            "repo": str(tmp_path),
+            "weights": str(tmp_path / "w.pth"),
+            "half": False,
+        },
+        path="semantic[0]",
+    )
+    seg.load(LoadContext("cpu", (100, 50), None))
+
+
+def test_twinlitenet_load_accepts_two_channel_heads(tmp_path, monkeypatch):
+    _load_with_fake_net(tmp_path, monkeypatch, 2)
+
+
+def test_twinlitenet_load_rejects_head_with_other_channels(tmp_path, monkeypatch):
+    from av_perception_lab.core.types import ContractError
+
+    with pytest.raises(ContractError, match="3 classes"):
+        _load_with_fake_net(tmp_path, monkeypatch, 5)

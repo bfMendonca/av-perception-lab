@@ -55,6 +55,18 @@ class LoadContext:
     intrinsics: CameraIntrinsics | None  # frame resolution; None if nobody needs it
 
 
+@dataclass(frozen=True, slots=True)
+class ClassCatalog:
+    """The classes a component can emit, known before loading it.
+
+    `source`: "static" (constant of the architecture), "metadata" (read from
+    the checkpoint's config files, no framework import) or "cache" (recorded
+    by an earlier load)."""
+
+    names: tuple[str, ...]
+    source: Literal["static", "metadata", "cache"]
+
+
 class Component(ABC):
     """A configurable model wrapper with an explicit load/close life cycle."""
 
@@ -73,6 +85,12 @@ class Component(ABC):
         """What this class needs to run, from already-validated options (never
         from `load()`); the default declares nothing."""
         return Requirements()
+
+    @classmethod
+    def declared_classes(cls, options: Any) -> ClassCatalog | None:
+        """Classes this component will emit, without loading it (no framework
+        import, never raises); None when they are not knowable beforehand."""
+        return None
 
     def default_name(self) -> str:
         """Name used in outputs when the spec gives none (e.g. "rfdetr-large")."""
