@@ -38,6 +38,7 @@ from av_perception_lab import config
 from av_perception_lab.core import requirements
 from av_perception_lab.core.options import ConfigError
 from av_perception_lab.web import (
+    classes,
     compare,
     gpu,
     history,
@@ -96,6 +97,12 @@ class SaveBody(BaseModel):
 class StatusBody(BaseModel):
     model_config = ConfigDict(extra="forbid")
     config: dict[str, Any]
+
+
+class ClassesBody(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    kind: Literal["semantic", "detector"]
+    spec: dict[str, Any]
 
 
 class ModelKey(BaseModel):
@@ -848,6 +855,16 @@ def create_app(
             )
         except ConfigError as exc:
             return JSONResponse({"errors": [schema.split_error(exc)]}, 422)
+
+    @app.post("/api/classes", response_model=None)
+    async def declared_classes(body: ClassesBody) -> Any:
+        # Never loads a model: options only, then the class's declaration.
+        errors, result = await run_in_threadpool(
+            classes.declared, body.kind, body.spec, paths
+        )
+        if errors:
+            return JSONResponse({"errors": errors}, status_code=422)
+        return result
 
     @app.post("/api/models/prepare", response_model=None)
     async def start_prepare(body: PrepareBody) -> Any:
