@@ -339,7 +339,9 @@ class Renderer:
         self.trajectory_alpha = trajectory_alpha
         self.bev_range_m, self.bev_width_m = bev_range_m, bev_width_m
         self.n_sigma = n_sigma
-        self._luts: dict[tuple[str, ...], np.ndarray] = {}  # by class_names
+        self._luts: dict[
+            tuple[tuple[str, ...], frozenset[str] | None], np.ndarray
+        ] = {}  # by (class_names, visible)
         scale = frame_h / 1080
         self.box_width = max(2, round(3 * scale))
         self.font = load_font(font_path, max(14, round(22 * scale)))
@@ -372,19 +374,23 @@ class Renderer:
         depth_m: np.ndarray | None = None,
         *,
         semantic: Sequence[tuple[np.ndarray, Sequence[str]]] = (),
+        semantic_visible: Sequence[frozenset[str] | None] = (),
         bev: Sequence[BevTrack] = (),
     ) -> np.ndarray:
         """Annotated frame of size `output_size()`; `depth_m` is required for side-by-side.
 
         `semantic` holds layers (labels (H, W), class_names) in drawing order (the
         last one on top), drawn on the frame panel only, under masks and boxes.
+        `semantic_visible[i]` is the set of class names drawn in `semantic[i]`
+        (missing or None = every class).
         `bev` holds the tracks of the top-view inset (drawn, possibly empty,
         when bev_size_px > 0).
         """
         image = frame_rgb
         if self.semantic_alpha > 0:
-            for labels, class_names in semantic:
-                image = self._blend_semantic(image, labels, tuple(class_names))
+            for i, (labels, class_names) in enumerate(semantic):
+                visible = semantic_visible[i] if i < len(semantic_visible) else None
+                image = self._blend_semantic(image, labels, tuple(class_names), visible)
         left = self._draw(image, boxes, hud_lines if self.show_hud else None)
         if self.bev_size_px > 0:
             left = self._paste_bev(left, bev)
@@ -505,31 +511,46 @@ class Renderer:
             ).astype(np.uint8)
         return out
 
-    def _semantic_lut(self, class_names: tuple[str, ...]) -> np.ndarray:
+    def _semantic_lut(
+        self, class_names: tuple[str, ...], visible: frozenset[str] | None = None
+    ) -> np.ndarray:
         """(C, 4) uint8 lookup table: RGB colour of each class (color_for) and its
-        alpha (semantic_alpha * 255; 0 for SEMANTIC_BACKGROUND), cached per tuple."""
-        lut = self._luts.get(class_names)
+        alpha (semantic_alpha * 255; 0 for SEMANTIC_BACKGROUND and for classes
+        outside `visible`, None = all visible), cached per (names, visible)."""
+        key = (class_names, visible)
+        lut = self._luts.get(key)
         if lut is None:
             alpha = round(self.semantic_alpha * 255)
             lut = np.array(
                 [
-                    (*color_for(name), 0 if name == SEMANTIC_BACKGROUND else alpha)
+                    (
+                        *color_for(name),
+                        0
+                        if name == SEMANTIC_BACKGROUND
+                        or (visible is not None and name not in visible)
+                        else alpha,
+                    )
                     for name in class_names
                 ],
                 dtype=np.uint8,
             ).reshape(-1, 4)
-            self._luts[class_names] = lut
+            self._luts[key] = lut
         return lut
 
     def _blend_semantic(
-        self, image_rgb: np.ndarray, labels: np.ndarray, class_names: tuple[str, ...]
+        self,
+        image_rgb: np.ndarray,
+        labels: np.ndarray,
+        class_names: tuple[str, ...],
+        visible: frozenset[str] | None = None,
     ) -> np.ndarray:
         """Tint every non-background pixel with its class colour (color_for) at
         `semantic_alpha`, using a per-class lookup table. Drawn first, under the
         instance masks and boxes, on the frame panel only. With several maps the
         layers are applied in order, each over the previous one; colours follow
-        the class name, so a class shared by two maps keeps one colour."""
-        rgba = self._semantic_lut(class_names)[labels]
+        the class name, so a class shared by two maps keeps one colour. Classes
+        outside `visible` (None = all) are left untouched."""
+        rgba = self._semantic_lut(class_names, visible)[labels]
         drawn = rgba[..., 3] > 0
         if not drawn.any():
             return image_rgb

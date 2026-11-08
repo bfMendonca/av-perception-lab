@@ -295,3 +295,58 @@ def test_bev_inset_larger_than_the_frame_is_clamped(w, h, size):
     out = r.render(np.zeros((h, w, 3), np.uint8), [], [], bev=[])
     assert out.shape == (h, w, 3)
     assert out[h - m - 1, w - m - 1].any() and not out[:m, :m].any()
+
+
+# task_0035: render.semantic_classes -> per-layer visible class sets.
+TINT_CLASSES = ("background", "road", "car")
+TINT_LABELS = np.array([[1, 2], [0, 1]], np.int32)  # road, car / background, road
+
+
+def _tinted(visible, classes=TINT_CLASSES):
+    frame = np.full((2, 2, 3), 100, np.uint8)
+    r = Renderer(2, 2, title="t", show_hud=False)
+    kwargs = {} if visible is Ellipsis else {"semantic_visible": [visible]}
+    return frame, r.render(frame, [], [], semantic=[(TINT_LABELS, classes)], **kwargs)
+
+
+def test_semantic_hidden_class_is_transparent():
+    frame, out = _tinted(frozenset({"road"}))
+    assert np.array_equal(out[0, 1], frame[0, 1])  # car: untouched
+    assert not np.array_equal(out[0, 0], frame[0, 0])  # road: tinted
+
+
+def test_semantic_empty_visible_draws_nothing():
+    frame, out = _tinted(frozenset())
+    assert np.array_equal(out, frame)
+
+
+def test_semantic_lut_cache_distinguishes_visible_sets():
+    r = _plain_renderer()
+    a = r._semantic_lut(TINT_CLASSES, frozenset({"road"}))
+    b = r._semantic_lut(TINT_CLASSES, frozenset({"car"}))
+    assert not np.array_equal(a[:, 3], b[:, 3])
+    assert a[:, 3].tolist() == [0, 102, 0] and b[:, 3].tolist() == [0, 0, 102]
+    assert r._semantic_lut(TINT_CLASSES, None)[:, 3].tolist() == [0, 102, 102]
+
+
+def test_two_maps_share_class_name_independently():
+    frame = np.full((2, 2, 3), 100, np.uint8)
+    only_car = np.array([[0, 0], [0, 1]], np.int32)
+    other = np.array([[1, 0], [0, 0]], np.int32)
+    r = Renderer(2, 2, title="t", show_hud=False)
+    out = r.render(
+        frame,
+        [],
+        [],
+        semantic=[(only_car, ("background", "car")), (other, ("background", "car"))],
+        semantic_visible=[frozenset({"car"}), frozenset()],
+    )
+    assert not np.array_equal(out[1, 1], frame[1, 1])  # first layer tints
+    assert np.array_equal(out[0, 0], frame[0, 0])  # second layer hidden
+
+
+def test_render_without_visible_is_unchanged():
+    _, plain = _tinted(Ellipsis)
+    _, none = _tinted(None)
+    _, full = _tinted(frozenset({"road", "car"}))
+    assert np.array_equal(plain, none) and np.array_equal(plain, full)

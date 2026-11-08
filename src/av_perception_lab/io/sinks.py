@@ -64,6 +64,7 @@ import numpy as np
 
 from av_perception_lab.config import RenderConfig, RunConfig
 from av_perception_lab.core.agreement import AgreementStats
+from av_perception_lab.core.labels import resolve_semantic_classes
 from av_perception_lab.core.pipeline import SetupInfo
 from av_perception_lab.core.tracking import TrackSummary
 from av_perception_lab.core.types import (
@@ -585,6 +586,17 @@ class VideoSink(Sink):
             if self.cfg.semantic_alpha > 0
             else []
         )
+        allowed = resolve_semantic_classes(
+            self.cfg.semantic_classes,
+            {name: m.class_names for name, m in result.semantic.items()},
+        )
+        visible = [
+            None if allowed is None else allowed.get(name, frozenset())
+            for name, m in result.semantic.items()
+            if overlay is None or name in overlay
+        ]
+        if not layers:
+            visible = []
         side_by_side = self.cfg.layout == "side-by-side"
         image = self._renderer.render(
             result.frame.rgb,
@@ -592,6 +604,7 @@ class VideoSink(Sink):
             hud,
             result.depth.depth_m if side_by_side else None,
             semantic=layers,
+            semantic_visible=visible,
             bev=bev,
         )
         if self.on_frame is not None:

@@ -1026,3 +1026,16 @@ def test_warns_when_no_detector_emits_a_motion_class(scene, capsys):
     err = capsys.readouterr().err
     assert "[warn] motion.classes.vehicle: no detector emits this label" in err
     assert "motion.classes.person" not in err
+
+
+def test_pipeline_semantic_classes_after_load(scene):
+    log, det = scene
+    pipeline = make_pipeline(
+        [det],
+        FakeDepth(log, needs_intrinsics=False),
+        semantic=_segmenters(log),
+    )
+    pipeline.setup(Source())
+    assert pipeline.semantic_classes() == {"scene": SCENE, "lanes": LANES}
+    bare = make_pipeline([det], FakeDepth(log, needs_intrinsics=False))
+    assert bare.semantic_classes() == {}
