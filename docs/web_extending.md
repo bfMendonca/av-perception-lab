@@ -86,8 +86,33 @@ registerStageView("rectify", RectifyLane, {
 ```
 
 O app fornece o contexto em volta do editor
-(`<StageContext.Provider value={{ input }}>`, ver `App.tsx`); sem provedor o
-contexto é `{}`.
+(`<StageContext.Provider value={{ input, config }}>`, ver `App.tsx`); sem
+provedor o contexto é `{}`.
+
+The context also carries the current pipeline config under
+`CONFIG_CONTEXT_KEY` (`"config"`, exported by `registry.ts`). It is meant for
+field controls that depend on other sections: `FieldControlProps` gives a
+control only its own field, value and path. The `render.semantic_classes`
+dropdown (`web/src/editor/ClassSelect.tsx`) reads the `semantic` specs from
+it to ask `POST /api/classes` for each map's classes. The control reads the
+context rather than `useEditor()` so it keeps working (with no maps) outside
+an `EditorProvider` and in tests with a plain provider; `useEditor()` stays
+the way to change the config. Since the config changes on every edit, a
+control that derives requests from it should key them on the part it reads
+(the classes dropdown caches by the serialized spec and debounces new specs).
+
+```ts
+import { CONFIG_CONTEXT_KEY, registerFieldControl, StageContext } from "./editor/registry";
+
+function ClassSelect(props: FieldControlProps) {
+  const config = useContext(StageContext)[CONFIG_CONTEXT_KEY]; // ConfigDict | undefined
+  // ...
+}
+registerFieldControl((f) => f.name === "semantic_classes", ClassSelect);
+```
+
+The catalog types `semantic_classes` as `any` (variants `str` and
+`list<str>`), so the control matches the field by name, not by type.
 
 ## (d) Novo artefato ou nova seção de métricas
 

@@ -10,7 +10,8 @@ import { createPresetsApi, type PresetsApi } from "./api/presets";
 import { createVideoApi, type VideoApi } from "./api/video";
 import { SUPPORTED_CATALOG_VERSION, stageByKey } from "./editor/catalog";
 import { EditorView } from "./editor/EditorView";
-import { StageContext } from "./editor/registry";
+import "./editor/ClassSelect"; // registers the render.semantic_classes control
+import { CONFIG_CONTEXT_KEY, StageContext } from "./editor/registry";
 import { ReadinessProvider, useModelStatus } from "./models/useModelStatus";
 import { createEditorStore, EditorProvider, useEditor, type Draft, type EditorStore, type Selection } from "./editor/yamlState";
 import { Dialog } from "./ui/Dialog";
@@ -131,7 +132,8 @@ function Studio({ client, video, runs, models, presets: presetsApi, remember, ca
   const readiness = useModelStatus(editor.loaded && catalog.status === "ready" ? editor.toConfig() : null, { api: models, debounceMs: editor.debounceMs, notify: editor.notify });
   const process = useProcess(video, session, jobs, editor, readiness);
   useMcapBinding(session.current, editor);
-  const stageContext = useMemo(() => ({ [INPUT_CONTEXT_KEY]: session.current }), [session.current]);
+  const config = editor.state.pipeline.config;
+  const stageContext = useMemo(() => ({ [INPUT_CONTEXT_KEY]: session.current, [CONFIG_CONTEXT_KEY]: config }), [session.current, config]);
   const fileInput = useRef<HTMLInputElement>(null);
   const presets = usePresets(presetsApi);
   const [presetsOpen, setPresetsOpen] = useState(false);
