@@ -86,6 +86,10 @@ class YoloDetector(Detector):
     def default_name(self) -> str:
         return self.options.weights.stem
 
+    @classmethod
+    def weights_file(cls, options: Options) -> Path | None:
+        return resolve_weights(options.weights)
+
     def _load(self, ctx: LoadContext) -> None:
         weights = resolve_weights(self.options.weights)
         # Checked first: ultralytics would otherwise try to download a missing file.

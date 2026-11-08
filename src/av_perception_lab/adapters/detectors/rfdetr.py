@@ -162,6 +162,12 @@ class RFDETRDetector(Detector):
             return f"rfdetr-{self.options.weights.stem}"
         return f"rfdetr-{self.options.variant}"
 
+    @classmethod
+    def weights_file(cls, options: Options) -> Path | None:
+        if options.weights is not None:
+            return options.weights
+        return checkpoint_path(options.variant)
+
     def _load(self, ctx: LoadContext) -> None:
         opts = self.options
         if opts.weights is not None:

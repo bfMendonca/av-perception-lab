@@ -27,6 +27,7 @@ from typing import Any, ClassVar, Literal
 
 import numpy as np
 
+from av_perception_lab.core import class_cache
 from av_perception_lab.core.labels import (
     LabelMap,
     identify_vocabulary,
@@ -176,6 +177,22 @@ class Detector(Component):
             except ConfigError as exc:
                 raise ConfigError(f"labels: {exc}") from None
 
+    @classmethod
+    def weights_file(cls, options: Any) -> Path | None:
+        """The checkpoint file whose classes the load-time cache records
+        (importable without frameworks); None when there is no such file."""
+        return None
+
+    @classmethod
+    def declared_classes(cls, options: Any) -> ClassCatalog | None:
+        """Classes recorded by an earlier load of the same weights file."""
+        try:
+            weights = cls.weights_file(options)
+            names = None if weights is None else class_cache.read(weights)
+        except (ConfigError, OSError):
+            return None
+        return None if names is None else ClassCatalog(names, "cache")
+
     @property
     @abstractmethod
     def class_names(self) -> Sequence[str]:
@@ -197,6 +214,9 @@ class Detector(Component):
                 self.label_map.check(self.class_names, self._vocabulary)
             except ConfigError as exc:
                 raise ConfigError(f"{self.name}.labels: {exc}") from None
+        weights = self.weights_file(self.options)
+        if weights is not None:
+            class_cache.write(weights, list(self.class_names))
 
     @property
     def output_labels(self) -> frozenset[str]:
