@@ -23,7 +23,10 @@ Choose which semantic classes are painted in the video (task_0035).
 - `POST /api/classes` (`{kind, spec}` -> `{names, source}`, `names: null` when
   unknown; 422 `{errors}`): never loads or constructs a model.
 - Web: class dropdown (`ClassSelect`) on `render.semantic_classes` in the Render
-  panel.
+  panel; an unknown class list is asked again each time the panel opens.
+- `render.semantic_classes` entries without `.<class>` are rejected at config
+  load; SegFormer's declared classes follow `refs/main`; an unhashable
+  `spec.type` in `POST /api/classes` is a 422.
 
 ### Known limitations
 

@@ -25,7 +25,8 @@ def _parse(kind: str, spec: dict[str, Any]) -> tuple[type, Any]:
     """Class and parsed options of a spec; nothing is constructed."""
     family = registry.available(kind).get(kind, {})
     fields = {k: v for k, v in spec.items() if k not in ("type", "name")}
-    cls = family.get(spec.get("type"))
+    type_name = spec.get("type")
+    cls = family.get(type_name) if isinstance(type_name, str) else None
     if cls is None:
         raise ConfigError(
             f"spec.type: unknown {kind} {spec.get('type')!r}; "

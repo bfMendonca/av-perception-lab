@@ -297,7 +297,12 @@ class RunConfig:
                 f"configured: {', '.join(names) or 'none'}"
             )
         for entry in self.render.semantic_classes or ():
-            prefix = entry.partition(".")[0]
+            prefix, dot, cls_name = entry.partition(".")
+            if not dot or not cls_name:
+                raise ValueError(
+                    f"render.semantic_classes: {entry!r} must be "
+                    "'<map>.<class>' (e.g. scene.road)"
+                )
             if prefix not in names:
                 raise ValueError(
                     f"render.semantic_classes: unknown semantic map {prefix!r}; "

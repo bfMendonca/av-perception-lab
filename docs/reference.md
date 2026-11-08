@@ -573,7 +573,8 @@ render:
   nothing. A semantic map with no entry in the list draws none of its classes.
   A bare string is accepted as a one-item list (`--set render.semantic_classes=scene.road`).
 - `background` (TwinLiteNet+) is never drawn, listed or not.
-- The map prefix is checked in `load_config` (unknown map: error). The class
+- The `<map>.<class>` form and the map prefix are checked in `load_config`
+  (no dot, empty class or unknown map: error). The class
   names are checked right after `pipeline.load`, before the first frame
   (`ConfigError` listing the valid classes), since only a loaded segmenter is
   authoritative about its classes.
@@ -594,8 +595,10 @@ asked by `POST /api/classes`, no model is loaded):
 
 The cache is a hint only: the loaded model's `class_names` stays
 authoritative, a corrupt file is a miss and a failure to write it (read-only
-weights root) is logged and ignored. When nothing is known the editor shows the
-classes after the first load.
+weights root) is logged and ignored. SegFormer follows `refs/main` of the HF
+cache like the loader (first sorted snapshot only without a usable ref). When
+nothing is known the editor shows the classes after the first load and asks
+again each time the dropdown is opened.
 
 ### Rastreamento e suavização
 

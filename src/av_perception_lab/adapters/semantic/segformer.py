@@ -31,7 +31,11 @@ from av_perception_lab.core.components import (
     SemanticSegmenter,
 )
 from av_perception_lab.core.registry import register
-from av_perception_lab.core.requirements import Requirements
+from av_perception_lab.core.requirements import (
+    Requirements,
+    UnsafePathError,
+    _check_revision,
+)
 from av_perception_lab.core.types import ContractError, SemanticMap
 from av_perception_lab.runtime import package_version
 
@@ -162,6 +166,19 @@ def _config_path(options: Any) -> Path | None:
     snapshots = repo_dir / "snapshots"
     if not snapshots.is_dir():
         return None
+    # Follow refs/main like from_pretrained does; a missing, hostile or dangling
+    # ref falls back to the first sorted snapshot.
+    try:
+        rev = (repo_dir / "refs" / "main").read_text(encoding="utf-8").strip()
+        _check_revision(rev, "ref content")
+        pointed = snapshots / rev
+        if (
+            pointed.resolve().is_relative_to(repo_dir.resolve())
+            and (pointed / "config.json").is_file()
+        ):
+            return pointed / "config.json"
+    except (OSError, ValueError, UnsafePathError):
+        pass
     for snap in sorted(p for p in snapshots.iterdir() if p.is_dir()):
         if (snap / "config.json").is_file():
             return snap / "config.json"

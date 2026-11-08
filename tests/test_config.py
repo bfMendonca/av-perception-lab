@@ -812,6 +812,12 @@ def test_run_config_rejects_unknown_map_prefix(tmp_path):
         load_config(write(tmp_path, TWO_MAPS), ["render.semantic_classes=[nope.road]"])
 
 
+@pytest.mark.parametrize("entry", ["scene", "scene.", ".road"])
+def test_run_config_rejects_malformed_entry(tmp_path, entry):
+    with pytest.raises(ConfigError, match="render.semantic_classes"):
+        load_config(write(tmp_path, TWO_MAPS), [f"render.semantic_classes=[{entry}]"])
+
+
 def test_yaml_list_form_is_accepted(tmp_path):
     cfg = load_config(
         write(tmp_path, TWO_MAPS), ["render.semantic_classes=[scene.road]"]

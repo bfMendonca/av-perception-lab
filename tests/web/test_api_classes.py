@@ -77,6 +77,11 @@ def test_unknown_type_and_kind_are_422(client):
     assert r.status_code == 422
 
 
+def test_unhashable_type_is_422(client):
+    r = client.post(URL, json={"kind": "detector", "spec": {"type": ["x"]}})
+    assert r.status_code == 422 and r.json()["errors"][0]["path"] == "spec.type"
+
+
 def test_extra_body_field_is_422(client):
     body = {"kind": "semantic", "spec": {"type": "twinlitenet"}, "x": 1}
     assert client.post(URL, json=body).status_code == 422
@@ -138,13 +143,18 @@ def test_labels_outside_roots_leaks_nothing(web_paths, tmp_path, monkeypatch):
         labels.LabelMap, "load", classmethod(lambda *a, **k: pytest.fail("read"))
     )
     bodies = []
+    messages = []
     for target in (secret, tmp_path / "missing.yaml"):
         spec = {"type": "rfdetr", "labels": str(target)}
         r = api.post(URL, json={"kind": "detector", "spec": spec})
         assert r.status_code == 422
         assert "zanzibar" not in r.text
-        bodies.append(r.json()["errors"][0]["path"])
+        err = r.json()["errors"][0]
+        bodies.append(err["path"])
+        # the client's own echoed value removed, nothing else may differ
+        messages.append(err["message"].replace(str(target), "<path>"))
     assert bodies[0] == bodies[1] == "spec.labels"
+    assert messages[0] == messages[1]
 
 
 def test_segformer_model_escapes_are_rejected(web_paths, tmp_path, monkeypatch):

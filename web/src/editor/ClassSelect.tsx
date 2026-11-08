@@ -37,20 +37,30 @@ function allowlist(value: unknown): string[] | null {
 const mapOf = (entry: string) => entry.split(".")[0];
 const classOf = (entry: string) => entry.slice(entry.indexOf(".") + 1);
 
-/** Declared classes per map spec; undefined while the answer is pending. */
-function useDeclared(maps: MapSpec[]): (spec: unknown) => DeclaredClasses | undefined {
+/**
+ * Declared classes per map spec; undefined while the answer is pending. A
+ * missing or unknown answer is asked again once per panel open (the weights
+ * may have been prepared meanwhile), never on edits or keystrokes.
+ */
+function useDeclared(maps: MapSpec[], open: boolean): (spec: unknown) => DeclaredClasses | undefined {
   const [local, setLocal] = useState<Record<string, DeclaredClasses>>({});
   const latest = useRef(maps);
   latest.current = maps;
+  const attempted = useRef(new Set<string>());
+  const wasOpen = useRef(false);
   const keys = maps.map((m) => classesKey(KIND, m.spec)).join("\n");
   useEffect(() => {
-    const missing = latest.current.filter((m) => !cachedClasses(KIND, m.spec));
+    if (open && !wasOpen.current) attempted.current.clear();
+    wasOpen.current = open;
+    const missing = latest.current.filter((m) => !cachedClasses(KIND, m.spec) && !attempted.current.has(classesKey(KIND, m.spec)));
     if (!missing.length) return;
     let alive = true;
     const timer = setTimeout(() => {
       for (const m of missing) {
+        const key = classesKey(KIND, m.spec);
+        attempted.current.add(key);
         void fetchClasses(KIND, m.spec).then((result) => {
-          if (alive) setLocal((prev) => ({ ...prev, [classesKey(KIND, m.spec)]: result }));
+          if (alive) setLocal((prev) => ({ ...prev, [key]: result }));
         });
       }
     }, DEBOUNCE_MS);
@@ -58,14 +68,14 @@ function useDeclared(maps: MapSpec[]): (spec: unknown) => DeclaredClasses | unde
       alive = false;
       clearTimeout(timer);
     };
-  }, [keys]);
+  }, [keys, open]);
   return (spec) => cachedClasses(KIND, spec) ?? local[classesKey(KIND, spec)];
 }
 
 export function ClassSelect({ value, onChange, id, errors }: FieldControlProps): ReactElement {
   const maps = semanticMaps(useContext(StageContext)[CONFIG_CONTEXT_KEY]);
-  const declared = useDeclared(maps);
   const [open, setOpen] = useState(false);
+  const declared = useDeclared(maps, open);
   const [query, setQuery] = useState("");
   const button = useRef<HTMLButtonElement>(null);
   const panelId = `${id}-panel`;

@@ -45,8 +45,10 @@ export function stableKey(value: unknown): string {
   return JSON.stringify(value) ?? "null";
 }
 
-// One request per distinct (kind, spec) for the page's lifetime: settled
-// answers are read synchronously, in-flight ones are shared.
+// One request per distinct (kind, spec) for the page's lifetime once a class
+// list is known: settled answers are read synchronously, in-flight ones are
+// shared; an "unknown" answer is never cached (the caller decides when to ask
+// again).
 const settled = new Map<string, DeclaredClasses>();
 const pending = new Map<string, Promise<DeclaredClasses>>();
 const defaultApi = createClassesApi();
@@ -69,7 +71,8 @@ export function fetchClasses(kind: string, spec: unknown, api: ClassesApi = defa
   if (!request) {
     request = api.fetch(kind, spec).then(
       (result) => {
-        settled.set(key, result);
+        // "unknown" is not final (weights may be prepared later): not cached.
+        if (result.names !== null) settled.set(key, result);
         return result;
       },
       () => UNKNOWN,

@@ -112,6 +112,39 @@ describe("ClassSelect", () => {
     expect(screen.queryByRole("checkbox")).not.toBeInTheDocument();
   });
 
+  it("asks again when the panel reopens after an unknown answer", async () => {
+    const replies: Record<string, Reply> = { scene: { status: 200, body: { names: null, source: null } } };
+    const f = stubFetch(replies);
+    const { onChange } = renderSelect(undefined);
+    await open();
+    await screen.findByText(/classes appear after the first load/i);
+    // the weights were prepared meanwhile
+    replies.scene = known(["road", "sky"]);
+    await open(); // close
+    await open(); // reopen
+    const road = await screen.findByRole("checkbox", { name: "scene.road" });
+    expect(road).toBeEnabled();
+    await userEvent.click(road);
+    expect(onChange).toHaveBeenLastCalledWith(["scene.sky"]);
+    expect(f.mock.calls.length).toBeLessThanOrEqual(3); // at most one per open
+  });
+
+  it("does not retry an unknown answer on typing or other edits", async () => {
+    const f = stubFetch({ scene: { status: 200, body: { names: null, source: null } } });
+    const { rerender } = renderSelect(undefined);
+    await open();
+    await screen.findByText(/classes appear after the first load/i);
+    const calls = f.mock.calls.length;
+    await userEvent.type(screen.getByRole("searchbox", { name: /filter classes/i }), "abc");
+    rerender(
+      <StageContext.Provider value={{ [CONFIG_CONTEXT_KEY]: { semantic: [SCENE], render: { hud: true } } }}>
+        <ClassSelect field={field} value={undefined} onChange={() => {}} path={["render", "semantic_classes"]} errors={[]} id="cls" />
+      </StageContext.Provider>,
+    );
+    await new Promise((r) => setTimeout(r, 400));
+    expect(f.mock.calls.length).toBe(calls);
+  });
+
   it("locks per-class editing of 'all' while another map's classes are unknown", async () => {
     stubFetch({ scene: known(["road", "sky"]), lanes: { status: 200, body: { names: null, source: null } } });
     const { onChange } = renderSelect(undefined, [SCENE, LANES]);
