@@ -4,6 +4,34 @@ Todas as mudancas relevantes do av-perception-lab serao documentadas neste arqui
 
 ---
 
+## [Unreleased] Render class selection
+
+Choose which semantic classes are painted in the video (task_0035).
+
+### Added
+
+- `render.semantic_classes`: allowlist of `<map>.<class>` entries painted in
+  the semantic layer (absent = all, `[]` = none, a map without an entry draws
+  none, a bare string is one item; `background` is never drawn). The map prefix
+  is checked at config load and the class names after `pipeline.load`, before
+  frame 1. Presentation only: distance, tracking, CSV, NPZ and metrics do not
+  change.
+- `Component.declared_classes(options)` and `ClassCatalog`: TwinLiteNet+
+  (static, with a head-channel check at load), SegFormer (`id2label` from
+  `config.json` in the HF cache or a local directory, no torch) and detectors
+  through a load-time cache `<weights root>/.classes/<key>.json` (a hint only).
+- `POST /api/classes` (`{kind, spec}` -> `{names, source}`, `names: null` when
+  unknown; 422 `{errors}`): never loads or constructs a model.
+- Web: class dropdown (`ClassSelect`) on `render.semantic_classes` in the Render
+  panel; an unknown class list is asked again each time the panel opens.
+- `render.semantic_classes` entries without `.<class>` are rejected at config
+  load; SegFormer's declared classes follow `refs/main`; an unhashable
+  `spec.type` in `POST /api/classes` is a 422.
+
+### Known limitations
+
+- Detector render filtering and MCAP output are follow-ups.
+
 ## [Unreleased] ultralytics as an opt-in extra
 
 Licence audit follow-up (task_0034).

@@ -36,6 +36,13 @@ export type StageView = (props: StageViewProps) => ReactElement | null;
 export type StageContextValue = Readonly<Record<string, unknown>>;
 export const StageContext = createContext<StageContextValue>({});
 
+/**
+ * StageContext key of the current pipeline config (a `ConfigDict`), for
+ * field controls that depend on other sections (`FieldControlProps` carries
+ * only the field's own value). Absent without a provider.
+ */
+export const CONFIG_CONTEXT_KEY = "config";
+
 export interface StageViewOptions {
   /** Leave the stage's lane out of the canvas (its value and the app's StageContext decide). */
   hidden?: (value: unknown, context: StageContextValue) => boolean;

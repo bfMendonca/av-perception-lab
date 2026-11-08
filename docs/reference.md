@@ -422,7 +422,7 @@ desconhecidas são erro (com o caminho, ex.
 | `motion` | `null` (padrão) ou seção com `models`, `classes`, `default`, `measurement`, `prediction`, `ego_motion` …; exige `tracking`; ver [Estimação de movimento e trajetórias](#estimação-de-movimento-e-trajetórias) |
 | `agreement` | `enabled` (true; só tem efeito com ≥ 2 detectores); `iou_thr` (0.5, em (0, 1)); `class_aware` (true: só casa rótulos canônicos iguais) |
 | `distance` | `box_shrink` (0.1); `outlier` (`iqr`); `outlier_k` (null = padrão do método); `stat` (`median`, `mean`, `trimmed`, `mode`, `pXX`); `distance_type` (`z` ou `euclidean`); `min_valid_px` (20); `max_range` (0 = sem limite); `mask_erode` (1; erosão da máscara em pixels do mapa, ≥ 0); `exclude_sky` (true); `region` (`mask`: máscara quando a instância tem, senão caixa; `box`: sempre a caixa; `both`: como `mask` e grava também a distância da caixa); `exclude_semantic` (`[]`; rótulos `<nome>.<classe>` — lista YAML ou texto com vírgulas — cujos pixels saem do cálculo, ex. `[scene.road, lanes.lane]`) |
-| `render` | `layout` (`overlay` ou `side-by-side`); `show_stats` (false); `draw_inner_box` (false); `max_depth` (30 m); `cmap` (`turbo`); `crf` (20); `hud` (true); `font` (null); `mask_alpha` (0.35, em [0, 1]; opacidade da máscara; 0 não desenha máscaras); `semantic_alpha` (0.4, em [0, 1]; 0 não desenha camadas semânticas); `semantic_overlay` (null = todos os mapas; lista de nomes de `semantic` a desenhar); `show_smoothed` (true; rótulo com a distância suavizada quando há estimativa — a bruta segue no CSV); `show_speed` (true; velocidade relativa no rótulo, só com `kalman`); com `motion`: `show_trajectory` (true; trajetória prevista), `trajectory_alpha` (0.8, em [0, 1]; opacidade do 1º segmento, decrescente até o horizonte), `show_motion_speed` (true; `v <m/s>` no fim do rótulo), `bev_inset` (false; painel de vista superior no canto inferior direito — exige `motion`), `bev_size` (0.35 da altura do quadro, em (0, 1]), `bev_range_m` (40 m à frente), `bev_width_m` (20 m de largura) |
+| `render` | `layout` (`overlay` ou `side-by-side`); `show_stats` (false); `draw_inner_box` (false); `max_depth` (30 m); `cmap` (`turbo`); `crf` (20); `hud` (true); `font` (null); `mask_alpha` (0.35, em [0, 1]; opacidade da máscara; 0 não desenha máscaras); `semantic_alpha` (0.4, em [0, 1]; 0 não desenha camadas semânticas); `semantic_overlay` (null = todos os mapas; lista de nomes de `semantic` a desenhar); `semantic_classes` (null = todas as classes; allowlist `<mapa>.<classe>` das classes pintadas, ver [Render class selection](#render-class-selection)); `show_smoothed` (true; rótulo com a distância suavizada quando há estimativa — a bruta segue no CSV); `show_speed` (true; velocidade relativa no rótulo, só com `kalman`); com `motion`: `show_trajectory` (true; trajetória prevista), `trajectory_alpha` (0.8, em [0, 1]; opacidade do 1º segmento, decrescente até o horizonte), `show_motion_speed` (true; `v <m/s>` no fim do rótulo), `bev_inset` (false; painel de vista superior no canto inferior direito — exige `motion`), `bev_size` (0.35 da altura do quadro, em (0, 1]), `bev_range_m` (40 m à frente), `bev_width_m` (20 m de largura) |
 | `output` | `out_root` (`_testbed/outputs`); `tag` (""); `save_depth` (false) |
 
 ### Mapas de rótulos e fusão entre detectores
@@ -556,6 +556,49 @@ Domínios: Cityscapes e BDD100K são cenas de rua; em cena agrícola
 `--set semantic=[]` desliga a semântica e `--set semantic.<i>.size=[1024,1792]`
 edita um item (`semantic.0` em `rfdetr_semantic_da3.yaml`, `semantic.1` em
 `rfdetr_lanes_scene_da3.yaml`).
+
+#### Render class selection
+
+`render.semantic_classes` chooses which semantic classes are painted in
+`video.mp4` (task_0035). It is an allowlist of `<map>.<class>` entries (split
+at the first dot, like `distance.exclude_semantic`):
+
+```yaml
+render:
+  semantic_overlay: null
+  semantic_classes: [scene.road, scene.car, lanes.lane]   # only these are painted
+```
+
+- Absent or `null` (the default) paints every class, as before. `[]` paints
+  nothing. A semantic map with no entry in the list draws none of its classes.
+  A bare string is accepted as a one-item list (`--set render.semantic_classes=scene.road`).
+- `background` (TwinLiteNet+) is never drawn, listed or not.
+- The `<map>.<class>` form and the map prefix are checked in `load_config`
+  (no dot, empty class or unknown map: error). The class
+  names are checked right after `pipeline.load`, before the first frame
+  (`ConfigError` listing the valid classes), since only a loaded segmenter is
+  authoritative about its classes.
+- It is presentation only: distances, tracking, `detections.csv`,
+  `depth.npz` and `metrics.json` are identical with and without it. Use
+  `distance.exclude_semantic` to change the distance. It combines with
+  `semantic_overlay` (which picks whole maps) and `semantic_alpha`.
+- Detector classes and the MCAP output are not filtered by this field (follow-ups).
+
+Where the web editor gets the class list (`Component.declared_classes(options)`,
+asked by `POST /api/classes`, no model is loaded):
+
+| Source | Classes |
+|---|---|
+| `static` | TwinLiteNet+: `background`, `drivable`, `lane` (the load checks that both heads end in 2 channels) |
+| `metadata` | SegFormer: `id2label` of the checkpoint's `config.json`, from the HF cache (`hf_cache`, default `<weights root>/hf`) or from a local `model` directory; plain JSON, no torch or transformers |
+| `cache` | Detectors (YOLO, RF-DETR): checkpoints are pickles, so each successful load writes `<weights root>/.classes/<key>.json` (`{"names": [...]}`); `key` hashes the weights file's resolved path, size and mtime, so a replaced file misses |
+
+The cache is a hint only: the loaded model's `class_names` stays
+authoritative, a corrupt file is a miss and a failure to write it (read-only
+weights root) is logged and ignored. SegFormer follows `refs/main` of the HF
+cache like the loader (first sorted snapshot only without a usable ref). When
+nothing is known the editor shows the classes after the first load and asks
+again each time the dropdown is opened.
 
 ### Rastreamento e suavização
 

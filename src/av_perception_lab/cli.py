@@ -32,6 +32,7 @@ from av_perception_lab.adapters.depth.da3 import da3_requirements
 from av_perception_lab.camera import build_camera, focal_estimate_config
 from av_perception_lab.config import RunConfig, load_config
 from av_perception_lab.core import registry
+from av_perception_lab.core.labels import resolve_semantic_classes
 from av_perception_lab.core.options import ConfigError
 from av_perception_lab.core.pipeline import Pipeline
 from av_perception_lab.core.provision import (
@@ -208,6 +209,10 @@ def run(
         # Baseline after the focal model is released, before the main models load.
         monitor.start()
         pipeline.load(source, info)
+        # An unknown render class fails here, before the first frame.
+        resolve_semantic_classes(
+            cfg.render.semantic_classes, pipeline.semantic_classes()
+        )
         names = [d.name for d in detectors]
         run_dir = make_run_dir(
             cfg.output.out_root, [source.name, *names, depth.name, cfg.output.tag]

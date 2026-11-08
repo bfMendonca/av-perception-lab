@@ -433,7 +433,11 @@ def test_video_sink_single_detector_concat_is_unchanged(ctx, result, tmp_path):
     sink.write(result)
     sink.close()
     (boxes, hud, kw) = drawn[0]
-    assert kw == {"semantic": [], "bev": []}  # no semantic layer, no motion
+    assert kw == {
+        "semantic": [],
+        "semantic_visible": [],
+        "bev": [],
+    }  # no semantic layer, no motion
     assert [b.color_key for b in boxes] == [None, None]  # colour by label
     assert [b.label for b in boxes] == ["car 91% · 12.0 m", "suv 50% · n/a"]
     assert len(hud) == 4  # no fusion or agreement line
@@ -773,7 +777,7 @@ def test_video_sink_semantic_layers_and_hud(
     )
     off.write(refined_result)
     off.close()
-    assert calls[-1][1] == {"semantic": [], "bev": []}
+    assert calls[-1][1] == {"semantic": [], "semantic_visible": [], "bev": []}
 
 
 def test_npz_sink_semantic_labels(ctx, result, refined_result):
@@ -1237,3 +1241,28 @@ def test_video_sink_on_frame_receives_rendered_image(ctx, result, tmp_path):
     ((index, image),) = got
     assert index == result.frame.index == 7
     assert image is rendered
+
+
+@pytest.mark.skipif(shutil.which("ffmpeg") is None, reason="needs ffmpeg/ffprobe")
+@pytest.mark.parametrize(
+    ("selection", "expected"),
+    [
+        (None, [None, None]),
+        (("scene.road",), [frozenset({"road"}), frozenset()]),
+        ((), [frozenset(), frozenset()]),
+    ],
+)
+def test_video_sink_passes_allowed_classes(
+    semantic_ctx, refined_result, tmp_path, selection, expected
+):
+    clip = tmp_path / "clip.mp4"
+    with VideoWriter(clip, 100, 100, "10/1") as writer:
+        writer.write(np.zeros((100, 100, 3), np.uint8))
+    ctx = replace(semantic_ctx, source=VideoSource(SourceConfig(video=clip)))
+    sink = VideoSink(RenderConfig(semantic_classes=selection), DistanceConfig())
+    sink.open(ctx)
+    calls = []
+    sink._renderer.render = lambda rgb, boxes, hud, depth, **kw: calls.append(kw) or rgb
+    sink.write(refined_result)
+    sink.close()
+    assert calls[0]["semantic_visible"] == expected

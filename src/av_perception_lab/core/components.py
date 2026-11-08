@@ -27,6 +27,7 @@ from typing import Any, ClassVar, Literal
 
 import numpy as np
 
+from av_perception_lab.core import class_cache
 from av_perception_lab.core.labels import (
     LabelMap,
     identify_vocabulary,
@@ -55,6 +56,18 @@ class LoadContext:
     intrinsics: CameraIntrinsics | None  # frame resolution; None if nobody needs it
 
 
+@dataclass(frozen=True, slots=True)
+class ClassCatalog:
+    """The classes a component can emit, known before loading it.
+
+    `source`: "static" (constant of the architecture), "metadata" (read from
+    the checkpoint's config files, no framework import) or "cache" (recorded
+    by an earlier load)."""
+
+    names: tuple[str, ...]
+    source: Literal["static", "metadata", "cache"]
+
+
 class Component(ABC):
     """A configurable model wrapper with an explicit load/close life cycle."""
 
@@ -73,6 +86,12 @@ class Component(ABC):
         """What this class needs to run, from already-validated options (never
         from `load()`); the default declares nothing."""
         return Requirements()
+
+    @classmethod
+    def declared_classes(cls, options: Any) -> ClassCatalog | None:
+        """Classes this component will emit, without loading it (no framework
+        import, never raises); None when they are not knowable beforehand."""
+        return None
 
     def default_name(self) -> str:
         """Name used in outputs when the spec gives none (e.g. "rfdetr-large")."""
@@ -158,6 +177,22 @@ class Detector(Component):
             except ConfigError as exc:
                 raise ConfigError(f"labels: {exc}") from None
 
+    @classmethod
+    def weights_file(cls, options: Any) -> Path | None:
+        """The checkpoint file whose classes the load-time cache records
+        (importable without frameworks); None when there is no such file."""
+        return None
+
+    @classmethod
+    def declared_classes(cls, options: Any) -> ClassCatalog | None:
+        """Classes recorded by an earlier load of the same weights file."""
+        try:
+            weights = cls.weights_file(options)
+            names = None if weights is None else class_cache.read(weights)
+        except (ConfigError, OSError, ValueError, RuntimeError):
+            return None
+        return None if names is None else ClassCatalog(names, "cache")
+
     @property
     @abstractmethod
     def class_names(self) -> Sequence[str]:
@@ -179,6 +214,9 @@ class Detector(Component):
                 self.label_map.check(self.class_names, self._vocabulary)
             except ConfigError as exc:
                 raise ConfigError(f"{self.name}.labels: {exc}") from None
+        weights = self.weights_file(self.options)
+        if weights is not None:
+            class_cache.write(weights, list(self.class_names))
 
     @property
     def output_labels(self) -> frozenset[str]:

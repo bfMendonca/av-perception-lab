@@ -8,6 +8,7 @@ from av_perception_lab.config import (
     PIPELINE_DISTANCE_KEYS,
     AgreementConfig,
     CalibrationConfig,
+    RenderConfig,
     apply_overrides,
     load_config,
 )
@@ -800,3 +801,30 @@ def test_mcap_source_with_from_source_and_rectify_loads(tmp_path):
 def test_rectify_defaults_off(tmp_path):
     cfg = load_config(write(tmp_path, MINIMAL))
     assert not cfg.rectify.enabled and cfg.rectify.alpha == 0.0
+
+
+def test_render_semantic_classes_default_none():
+    assert RenderConfig().semantic_classes is None
+
+
+def test_run_config_rejects_unknown_map_prefix(tmp_path):
+    with pytest.raises(ConfigError, match="unknown semantic map 'nope'"):
+        load_config(write(tmp_path, TWO_MAPS), ["render.semantic_classes=[nope.road]"])
+
+
+@pytest.mark.parametrize("entry", ["scene", "scene.", ".road"])
+def test_run_config_rejects_malformed_entry(tmp_path, entry):
+    with pytest.raises(ConfigError, match="render.semantic_classes"):
+        load_config(write(tmp_path, TWO_MAPS), [f"render.semantic_classes=[{entry}]"])
+
+
+def test_yaml_list_form_is_accepted(tmp_path):
+    cfg = load_config(
+        write(tmp_path, TWO_MAPS), ["render.semantic_classes=[scene.road]"]
+    )
+    assert cfg.render.semantic_classes == ("scene.road",)
+    bare = load_config(
+        write(tmp_path, TWO_MAPS), ["render.semantic_classes=scene.road"]
+    )
+    assert bare.render.semantic_classes == ("scene.road",)
+    assert load_config(write(tmp_path, TWO_MAPS)).render.semantic_classes is None

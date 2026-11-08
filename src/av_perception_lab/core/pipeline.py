@@ -234,6 +234,10 @@ class Pipeline:
                 [names.index(c) for c in classes], dtype=np.int32
             )
 
+    def semantic_classes(self) -> dict[str, tuple[str, ...]]:
+        """Class names of every semantic segmenter by name (valid after `load`)."""
+        return {s.name: tuple(s.class_names) for s in self.semantic}
+
     def _warn_disjoint_labels(self) -> None:
         # Fusing by label merges nothing across two detectors whose label sets
         # are disjoint (e.g. a COCO and an Objects365 model without label maps).

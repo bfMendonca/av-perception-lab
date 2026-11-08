@@ -242,6 +242,13 @@ def config_paths(data: dict[str, Any]) -> list[tuple[str, Path]]:
     return found
 
 
+def options_paths(options: Any, prefix: str) -> list[tuple[str, Path]]:
+    """`(dotted path, value)` of every `Path` an options dataclass holds."""
+    found: list[tuple[str, Path]] = []
+    _walk_paths(options, prefix, found)
+    return found
+
+
 def _walk_paths(value: Any, path: str, found: list[tuple[str, Path]]) -> None:
     if isinstance(value, Path):
         found.append((path, value))

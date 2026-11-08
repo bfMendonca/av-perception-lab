@@ -13,6 +13,7 @@ from av_perception_lab.core.labels import (
     group_semantic_labels,
     identify_vocabulary,
     resolve_classes,
+    resolve_semantic_classes,
 )
 from av_perception_lab.core.options import ConfigError
 
@@ -181,3 +182,37 @@ def test_group_semantic_labels_unknown_segmenter():
 )
 def test_semantic_name_pattern(name, valid):
     assert bool(re.fullmatch(SEMANTIC_NAME_PATTERN, name)) is valid
+
+
+def test_resolve_none_means_all():
+    assert resolve_semantic_classes(None, {"scene": ["road"]}) is None
+
+
+def test_resolve_empty_list_selects_nothing():
+    assert resolve_semantic_classes([], {"scene": ["road"]}) == {"scene": frozenset()}
+
+
+def test_resolve_splits_on_first_dot():
+    got = resolve_semantic_classes(["scene.a.b"], {"scene": ["a.b", "c"]})
+    assert got == {"scene": frozenset({"a.b"})}
+
+
+def test_resolve_unknown_class_lists_valid_names():
+    with pytest.raises(
+        ConfigError,
+        match=r"^render\.semantic_classes: scene\.x: "
+        r"unknown class; scene classes: road, sky$",
+    ):
+        resolve_semantic_classes(["scene.x"], {"scene": ["road", "sky"]})
+
+
+def test_resolve_unknown_map():
+    with pytest.raises(
+        ConfigError, match=r"unknown semantic map 'nope'; configured: scene"
+    ):
+        resolve_semantic_classes(["nope.road"], {"scene": ["road"]})
+
+
+def test_resolve_same_class_in_two_maps():
+    got = resolve_semantic_classes(["scene.car"], {"scene": ["car"], "other": ["car"]})
+    assert got == {"scene": frozenset({"car"}), "other": frozenset()}

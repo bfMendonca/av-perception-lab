@@ -1455,6 +1455,114 @@ textarea {
   gap: 4px;
 }
 
+/* Class dropdown (render.semantic_classes, editor/ClassSelect.tsx) */
+.classes {
+  display: grid;
+  gap: 6px;
+}
+
+.classes__toggle {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  text-align: left;
+  cursor: pointer;
+}
+
+.classes__toggle:focus-visible {
+  outline: none;
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px var(--accent-ring);
+}
+
+.classes__panel {
+  display: grid;
+  gap: 8px;
+  max-height: 320px;
+  overflow-y: auto;
+  padding: 8px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--panel-2);
+}
+
+.classes__bar {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.classes__search {
+  position: relative;
+  flex: 1;
+  min-width: 0;
+}
+
+.classes__search .input {
+  padding-left: 32px;
+}
+
+.classes__group {
+  display: grid;
+  gap: 2px;
+  margin: 0;
+  padding: 0;
+  border: 0;
+}
+
+.classes__group legend {
+  padding: 0 0 4px;
+  color: var(--muted);
+  font-family: var(--mono);
+  font-size: 11.5px;
+}
+
+.classes__item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 3px 4px;
+  border-radius: var(--radius-sm);
+  color: var(--text-2);
+  font-size: 12.5px;
+  cursor: pointer;
+}
+
+.classes__item:hover {
+  background: var(--accent-soft);
+}
+
+.classes__item input {
+  accent-color: var(--accent);
+}
+
+.classes__item input:focus-visible {
+  outline: 2px solid var(--accent-ring);
+  outline-offset: 1px;
+}
+
+.classes__item--off {
+  color: var(--faint);
+  cursor: default;
+}
+
+.classes__item--off:hover {
+  background: transparent;
+}
+
+.classes__note {
+  margin-left: auto;
+  color: var(--faint);
+  font-size: 11px;
+}
+
+.classes__empty {
+  margin: 0;
+  color: var(--muted);
+  font-size: 12px;
+}
+
 .unset {
   display: flex;
   align-items: center;

@@ -507,3 +507,45 @@ def test_python_m_entry_point():
     ):
         assert family in out.stdout
     assert "scene_det" not in out.stdout  # the doubles never leave the test process
+
+
+# task_0035: render.semantic_classes is presentation only.
+SCENE_SEG = "semantic=[{name: scene, type: scene_seg}]"
+
+
+def test_unknown_semantic_class_is_config_error_before_first_frame(
+    tmp_path, scene_videos, run_cli, capsys
+):
+    from av_perception_lab import cli
+
+    config = tmp_path / "base.yaml"  # written by the run_cli fixture
+    out_root = tmp_path / "out"
+    code = cli.main(
+        [
+            str(scene_videos.pinhole),
+            "--config",
+            str(config),
+            "--set",
+            SCENE_SEG,
+            "--set",
+            "render.semantic_classes=[scene.dragon]",
+            "--set",
+            f"output.out_root={out_root}",
+        ]
+    )
+    err = capsys.readouterr().err
+    assert code == 2
+    assert "scene.dragon" in err and "road, sky, person, vehicle" in err
+    assert not out_root.exists()  # no run folder: failed before the first frame
+
+
+def test_distance_and_csv_unchanged_by_selection(run_cli, scene_videos):
+    csvs = []
+    for selection in ("null", "[scene.road]"):
+        run_dir = run_cli(
+            scene_videos.pinhole,
+            [SCENE_SEG, f"render.semantic_classes={selection}"],
+            perceived=scene_videos.true_k,
+        )
+        csvs.append((run_dir / "detections.csv").read_bytes())
+    assert csvs[0] == csvs[1]

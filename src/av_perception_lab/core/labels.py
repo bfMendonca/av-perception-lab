@@ -163,6 +163,42 @@ def group_semantic_labels(
     return {name: tuple(classes) for name, classes in groups.items()}
 
 
+def resolve_semantic_classes(
+    selection: Sequence[str] | None, classes_by_map: Mapping[str, Sequence[str]]
+) -> dict[str, frozenset[str]] | None:
+    """Resolve a render allowlist of "<map>.<class>" entries per semantic map.
+
+    Entries split on the first dot only (class names may contain dots).
+
+    Returns:
+        None when `selection` is None (every class); otherwise the allowed
+        class set of every map in `classes_by_map` (empty for a map without
+        entries).
+
+    Raises:
+        ConfigError: unknown map prefix or unknown class (the message lists the
+            valid names).
+    """
+    if selection is None:
+        return None
+    allowed: dict[str, set[str]] = {name: set() for name in classes_by_map}
+    for entry in selection:
+        name, _, cls = entry.partition(".")
+        if name not in classes_by_map:
+            known = ", ".join(classes_by_map) or "none"
+            raise ConfigError(
+                f"render.semantic_classes: unknown semantic map {name!r}; "
+                f"configured: {known}"
+            )
+        if cls not in classes_by_map[name]:
+            raise ConfigError(
+                f"render.semantic_classes: {entry}: unknown class; "
+                f"{name} classes: {', '.join(classes_by_map[name])}"
+            )
+        allowed[name].add(cls)
+    return {name: frozenset(classes) for name, classes in allowed.items()}
+
+
 UnmappedPolicy = Literal["keep", "drop"]
 
 

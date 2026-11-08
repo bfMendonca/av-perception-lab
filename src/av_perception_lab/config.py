@@ -162,6 +162,11 @@ class RenderConfig:
     # Names of the semantic maps drawn in the video (None = all), in the order
     # of `semantic`; checked against the segmenter names by RunConfig.
     semantic_overlay: tuple[str, ...] | None = None
+    # Allowlist of "<map>.<class>" entries painted in the semantic layer (None =
+    # every class, [] = none); render-only, never affects distance. A bare YAML
+    # string is accepted as a one-item list (like distance.exclude_semantic).
+    # The map prefix is checked by RunConfig, class names once the segmenters load.
+    semantic_classes: str | tuple[str, ...] | None = None
     show_smoothed: bool = True  # label shows the smoothed distance (raw stays in CSV)
     show_speed: bool = True  # label shows the relative speed (kalman smoothing)
     # With motion: the predicted trajectory (polyline fading out with n-sigma
@@ -175,6 +180,8 @@ class RenderConfig:
     bev_width_m: float = 20.0  # lateral span of the inset
 
     def __post_init__(self) -> None:
+        if isinstance(self.semantic_classes, str):
+            object.__setattr__(self, "semantic_classes", (self.semantic_classes,))
         if self.max_depth <= 0:
             raise ValueError("max_depth must be > 0")
         if not 0.0 <= self.trajectory_alpha <= 1.0:
@@ -289,6 +296,18 @@ class RunConfig:
                 f"render.semantic_overlay: unknown semantic map {unknown[0]!r}; "
                 f"configured: {', '.join(names) or 'none'}"
             )
+        for entry in self.render.semantic_classes or ():
+            prefix, dot, cls_name = entry.partition(".")
+            if not dot or not cls_name:
+                raise ValueError(
+                    f"render.semantic_classes: {entry!r} must be "
+                    "'<map>.<class>' (e.g. scene.road)"
+                )
+            if prefix not in names:
+                raise ValueError(
+                    f"render.semantic_classes: unknown semantic map {prefix!r}; "
+                    f"configured: {', '.join(names) or 'none'}"
+                )
         if self.source.mcap is None:
             cal = self.camera.calibration
             if cal is not None and cal.from_source:

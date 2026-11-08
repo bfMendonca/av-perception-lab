@@ -7,6 +7,7 @@ import yaml
 
 from av_perception_lab.core import registry
 from av_perception_lab.core.components import (
+    ClassCatalog,
     Detector,
     DetectorOptions,
     LoadContext,
@@ -442,3 +443,22 @@ def test_broken_tracker_is_a_contract_error(mixed, ids, match):
     tracker.load(CTX)
     with pytest.raises(ContractError, match=match):
         tracker(FRAME, mixed)
+
+
+class DeclaringSemantic(FakeSemantic):
+    @classmethod
+    def declared_classes(cls, options):
+        return ClassCatalog(("road", "sky"), "static")
+
+
+def test_base_declared_classes_is_none():
+    assert FakeSemantic.declared_classes(FakeSemantic.Options()) is None
+    assert Detector.declared_classes(DetectorOptions()) is None
+
+
+def test_declared_classes_match_class_names_after_load():
+    seg = DeclaringSemantic(np.zeros((50, 100), np.int32), ("road", "sky"))
+    catalog = DeclaringSemantic.declared_classes(seg.options)
+    assert catalog is not None
+    seg.load(CTX)
+    assert catalog.names == seg.class_names

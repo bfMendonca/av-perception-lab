@@ -86,8 +86,33 @@ registerStageView("rectify", RectifyLane, {
 ```
 
 O app fornece o contexto em volta do editor
-(`<StageContext.Provider value={{ input }}>`, ver `App.tsx`); sem provedor o
-contexto é `{}`.
+(`<StageContext.Provider value={{ input, config }}>`, ver `App.tsx`); sem
+provedor o contexto é `{}`.
+
+The context also carries the current pipeline config under
+`CONFIG_CONTEXT_KEY` (`"config"`, exported by `registry.ts`). It is meant for
+field controls that depend on other sections: `FieldControlProps` gives a
+control only its own field, value and path. The `render.semantic_classes`
+dropdown (`web/src/editor/ClassSelect.tsx`) reads the `semantic` specs from
+it to ask `POST /api/classes` for each map's classes. The control reads the
+context rather than `useEditor()` so it keeps working (with no maps) outside
+an `EditorProvider` and in tests with a plain provider; `useEditor()` stays
+the way to change the config. Since the config changes on every edit, a
+control that derives requests from it should key them on the part it reads
+(the classes dropdown caches by the serialized spec and debounces new specs).
+
+```ts
+import { CONFIG_CONTEXT_KEY, registerFieldControl, StageContext } from "./editor/registry";
+
+function ClassSelect(props: FieldControlProps) {
+  const config = useContext(StageContext)[CONFIG_CONTEXT_KEY]; // ConfigDict | undefined
+  // ...
+}
+registerFieldControl((f) => f.name === "semantic_classes", ClassSelect);
+```
+
+The catalog types `semantic_classes` as `any` (variants `str` and
+`list<str>`), so the control matches the field by name, not by type.
 
 ## (d) Novo artefato ou nova seção de métricas
 
@@ -156,6 +181,31 @@ example (a hypothetical Metric3D depth model), locations, states and the
 dependency-conflict paths: `docs/model_environments.md`. Tests:
 `tests/web/test_models.py` (status rows of fake adapters registered with
 `monkeypatch.setitem(registry._REGISTRY[...])`).
+
+## (f) Declaring the classes of a new model
+
+A semantic segmenter or detector can tell the editor which classes it emits
+before it is loaded, so the `render.semantic_classes` dropdown can list them
+(`POST /api/classes`, `web/classes.py`). Override the classmethod
+`Component.declared_classes(options) -> ClassCatalog | None`
+(`core/components.py`):
+
+- Declare the classes when they are cheaply knowable from the options or the
+  weights without importing a framework: a constant of the architecture
+  (`ClassCatalog(names, "static")`, as TwinLiteNet+), or plain metadata next to
+  the weights such as a `config.json` (`"metadata"`, as SegFormer). It must
+  never raise and never load the model.
+- Otherwise return `None` (the default). Detectors get a fallback: a
+  `Detector` that implements `weights_file(options)` (the checkpoint path,
+  importable without frameworks) has its names recorded after every load in
+  `<weights root>/.classes/<key>.json` and read back as `"cache"`.
+- Contract: the declared names must equal `class_names`/the segmenter's
+  classes after `load()`. If the architecture can vary (checkpoint with another
+  head), check it at load and fail loudly (see `_check_heads` in
+  `adapters/semantic/twinlitenet.py`). Add a test that compares the two.
+- The endpoint parses the spec into the options dataclass and checks its
+  paths like a run, but does not construct the component; a local model
+  directory is confined to the weights root and the `--asset-root` folders.
 
 ## Versão do catálogo
 

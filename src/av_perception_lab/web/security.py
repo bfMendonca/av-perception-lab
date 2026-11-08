@@ -201,12 +201,19 @@ def path_problems(config: dict[str, Any], paths: WebPaths) -> list[dict[str, str
     none may resolve inside the library or out_root (a client could have put
     a checkpoint or a Python package there), and with `paths.asset_roots`
     each must resolve inside one of them or inside the weights root."""
+    return found_path_problems(schema.config_paths(config), paths)
+
+
+def found_path_problems(
+    found: Iterable[tuple[str, Path]], paths: WebPaths
+) -> list[dict[str, str]]:
+    """`path_problems` of already collected `(dotted path, value)` pairs."""
     writable = client_writable_roots(paths)
     assets = [r.resolve() for r in paths.asset_roots]
     if assets:
         assets.append(weights_root().resolve())
     errors = []
-    for dotted, value in schema.config_paths(config):
+    for dotted, value in found:
         if dotted in SERVER_CHECKED_PATHS:
             continue
         real = resolve(value)
